@@ -1,0 +1,21 @@
+# Edgegrid Go Workspace & Toolchain Constraints
+
+To prevent breaking the workspace compiler/linter in the user's editor, please adhere strictly to these rules:
+
+## 1. Go Version Constraints
+* **Active Host Go version**: `1.24.6`.
+* **Required `go` line**: All `go.work` and `go.mod` files MUST declare `go 1.24.0` (or `go 1.24`), **never** `go 1.25.0` or newer.
+* **Why**: The host editor uses `GOTOOLCHAIN=local` with the local Go `1.24.6` installation. Requiring Go `>= 1.25.0` immediately causes `packages.Load error: go.work requires go >= 1.25.0`.
+
+## 2. Dependency Constraints (No Go 1.25+ Dependencies)
+* **NATS Client**: Pinned to `github.com/nats-io/nats.go v1.39.0`. Do **NOT** upgrade to `v1.52.0` or newer (they require Go 1.25.0+).
+* **gRPC Client/Server**: Pinned to `google.golang.org/grpc v1.73.0`. Do **NOT** upgrade to `v1.74.2` or newer (they pull in transitive Go 1.25+ requirements).
+* **x/* indirect packages**: Ensure `golang.org/x/net`, `golang.org/x/sys`, `golang.org/x/text`, and `golang.org/x/crypto` are kept at Go 1.24 compatible versions (e.g., `net v0.41.0` or `net v0.48.0` / `sys v0.40.0`).
+
+## 3. Safe Dependency Modification
+* Always run go operations with `GOTOOLCHAIN=local` to prevent the CLI from auto-downloading newer Go versions and upgrading project files:
+  ```bash
+  GOTOOLCHAIN=local go mod tidy
+  GOTOOLCHAIN=local go work sync
+  GOTOOLCHAIN=local go get <dependency>@<version>
+  ```

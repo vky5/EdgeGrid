@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package worker;
+option go_package = "github.com/edgegrid/edgegrid/apps/shared/proto/worker;workerpb";
+
+// Registration info sent by the worker over NATS
+message WorkerInfo {
+  string id = 1;
+  repeated string supported_model = 2; // e.g. ["llama3", "all-minilm"]
+}
+
+// Heartbeat sent by the worker over NATS
+message PingRequest {
+  string id = 1;
+  string status = 2; // e.g. "free", "busy"
+}
+
+// JobRequest represents the embedding generation details sent via NATS JetStream
+message JobRequest {
+  string job_id = 1;
+  string model_name = 2; // e.g. "all-minilm"
+  string input_text = 3; // The text to generate embeddings for
+}
+
+// JobResponse represents the result of the embedding generation
+message JobResponse {
+  string job_id = 1;
+  bool success = 2;
+  repeated float embedding = 3; // The output float vector
+  string error = 4;
+  string worker_id = 5;
+}
