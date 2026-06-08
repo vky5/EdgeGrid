@@ -2,83 +2,37 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"fmt"
 	"log"
 	"os"
-	"strings"
-	"time"
+	"os/signal"
+	"syscall"
 
-	"github.com/edgegrid/edgegrid/worker/internal/broker"
+	"github.com/edgegrid/edgegrid/worker/internal/agent"
 )
 
 func main() {
-	log.Println("🛠️ Starting build worker")
+	log.Println("🛠️ Starting build worker agent")
 
-	workerID := generateWorkerID()
-
-	natsURL := os.Getenv("NATS_URL")
-	if natsURL == "" {
-		natsURL = "nats://localhost:4222"
-	}
-
-	wb, err := broker.NewWorkerBroker(natsURL)
+	// 1. Initialize the worker agent
+	a, err := agent.NewAgent()
 	if err != nil {
-		log.Fatalf("❌ Failed to initialize NATS: %v", err)
+		log.Fatalf("❌ Failed to initialize agent: %v", err)
 	}
-	defer wb.Close()
-
-	modelsEnv := os.Getenv("SUPPORTED_MODELS")
-	var supportedModels []string
-	if modelsEnv != "" {
-		for _, m := range strings.Split(modelsEnv, ",") {
-			m = strings.TrimSpace(m)
-			if m != "" {
-				supportedModels = append(supportedModels, m)
-			}
-		}
-	}
-	if len(supportedModels) == 0 {
-		supportedModels = []string{"all-minilm"}
-	}
-
-	// Register with Coordinator over NATS
-	err = wb.RegisterWorker(workerID, supportedModels)
-	if err != nil {
-		log.Fatalf("❌ Failed to register with NATS: %v", err)
-	}
-	log.Printf("✅ Registered with Coordinator over NATS. ID: %s, Models: %v", workerID, supportedModels)
+	defer a.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start heartbeat routine
-	go wb.StartHeartbeat(ctx, workerID, 10*time.Second)
-	log.Println("💓 Started heartbeat routine")
+	// 2. Setup OS signal catching for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Start pull listeners for each model
-	for _, model := range supportedModels {
-		go wb.StartJobListener(ctx, workerID, model)
+	// 3. Start the agent components (listeners, heartbeats, registry)
+	if err := a.Start(ctx); err != nil {
+		log.Fatalf("❌ Failed to start agent: %v", err)
 	}
 
-	// Keep running
-	select {}
-}
-
-func generateWorkerID() string {
-	// Check if WORKER_ID is provided via env
-	workerID := os.Getenv("WORKER_ID")
-	if workerID != "" {
-		return workerID
-	}
-
-	// Use container hostname (unique per container) + timestamp + random suffix
-	hostname, _ := os.Hostname()
-	timestamp := time.Now().UnixNano()
-	randBytes := make([]byte, 4)
-	_, _ = rand.Read(randBytes) // generate 4 random bytes
-	randHex := hex.EncodeToString(randBytes)
-
-	return fmt.Sprintf("worker-%s-%d-%s", hostname, timestamp, randHex)
+	// 4. Block until termination signal
+	sig := <-sigChan
+	log.Printf("👋 Received termination signal %v. Gracefully shutting down worker agent...", sig)
 }
