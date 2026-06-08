@@ -26,8 +26,8 @@ EdgeGrid is fully event-driven, operating without public ports or inbound listen
 
 | Component | Responsibility |
 | :--- | :--- |
-| **`apps/build-orchestrator`** | Control plane, HTTP API, registration monitor, and results accumulator |
-| **`apps/build-worker`** | Agent client that pulls compatible jobs and runs local embedding inference |
+| **`apps/coordinator`** | Control plane, HTTP API, registration monitor, and results accumulator |
+| **`apps/worker`** | Agent client that pulls compatible jobs and runs local embedding inference |
 | **`apps/shared`** | Unified protobuf schemas (`worker.proto`) and generated Go models |
 
 ---
@@ -54,11 +54,11 @@ EdgeGrid is fully event-driven, operating without public ports or inbound listen
 
 3. Build the applications:
    ```bash
-   # Build Orchestrator
-   cd apps/build-orchestrator && GOTOOLCHAIN=local go build ./...
+   # Build Coordinator
+   cd apps/coordinator && GOTOOLCHAIN=local go build ./...
    
    # Build Worker
-   cd ../build-worker && GOTOOLCHAIN=local go build ./...
+   cd ../worker && GOTOOLCHAIN=local go build ./...
    ```
 
 ---
@@ -72,21 +72,21 @@ To test the system locally:
    nats-server -js
    ```
 
-2. **Run the Orchestrator**:
+2. **Run the Coordinator**:
    ```bash
-   cd apps/build-orchestrator
+   cd apps/coordinator
    NATS_URL=nats://localhost:4222 PORT=8080 go run ./cmd
    ```
 
 3. **Run a Worker Node**:
    Open a new terminal and run:
    ```bash
-   cd apps/build-worker
+   cd apps/worker
    NATS_URL=nats://localhost:4222 SUPPORTED_MODELS=all-minilm go run ./cmd
    ```
 
 4. **Submit a Job**:
-   Open a new terminal and trigger an embedding job via the Orchestrator's API:
+   Open a new terminal and trigger an embedding job via the Coordinator's API:
    ```bash
    curl -X POST http://localhost:8080/jobs \
      -H "Content-Type: application/json" \
@@ -94,6 +94,6 @@ To test the system locally:
    ```
 
 *You will observe:*
-* The Orchestrator logging the incoming job and queueing it to NATS.
+* The Coordinator logging the incoming job and queueing it to NATS.
 * The Worker pulling the job, generating a stub embedding vector, and publishing the response.
-* The Orchestrator receiving and logging the completed embedding response from `jobs.results`.
+* The Coordinator receiving and logging the completed embedding response from `jobs.results`.

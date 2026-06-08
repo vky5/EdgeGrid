@@ -1,7 +1,7 @@
 go 1.24.0
 
 use (
-	./apps/build-orchestrator
-	./apps/build-worker
+	./apps/coordinator
+	./apps/worker
 	./apps/shared
 )

@@ -8,7 +8,7 @@ import (
 	"net/http"
 
 	workerpb "github.com/edgegrid/edgegrid/apps/shared/proto/worker"
-	"github.com/edgegrid/edgegrid/build-orchestrator/internal/broker"
+	"github.com/edgegrid/edgegrid/coordinator/internal/broker"
 )
 
 type SubmitJobRequest struct {

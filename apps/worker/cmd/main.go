@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/edgegrid/edgegrid/build-worker/internal/broker"
+	"github.com/edgegrid/edgegrid/worker/internal/broker"
 )
 
 func main() {

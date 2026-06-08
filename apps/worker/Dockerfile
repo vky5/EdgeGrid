@@ -6,14 +6,14 @@ FROM golang:1.24-alpine AS builder
 WORKDIR /app/worker
 
 # Copy Go modules
-COPY build-worker/go.mod build-worker/go.sum ./
+COPY worker/go.mod worker/go.sum ./
 COPY shared/go.mod shared/go.sum ../shared/
 
 # Download dependencies
 RUN go mod download
 
 # Copy source code
-COPY build-worker/ ./
+COPY worker/ ./
 COPY shared/ ../shared/
 
 # Build the worker binary
@@ -31,7 +31,7 @@ RUN apk add --no-cache docker-cli docker-cli-buildx git bash
 COPY --from=builder /app/worker/worker /worker
 
 # Copy scripts
-COPY build-worker/scripts/ /app/scripts/
+COPY worker/scripts/ /app/scripts/
 RUN chmod +x /app/scripts/build.sh
 
 WORKDIR /app

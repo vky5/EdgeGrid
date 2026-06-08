@@ -8,7 +8,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	workerpb "github.com/edgegrid/edgegrid/apps/shared/proto/worker"
-	"github.com/edgegrid/edgegrid/build-orchestrator/internal/workerman"
+	"github.com/edgegrid/edgegrid/coordinator/internal/workerman"
 )
 
 // SubscribeToWorkerEvents consumes registration and heartbeat events from NATS

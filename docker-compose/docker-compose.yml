@@ -21,9 +21,9 @@ services:
   #     timeout: 5s
   #     start_period: 5s
 
-  orchestrator:
-    image: edgegrid/orchestrator:latest
-    container_name: edgegrid_orchestrator
+  coordinator:
+    image: edgegrid/coordinator:latest
+    container_name: edgegrid_coordinator
     ports:
       - "${ORCHESTRATOR_GRPC_PORT}:${ORCHESTRATOR_GRPC_PORT}"
     env_file:
@@ -42,7 +42,7 @@ services:
     env_file:
       - .env
     depends_on:
-      - orchestrator
+      - coordinator
     networks:
       - edgegrid-net
 

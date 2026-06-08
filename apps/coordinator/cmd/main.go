@@ -15,8 +15,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/edgegrid/edgegrid/build-orchestrator/internal/broker"
-	"github.com/edgegrid/edgegrid/build-orchestrator/internal/workerman"
+	"github.com/edgegrid/edgegrid/coordinator/internal/broker"
+	"github.com/edgegrid/edgegrid/coordinator/internal/workerman"
 )
 
 func main() {

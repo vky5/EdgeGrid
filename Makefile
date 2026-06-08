@@ -27,11 +27,11 @@ clean:
 
 
 # Building docker images
-docker-build-orchestrator:
-	docker build -t edgegrid/orchestrator:latest -f ./apps/build-orchestrator/Dockerfile ./apps
+docker-build-coordinator:
+	docker build -t edgegrid/coordinator:latest -f ./apps/coordinator/Dockerfile ./apps
 
 docker-build-worker:
-	docker build -t edgegrid/worker:latest -f ./apps/build-worker/Dockerfile ./apps
+	docker build -t edgegrid/worker:latest -f ./apps/worker/Dockerfile ./apps
 
 
 # Running docker compose
