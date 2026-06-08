@@ -1,10 +1,10 @@
 PROTOC            := protoc
 PROTOC_GEN_GO     := $(shell which protoc-gen-go)
 
-PROTO_DIR         := apps/shared/proto
+PROTO_DIR         := internal/proto
 PROTO_FILES       := $(shell find $(PROTO_DIR) -name '*.proto')
 
-.PHONY: all clean proto docker-coordinator docker-worker run-compose
+.PHONY: all clean proto build run docker-build run-compose
 
 all: proto
 
@@ -14,8 +14,8 @@ ifndef PROTOC_GEN_GO
 endif
 	@echo "Generating Go code from proto files..."
 	@for file in $(PROTO_FILES); do \
-		$(PROTOC) -I=apps/shared/proto \
-			--go_out=paths=source_relative:apps/shared/proto \
+		$(PROTOC) -I=internal/proto \
+			--go_out=paths=source_relative:internal/proto \
 			$$file || exit 1; \
 	done
 
@@ -26,12 +26,17 @@ clean:
 
 
 
-# Building docker images
-docker-coordinator:
-	docker build -t edgegrid/coordinator:latest -f ./apps/coordinator/Dockerfile ./apps
+# Building local binary
+build:
+	GOTOOLCHAIN=local go build -o edgegrid ./cmd/edgegrid
 
-docker-worker:
-	docker build -t edgegrid/worker:latest -f ./apps/worker/Dockerfile ./apps
+# Running local binary
+run: build
+	./edgegrid
+
+# Building docker images
+docker-build:
+	docker build -t edgegrid:latest .
 
 
 # Running docker compose
