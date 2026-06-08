@@ -4,7 +4,7 @@ PROTOC_GEN_GO     := $(shell which protoc-gen-go)
 PROTO_DIR         := apps/shared/proto
 PROTO_FILES       := $(shell find $(PROTO_DIR) -name '*.proto')
 
-.PHONY: all clean proto
+.PHONY: all clean proto docker-coordinator docker-worker run-compose
 
 all: proto
 
@@ -27,14 +27,14 @@ clean:
 
 
 # Building docker images
-docker-build-coordinator:
+docker-coordinator:
 	docker build -t edgegrid/coordinator:latest -f ./apps/coordinator/Dockerfile ./apps
 
-docker-build-worker:
+docker-worker:
 	docker build -t edgegrid/worker:latest -f ./apps/worker/Dockerfile ./apps
 
 
 # Running docker compose
-Run-Compose:
+run-compose:
 	cd docker-compose && docker compose up
 

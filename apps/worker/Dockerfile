@@ -24,17 +24,9 @@ RUN go build -o /app/worker/worker ./cmd
 # ------------------------------
 FROM golang:1.24-alpine
 
-# Install Docker CLI + BuildKit plugin + git + bash
-RUN apk add --no-cache docker-cli docker-cli-buildx git bash
-
 # Copy worker binary
 COPY --from=builder /app/worker/worker /worker
 
-# Copy scripts
-COPY worker/scripts/ /app/scripts/
-RUN chmod +x /app/scripts/build.sh
-
 WORKDIR /app
-EXPOSE 6000
 
 CMD ["/worker"]
