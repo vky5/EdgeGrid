@@ -22,15 +22,9 @@ type WorkerBroker struct {
 	Executor JobExecutor
 }
 
-func NewWorkerBroker(natsURL string, exec JobExecutor) (*WorkerBroker, error) {
-	nc, err := nats.Connect(natsURL)
-	if err != nil {
-		return nil, err
-	}
-
+func NewWorkerBrokerWithConn(nc *nats.Conn, exec JobExecutor) (*WorkerBroker, error) {
 	js, err := nc.JetStream()
 	if err != nil {
-		nc.Close()
 		return nil, err
 	}
 
@@ -42,9 +36,7 @@ func NewWorkerBroker(natsURL string, exec JobExecutor) (*WorkerBroker, error) {
 }
 
 func (wb *WorkerBroker) Close() {
-	if wb.Conn != nil {
-		wb.Conn.Close()
-	}
+	// Connection lifecycle managed externally (P2P Agent)
 }
 
 func (wb *WorkerBroker) RegisterWorker(id string, models []string) error {

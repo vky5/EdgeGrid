@@ -14,15 +14,9 @@ type JetStreamBroker struct {
 	JS   nats.JetStreamContext
 }
 
-func NewBroker(natsURL string) (*JetStreamBroker, error) {
-	nc, err := nats.Connect(natsURL)
-	if err != nil {
-		return nil, err
-	}
-
+func NewBrokerWithConn(nc *nats.Conn) (*JetStreamBroker, error) {
 	js, err := nc.JetStream()
 	if err != nil {
-		nc.Close()
 		return nil, err
 	}
 
@@ -44,7 +38,6 @@ func NewBroker(natsURL string) (*JetStreamBroker, error) {
 			Subjects: subjects,
 		})
 		if err != nil {
-			nc.Close()
 			return nil, err
 		}
 		log.Printf("📥 JetStream Stream '%s' created successfully.", streamName)
@@ -68,9 +61,7 @@ func NewBroker(natsURL string) (*JetStreamBroker, error) {
 }
 
 func (b *JetStreamBroker) Close() {
-	if b.Conn != nil {
-		b.Conn.Close()
-	}
+	// Connection lifecycle managed externally (P2P Agent)
 }
 
 // PublishJob publishes a JobRequest to NATS JetStream under the subject jobs.build.<modelName>

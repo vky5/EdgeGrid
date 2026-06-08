@@ -12,8 +12,9 @@ services:
     restart: unless-stopped
 
   coordinator:
-    image: edgegrid/coordinator:latest
+    image: edgegrid:latest
     container_name: edgegrid_coordinator
+    command: ["/edgegrid", "-server"]
     ports:
       - "8080:8080"
     environment:
@@ -26,8 +27,9 @@ services:
     restart: unless-stopped
 
   worker-1:
-    image: edgegrid/worker:latest
+    image: edgegrid:latest
     container_name: edgegrid_worker_1
+    command: ["/edgegrid", "-client"]
     env_file:
       - .env.worker1
     depends_on:
@@ -37,8 +39,9 @@ services:
     restart: unless-stopped
 
   worker-2:
-    image: edgegrid/worker:latest
+    image: edgegrid:latest
     container_name: edgegrid_worker_2
+    command: ["/edgegrid", "-client"]
     env_file:
       - .env.worker2
     depends_on:
@@ -48,8 +51,9 @@ services:
     restart: unless-stopped
 
   worker-3:
-    image: edgegrid/worker:latest
+    image: edgegrid:latest
     container_name: edgegrid_worker_3
+    command: ["/edgegrid", "-client"]
     env_file:
       - .env.worker3
     depends_on:
@@ -59,8 +63,9 @@ services:
     restart: unless-stopped
 
   worker-4:
-    image: edgegrid/worker:latest
+    image: edgegrid:latest
     container_name: edgegrid_worker_4
+    command: ["/edgegrid", "-client"]
     env_file:
       - .env.worker4
     depends_on:
@@ -70,8 +75,9 @@ services:
     restart: unless-stopped
 
   worker-5:
-    image: edgegrid/worker:latest
+    image: edgegrid:latest
     container_name: edgegrid_worker_5
+    command: ["/edgegrid", "-client"]
     env_file:
       - .env.worker5
     depends_on:

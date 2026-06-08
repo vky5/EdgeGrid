@@ -8,6 +8,7 @@ import (
 
 	"github.com/edgegrid/edgegrid/internal/coordinator/broker"
 	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
+	"github.com/nats-io/nats.go"
 )
 
 type Coordinator struct {
@@ -15,8 +16,8 @@ type Coordinator struct {
 	manager  *workerman.WorkerManager
 }
 
-func NewCoordinator(natsURL string) (*Coordinator, error) {
-	jsBroker, err := broker.NewBroker(natsURL)
+func NewCoordinatorWithConn(nc *nats.Conn) (*Coordinator, error) {
+	jsBroker, err := broker.NewBrokerWithConn(nc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize NATS JetStream: %w", err)
 	}

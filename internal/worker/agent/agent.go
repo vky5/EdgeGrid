@@ -7,58 +7,36 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/edgegrid/edgegrid/internal/worker/broker"
 	"github.com/edgegrid/edgegrid/internal/worker/executor"
+	"github.com/nats-io/nats.go"
 )
 
 // Agent coordinates the worker NATS broker client and the local executor
 type Agent struct {
 	id       string
-	natsURL  string
 	models   []string
 	broker   *broker.WorkerBroker
 	executor *executor.EmbeddingExecutor
 }
 
-// NewAgent reads environment configuration and instantiates the agent's dependencies
-func NewAgent() (*Agent, error) {
-	// 1. Fetch NATS url configuration
-	natsURL := os.Getenv("NATS_URL")
-	if natsURL == "" {
-		natsURL = "nats://localhost:4222"
+// NewAgentWithConn instantiates the agent's dependencies using a shared NATS connection
+func NewAgentWithConn(nc *nats.Conn, supportedModels []string, workerID string) (*Agent, error) {
+	if workerID == "" {
+		workerID = generateWorkerID()
 	}
 
-	// 2. Parse supported models
-	modelsEnv := os.Getenv("SUPPORTED_MODELS")
-	var supportedModels []string
-	if modelsEnv != "" {
-		for _, m := range strings.Split(modelsEnv, ",") {
-			m = strings.TrimSpace(m)
-			if m != "" {
-				supportedModels = append(supportedModels, m)
-			}
-		}
-	}
-	if len(supportedModels) == 0 {
-		supportedModels = []string{"all-minilm"}
-	}
-
-	// 3. Generate worker identifier
-	workerID := generateWorkerID()
-
-	// 4. Initialize executor and broker
+	// Initialize executor and broker using shared connection
 	exec := executor.NewEmbeddingExecutor()
-	wb, err := broker.NewWorkerBroker(natsURL, exec)
+	wb, err := broker.NewWorkerBrokerWithConn(nc, exec)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect NATS: %w", err)
+		return nil, fmt.Errorf("failed to initialize worker broker: %w", err)
 	}
 
 	return &Agent{
 		id:       workerID,
-		natsURL:  natsURL,
 		models:   supportedModels,
 		broker:   wb,
 		executor: exec,
