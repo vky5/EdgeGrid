@@ -7,7 +7,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/edgegrid/edgegrid/internal/coordinator/broker"
+	"github.com/edgegrid/edgegrid/internal/broker"
 	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
 )
 
@@ -27,7 +27,7 @@ func generateJobID() string {
 	return hex.EncodeToString(b)
 }
 
-func StartHTTPServer(addr string, jsBroker *broker.JetStreamBroker) {
+func StartHTTPServer(addr string, jsBroker *broker.Broker) {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/jobs", func(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +54,8 @@ func StartHTTPServer(addr string, jsBroker *broker.JetStreamBroker) {
 			InputText: req.InputText,
 		}
 
-		if err := jsBroker.PublishJob(req.ModelName, jobReq); err != nil {
+		subject := broker.SubjectJobsPrefix + req.ModelName
+		if err := jsBroker.PublishProto(subject, jobReq); err != nil {
 			log.Printf("❌ Failed to publish job: %v", err)
 			http.Error(w, "Failed to publish job to stream", http.StatusInternalServerError)
 			return

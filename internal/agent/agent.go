@@ -14,8 +14,8 @@ import (
 type Agent struct {
 	cfg         *config.Config
 	natsConn    *nats.Conn
-	coordinator *coordinator.Coordinator
-	worker      *workeragent.Agent
+	coordinator *coordinator.Coordinator // coordinator object (can be nil if not loaded)
+	worker      *workeragent.Agent // worker agent object (can be nil if not loaded)
 }
 
 func NewAgent(cfg *config.Config) (*Agent, error) {

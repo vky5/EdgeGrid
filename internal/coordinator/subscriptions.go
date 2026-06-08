@@ -1,28 +1,26 @@
-package broker
+package coordinator
 
 import (
 	"context"
 	"log"
 
+	"github.com/edgegrid/edgegrid/internal/broker"
+	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
-
-	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
-	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 )
 
 // SubscribeToWorkerEvents consumes registration and heartbeat events from NATS
-func (b *JetStreamBroker) SubscribeToWorkerEvents(ctx context.Context, wm *workerman.WorkerManager) error {
+func (c *Coordinator) SubscribeToWorkerEvents(ctx context.Context) error {
 	// Subscribe to registration events
-	_, err := b.JS.Subscribe("workers.register", func(msg *nats.Msg) {
+	_, err := c.jsBroker.JS.Subscribe(broker.SubjectRegister, func(msg *nats.Msg) {
 		var info workerpb.WorkerInfo
 		if err := proto.Unmarshal(msg.Data, &info); err != nil {
 			log.Printf("❌ Failed to unmarshal worker registration payload: %v", err)
 			return
 		}
 
-		// Use the register method in our manager
-		err := wm.RegisterWorker(ctx, &info)
+		err := c.manager.RegisterWorker(ctx, &info)
 		if err != nil {
 			log.Printf("❌ Failed to register worker via NATS: %v", err)
 			return
@@ -34,15 +32,14 @@ func (b *JetStreamBroker) SubscribeToWorkerEvents(ctx context.Context, wm *worke
 	}
 
 	// Subscribe to heartbeat events
-	_, err = b.JS.Subscribe("workers.heartbeat", func(msg *nats.Msg) {
+	_, err = c.jsBroker.JS.Subscribe(broker.SubjectHeartbeat, func(msg *nats.Msg) {
 		var req workerpb.PingRequest
 		if err := proto.Unmarshal(msg.Data, &req); err != nil {
 			log.Printf("❌ Failed to unmarshal heartbeat payload: %v", err)
 			return
 		}
 
-		// Update worker state in the manager
-		wm.SetWorkerState(req.Id, req.Status)
+		c.manager.SetWorkerState(req.Id, req.Status)
 		msg.Ack()
 	}, nats.ManualAck())
 	if err != nil {
@@ -54,8 +51,8 @@ func (b *JetStreamBroker) SubscribeToWorkerEvents(ctx context.Context, wm *worke
 }
 
 // SubscribeToResults consumes completed job responses from workers
-func (b *JetStreamBroker) SubscribeToResults(ctx context.Context) error {
-	_, err := b.JS.Subscribe("jobs.results", func(msg *nats.Msg) {
+func (c *Coordinator) SubscribeToResults(ctx context.Context) error {
+	_, err := c.jsBroker.JS.Subscribe(broker.SubjectResults, func(msg *nats.Msg) {
 		var resp workerpb.JobResponse
 		if err := proto.Unmarshal(msg.Data, &resp); err != nil {
 			log.Printf("❌ Failed to unmarshal job response: %v", err)

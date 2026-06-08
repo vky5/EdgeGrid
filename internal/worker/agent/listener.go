@@ -1,21 +1,58 @@
-package broker
+package agent
 
 import (
 	"context"
 	"log"
 	"time"
 
+	"github.com/edgegrid/edgegrid/internal/broker"
+	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
-
-	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
 )
 
+// RegisterWorker registers the worker capabilities with the Coordinator
+func (a *Agent) RegisterWorker() error {
+	info := &workerpb.WorkerInfo{
+		Id:             a.id,
+		SupportedModel: a.models,
+	}
+
+	err := a.broker.PublishProto(broker.SubjectRegister, info)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// StartHeartbeat sends periodic ping status updates to NATS
+func (a *Agent) StartHeartbeat(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			req := &workerpb.PingRequest{
+				Id:     a.id,
+				Status: "free",
+			}
+
+			err := a.broker.PublishProto(broker.SubjectHeartbeat, req)
+			if err != nil {
+				log.Printf("❌ Failed to publish heartbeat: %v", err)
+			}
+		}
+	}
+}
+
 // StartJobListener pulls jobs from the model stream and executes them
-func (wb *WorkerBroker) StartJobListener(ctx context.Context, workerID string, model string) {
-	subject := "jobs.build." + model
-	durableConsumer := "consumer-" + model // pointer on NATS side to track worker progress
-	sub, err := wb.JS.PullSubscribe(
+func (a *Agent) StartJobListener(ctx context.Context, model string) {
+	subject := broker.SubjectJobsPrefix + model
+	durableConsumer := "consumer-" + model
+	sub, err := a.broker.JS.PullSubscribe(
 		subject,
 		durableConsumer,
 		nats.ManualAck(),
@@ -32,8 +69,7 @@ func (wb *WorkerBroker) StartJobListener(ctx context.Context, workerID string, m
 		case <-ctx.Done():
 			return
 		default:
-			// Fetch 1 message, wait up to 5 seconds
-			msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second)) // wait for NATS for 5 sec to send a msg
+			msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
 			if err != nil {
 				if err == nats.ErrTimeout {
 					continue
@@ -47,15 +83,13 @@ func (wb *WorkerBroker) StartJobListener(ctx context.Context, workerID string, m
 				continue
 			}
 
-			// Process the retrieved job in an isolated helper function
-			wb.handleJob(msgs[0], workerID)
+			a.handleJob(msgs[0])
 		}
 	}
 }
 
-// handleJob processes a single job request. Isolating this logic prevents
-// defer resource leaks, allows panic recovery, and improves unit testability.
-func (wb *WorkerBroker) handleJob(msg *nats.Msg, workerID string) {
+// handleJob processes a single job request
+func (a *Agent) handleJob(msg *nats.Msg) {
 	// 1. Recover from panics to keep the worker listener alive
 	defer func() {
 		if r := recover(); r != nil {
@@ -68,14 +102,14 @@ func (wb *WorkerBroker) handleJob(msg *nats.Msg, workerID string) {
 	var req workerpb.JobRequest
 	if err := proto.Unmarshal(msg.Data, &req); err != nil {
 		log.Printf("❌ Failed to unmarshal JobRequest: %v", err)
-		msg.Term() // terminate message so it is not redelivered (poison pill)
+		msg.Term()
 		return
 	}
 
 	log.Printf("📥 Received job %s for model %s. Processing...", req.JobId, req.ModelName)
 
 	// 3. Process the job: delegate to the executor
-	embeddingResult, err := wb.Executor.Execute(context.Background(), req.ModelName, req.InputText)
+	embeddingResult, err := a.executor.Execute(context.Background(), req.ModelName, req.InputText)
 	if err != nil {
 		log.Printf("❌ Job execution failed: %v", err)
 		msg.Nak()
@@ -87,18 +121,11 @@ func (wb *WorkerBroker) handleJob(msg *nats.Msg, workerID string) {
 		JobId:     req.JobId,
 		Success:   true,
 		Embedding: embeddingResult,
-		WorkerId:  workerID,
-	}
-
-	respData, err := proto.Marshal(resp)
-	if err != nil {
-		log.Printf("❌ Failed to marshal JobResponse: %v", err)
-		msg.Nak()
-		return
+		WorkerId:  a.id,
 	}
 
 	// 5. Publish result back to NATS results queue
-	_, err = wb.JS.Publish("jobs.results", respData)
+	err = a.broker.PublishProto(broker.SubjectResults, resp)
 	if err != nil {
 		log.Printf("❌ Failed to publish result: %v", err)
 		msg.Nak()

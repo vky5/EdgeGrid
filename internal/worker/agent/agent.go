@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/edgegrid/edgegrid/internal/worker/broker"
+	"github.com/edgegrid/edgegrid/internal/broker"
 	"github.com/edgegrid/edgegrid/internal/worker/executor"
 	"github.com/nats-io/nats.go"
 )
@@ -18,7 +18,7 @@ import (
 type Agent struct {
 	id       string
 	models   []string
-	broker   *broker.WorkerBroker
+	broker   *broker.Broker
 	executor *executor.EmbeddingExecutor
 }
 
@@ -28,11 +28,11 @@ func NewAgentWithConn(nc *nats.Conn, supportedModels []string, workerID string) 
 		workerID = generateWorkerID()
 	}
 
-	// Initialize executor and broker using shared connection
+	// Initialize executor and shared broker
 	exec := executor.NewEmbeddingExecutor()
-	wb, err := broker.NewWorkerBrokerWithConn(nc, exec)
+	wb, err := broker.NewBroker(nc)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize worker broker: %w", err)
+		return nil, fmt.Errorf("failed to initialize shared broker: %w", err)
 	}
 
 	return &Agent{
@@ -46,29 +46,27 @@ func NewAgentWithConn(nc *nats.Conn, supportedModels []string, workerID string) 
 // Start registers the worker, triggers the heartbeat routine, and begins job pulling
 func (a *Agent) Start(ctx context.Context) error {
 	// Register worker capabilities with Coordinator
-	err := a.broker.RegisterWorker(a.id, a.models)
+	err := a.RegisterWorker()
 	if err != nil {
 		return fmt.Errorf("registration failed: %w", err)
 	}
 	log.Printf("✅ Registered with Coordinator over NATS. ID: %s, Models: %v", a.id, a.models)
 
 	// Spawn heartbeat goroutine
-	go a.broker.StartHeartbeat(ctx, a.id, 10*time.Second)
+	go a.StartHeartbeat(ctx, 10*time.Second)
 	log.Println("💓 Started heartbeat routine")
 
 	// Start pull listeners for compatible model subjects
 	for _, model := range a.models {
-		go a.broker.StartJobListener(ctx, a.id, model)
+		go a.StartJobListener(ctx, model)
 	}
 
 	return nil
 }
 
-// Close gracefully releases connections
+// Close gracefully releases resources
 func (a *Agent) Close() {
-	if a.broker != nil {
-		a.broker.Close()
-	}
+	// Shared connection closed by parent Agent
 }
 
 // generateWorkerID creates a unique worker ID using hostname, timestamp, and random bytes
