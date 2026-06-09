@@ -1,4 +1,4 @@
-package agent
+package worker
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 )
 
 // RegisterWorker registers the worker capabilities with the Coordinator
-func (a *Agent) RegisterWorker() error {
+func (a *Worker) RegisterWorker() error {
 	info := &workerpb.WorkerInfo{
 		Id:             a.id,
 		SupportedModel: a.models,
@@ -26,7 +26,7 @@ func (a *Agent) RegisterWorker() error {
 }
 
 // StartHeartbeat sends periodic ping status updates to NATS
-func (a *Agent) StartHeartbeat(ctx context.Context, interval time.Duration) {
+func (a *Worker) StartHeartbeat(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -49,7 +49,7 @@ func (a *Agent) StartHeartbeat(ctx context.Context, interval time.Duration) {
 }
 
 // StartJobListener pulls jobs from the model stream and executes them
-func (a *Agent) StartJobListener(ctx context.Context, model string) {
+func (a *Worker) StartJobListener(ctx context.Context, model string) {
 	subject := broker.SubjectJobsPrefix + model
 	durableConsumer := "consumer-" + model
 	sub, err := a.broker.JS.PullSubscribe(
@@ -89,7 +89,7 @@ func (a *Agent) StartJobListener(ctx context.Context, model string) {
 }
 
 // handleJob processes a single job request
-func (a *Agent) handleJob(msg *nats.Msg) {
+func (a *Worker) handleJob(msg *nats.Msg) {
 	// 1. Recover from panics to keep the worker listener alive
 	defer func() {
 		if r := recover(); r != nil {

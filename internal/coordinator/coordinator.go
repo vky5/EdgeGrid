@@ -57,7 +57,3 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 	log.Println("👋 Shutting down coordinator gracefully...")
 	return nil
 }
-
-func (c *Coordinator) Close() {
-	// Shared connection closed by parent Agent
-}

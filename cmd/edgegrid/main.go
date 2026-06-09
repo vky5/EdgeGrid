@@ -16,7 +16,7 @@ func main() {
 	// 1. Load dotenv file optionally
 	if err := godotenv.Load(); err != nil {
 		// It's fine if there's no .env file
-		log.Println("ℹ️ No .env file found; using system environment variables.")
+		log.Println("No .env file found; using system environment variables.")
 	}
 
 	// 2. Parse configuration from flags/environment
