@@ -1,28 +1,21 @@
-# Builder image
 FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
-# Copy go.mod and go.sum
 COPY go.mod go.sum ./
-
-# Download dependencies
 RUN go mod download
 
-# Copy the source code
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 
-# Build binary
-RUN go build -o /app/edgegrid ./cmd/edgegrid
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /app/edgegrid ./cmd/edgegrid
 
-# Final minimal image
-FROM golang:1.24-alpine
+FROM alpine:3.21
 
-# Copy binary from builder
+RUN adduser -D -H -u 10001 edgegrid
 COPY --from=builder /app/edgegrid /edgegrid
 
-# Expose Coordinator HTTP API Port
+USER edgegrid
 EXPOSE 8080
 
-CMD ["/edgegrid"]
+ENTRYPOINT ["/edgegrid"]

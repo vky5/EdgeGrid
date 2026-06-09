@@ -1,12 +1,15 @@
-PROTOC            := protoc
-PROTOC_GEN_GO     := $(shell which protoc-gen-go)
+PROTOC        := protoc
+PROTOC_GEN_GO := $(shell which protoc-gen-go)
 
-PROTO_DIR         := internal/proto
-PROTO_FILES       := $(shell find $(PROTO_DIR) -name '*.proto')
+PROTO_DIR    := internal/proto
+PROTO_FILES  := $(shell find $(PROTO_DIR) -name '*.proto')
+BINARY       := edgegrid
+IMAGE        := edgegrid:latest
+COMPOSE_FILE := docker-compose/docker-compose.yml
 
-.PHONY: all clean proto build run docker-build run-compose
+.PHONY: all proto clean build run test docker-build compose-config compose-up compose-down compose-logs compose-ps run-compose
 
-all: proto
+all: proto test build
 
 proto:
 ifndef PROTOC_GEN_GO
@@ -22,24 +25,33 @@ endif
 clean:
 	@echo "Cleaning generated files..."
 	@find $(PROTO_DIR) -name "*.pb.go" -type f -delete
+	@rm -f $(BINARY)
 
-
-
-
-# Building local binary
 build:
-	GOTOOLCHAIN=local go build -o edgegrid ./cmd/edgegrid
+	go build -o $(BINARY) ./cmd/edgegrid
 
-# Running local binary
 run: build
-	./edgegrid
+	./$(BINARY)
 
-# Building docker images
+test:
+	go test ./...
+
 docker-build:
-	docker build -t edgegrid:latest .
+	docker build -t $(IMAGE) .
 
+compose-config:
+	docker compose -f $(COMPOSE_FILE) config
 
-# Running docker compose
-run-compose:
-	cd docker-compose && docker compose up
+compose-up:
+	docker compose -f $(COMPOSE_FILE) up --build
 
+compose-down:
+	docker compose -f $(COMPOSE_FILE) down
+
+compose-logs:
+	docker compose -f $(COMPOSE_FILE) logs -f
+
+compose-ps:
+	docker compose -f $(COMPOSE_FILE) ps
+
+run-compose: compose-up

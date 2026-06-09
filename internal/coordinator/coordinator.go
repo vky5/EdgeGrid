@@ -30,6 +30,10 @@ func NewCoordinatorWithConn(nc *nats.Conn) (*Coordinator, error) {
 	}, nil
 }
 
+func (c *Coordinator) EnsureStream() error {
+	return c.jsBroker.EnsureStream()
+}
+
 func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 	log.Println("🔄 Starting coordinator")
 

@@ -1,87 +1,122 @@
 services:
-
   nats:
-    image: nats:latest
+    image: nats:2-alpine
     container_name: edgegrid_nats
     ports:
       - "4222:4222"
       - "8222:8222"
-    command: "-js"
+    command: ["-js", "-m", "8222"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     networks:
       - edgegrid-net
     restart: unless-stopped
 
   coordinator:
+    build:
+      context: ..
+      dockerfile: Dockerfile
     image: edgegrid:latest
     container_name: edgegrid_coordinator
-    command: ["/edgegrid", "-server"]
+    command: ["-server", "-client"]
     ports:
       - "8080:8080"
     environment:
       - NATS_URL=nats://nats:4222
       - PORT=8080
+      - SUPPORTED_MODELS=coordinator-local
+      - WORKER_ID=worker-coordinator-6
     depends_on:
-      - nats
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     networks:
       - edgegrid-net
     restart: unless-stopped
 
   worker-1:
+    build:
+      context: ..
+      dockerfile: Dockerfile
     image: edgegrid:latest
     container_name: edgegrid_worker_1
-    command: ["/edgegrid", "-client"]
+    command: ["-client"]
     env_file:
       - .env.worker1
     depends_on:
-      - coordinator
+      coordinator:
+        condition: service_healthy
     networks:
       - edgegrid-net
     restart: unless-stopped
 
   worker-2:
+    build:
+      context: ..
+      dockerfile: Dockerfile
     image: edgegrid:latest
     container_name: edgegrid_worker_2
-    command: ["/edgegrid", "-client"]
+    command: ["-client"]
     env_file:
       - .env.worker2
     depends_on:
-      - coordinator
+      coordinator:
+        condition: service_healthy
     networks:
       - edgegrid-net
     restart: unless-stopped
 
   worker-3:
+    build:
+      context: ..
+      dockerfile: Dockerfile
     image: edgegrid:latest
     container_name: edgegrid_worker_3
-    command: ["/edgegrid", "-client"]
+    command: ["-client"]
     env_file:
       - .env.worker3
     depends_on:
-      - coordinator
+      coordinator:
+        condition: service_healthy
     networks:
       - edgegrid-net
     restart: unless-stopped
 
   worker-4:
+    build:
+      context: ..
+      dockerfile: Dockerfile
     image: edgegrid:latest
     container_name: edgegrid_worker_4
-    command: ["/edgegrid", "-client"]
+    command: ["-client"]
     env_file:
       - .env.worker4
     depends_on:
-      - coordinator
+      coordinator:
+        condition: service_healthy
     networks:
       - edgegrid-net
     restart: unless-stopped
 
   worker-5:
+    build:
+      context: ..
+      dockerfile: Dockerfile
     image: edgegrid:latest
     container_name: edgegrid_worker_5
-    command: ["/edgegrid", "-client"]
+    command: ["-client"]
     env_file:
       - .env.worker5
     depends_on:
-      - coordinator
+      coordinator:
+        condition: service_healthy
     networks:
       - edgegrid-net
     restart: unless-stopped

@@ -1,0 +1,4 @@
+.git
+.cache
+edgegrid
+docker-compose/.env.*

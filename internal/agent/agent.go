@@ -32,6 +32,10 @@ func NewAgent(cfg *config.Config) (*Agent, error) {
 			nc.Close()
 			return nil, fmt.Errorf("failed to initialize coordinator: %w", err)
 		}
+		if err := coord.EnsureStream(); err != nil {
+			nc.Close()
+			return nil, fmt.Errorf("failed to initialize coordinator stream: %w", err)
+		}
 	}
 
 	var workerAgent *worker.Worker
