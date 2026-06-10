@@ -14,7 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Worker coordinates the worker NATS broker client and the local executor
+// Worker coordinates the NATS client and local executor.
 type Worker struct {
 	id       string
 	models   []string
@@ -22,13 +22,12 @@ type Worker struct {
 	executor *executor.EmbeddingExecutor
 }
 
-// NewWorkerWithConn instantiates the worker's dependencies using a shared NATS connection
+// NewWorkerWithConn creates a worker with a shared NATS connection.
 func NewWorkerWithConn(nc *nats.Conn, supportedModels []string, workerID string) (*Worker, error) {
 	if workerID == "" {
 		workerID = generateWorkerID()
 	}
 
-	// Initialize executor and shared broker
 	exec := executor.NewEmbeddingExecutor()
 	wb, err := broker.NewBroker(nc)
 	if err != nil {
@@ -43,20 +42,17 @@ func NewWorkerWithConn(nc *nats.Conn, supportedModels []string, workerID string)
 	}, nil
 }
 
-// Start registers the worker, triggers the heartbeat routine, and begins job pulling
+// Start registers the worker and starts background listeners.
 func (w *Worker) Start(ctx context.Context) error {
-	// Register worker capabilities with Coordinator
 	err := w.RegisterWorker()
 	if err != nil {
 		return fmt.Errorf("registration failed: %w", err)
 	}
-	log.Printf("✅ Registered with Coordinator over NATS. ID: %s, Models: %v", w.id, w.models)
+	log.Printf("registered worker %s with models %v", w.id, w.models)
 
-	// Spawn heartbeat goroutine
 	go w.StartHeartbeat(ctx, 10*time.Second)
-	log.Println("💓 Started heartbeat routine")
+	log.Println("started heartbeat routine")
 
-	// Start pull listeners for compatible model subjects
 	for _, model := range w.models {
 		go w.StartJobListener(ctx, model)
 	}
@@ -64,7 +60,7 @@ func (w *Worker) Start(ctx context.Context) error {
 	return nil
 }
 
-// generateWorkerID creates a unique worker ID using hostname, timestamp, and random bytes
+// generateWorkerID creates a unique worker ID.
 func generateWorkerID() string {
 	workerID := os.Getenv("WORKER_ID")
 	if workerID != "" {

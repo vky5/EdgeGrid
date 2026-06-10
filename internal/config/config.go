@@ -14,7 +14,7 @@ type Config struct {
 
 type ServerConfig struct {
 	Enabled bool
-	Port    string // on which API is listening to
+	Port    string
 }
 
 type ClientConfig struct {
@@ -35,7 +35,7 @@ func LoadConfig() *Config {
 
 	runServer := *roleServer
 	runClient := *roleClient
-	if !runServer && !runClient { // default config of running both if not specified
+	if !runServer && !runClient {
 		runServer = true
 		runClient = true
 	}

@@ -1,5 +1,3 @@
-// actually we need this func for the gRPC only but we are gonna separate this incase we need to call this logic from somewhere elsee
-
 package workerman
 
 import (
@@ -20,8 +18,7 @@ func (wm *WorkerManager) RegisterWorker(ctx context.Context, info *workerpb.Work
 	}
 	wm.mu.Unlock()
 
-	log.Printf("✅ New Worker registered with ID: %s, Supported Models: %v", info.Id, info.SupportedModel)
+	log.Printf("registered worker %s with models %v", info.Id, info.SupportedModel)
 
 	return nil
 }
-

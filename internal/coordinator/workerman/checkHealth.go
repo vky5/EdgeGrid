@@ -1,6 +1,3 @@
-// this will handle checking the health of the workers.
-// Currently stubbed out as we move to a passive heartbeat model.
-
 package workerman
 
 import (
@@ -16,11 +13,9 @@ func (wm *WorkerManager) StartHealthChecker(ctx context.Context, interval time.D
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Health checker stopped.")
+			log.Println("health checker stopped")
 			return
 		case <-ticker.C:
-			// Stubbed out for now.
 		}
 	}
 }
-

@@ -65,7 +65,7 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker) {
 
 		subject := broker.SubjectJobsPrefix + req.ModelName
 		if err := jsBroker.PublishProto(subject, jobReq); err != nil {
-			log.Printf("❌ Failed to publish job: %v", err)
+			log.Printf("failed to publish job: %v", err)
 			http.Error(w, "Failed to publish job to stream", http.StatusInternalServerError)
 			return
 		}
@@ -78,8 +78,8 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker) {
 		})
 	})
 
-	log.Printf("🚀 Starting HTTP job submission API on %s", addr)
+	log.Printf("starting HTTP job API on %s", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("❌ HTTP server failed: %v", err)
+		log.Fatalf("HTTP server failed: %v", err)
 	}
 }

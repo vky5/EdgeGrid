@@ -4,7 +4,7 @@
 
 ---
 
-## 💡 Architecture
+## Architecture
 
 EdgeGrid is fully event-driven, operating without public ports or inbound listeners on workers. 
 
@@ -22,7 +22,7 @@ EdgeGrid is fully event-driven, operating without public ports or inbound listen
 
 ---
 
-## 🛠️ Core Components
+## Core Components
 
 | Component | Responsibility |
 | :--- | :--- |
@@ -32,7 +32,7 @@ EdgeGrid is fully event-driven, operating without public ports or inbound listen
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
@@ -63,7 +63,7 @@ EdgeGrid is fully event-driven, operating without public ports or inbound listen
 
 ---
 
-## 🔄 End-to-End Workflow Test
+## End-to-End Workflow Test
 
 To test the system locally:
 

@@ -11,7 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// RegisterWorker registers the worker capabilities with the Coordinator
+// RegisterWorker publishes the worker capabilities.
 func (a *Worker) RegisterWorker() error {
 	info := &workerpb.WorkerInfo{
 		Id:             a.id,
@@ -25,7 +25,7 @@ func (a *Worker) RegisterWorker() error {
 	return nil
 }
 
-// StartHeartbeat sends periodic ping status updates to NATS
+// StartHeartbeat sends periodic worker status updates.
 func (a *Worker) StartHeartbeat(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -42,13 +42,13 @@ func (a *Worker) StartHeartbeat(ctx context.Context, interval time.Duration) {
 
 			err := a.broker.PublishProto(broker.SubjectHeartbeat, req)
 			if err != nil {
-				log.Printf("❌ Failed to publish heartbeat: %v", err)
+				log.Printf("failed to publish heartbeat: %v", err)
 			}
 		}
 	}
 }
 
-// StartJobListener pulls jobs from the model stream and executes them
+// StartJobListener pulls and executes jobs for one model.
 func (a *Worker) StartJobListener(ctx context.Context, model string) {
 	subject := broker.SubjectJobsPrefix + model
 	durableConsumer := "consumer-" + model
@@ -58,11 +58,11 @@ func (a *Worker) StartJobListener(ctx context.Context, model string) {
 		nats.ManualAck(),
 	)
 	if err != nil {
-		log.Printf("❌ Failed to subscribe to subject %s: %v", subject, err)
+		log.Printf("failed to subscribe to subject %s: %v", subject, err)
 		return
 	}
 
-	log.Printf("👂 Listening for jobs on %s (Durable: %s)", subject, durableConsumer)
+	log.Printf("listening for jobs on %s with durable consumer %s", subject, durableConsumer)
 
 	for {
 		select {
@@ -74,7 +74,7 @@ func (a *Worker) StartJobListener(ctx context.Context, model string) {
 				if err == nats.ErrTimeout {
 					continue
 				}
-				log.Printf("❌ Error fetching message on %s: %v", subject, err)
+				log.Printf("error fetching message on %s: %v", subject, err)
 				time.Sleep(1 * time.Second)
 				continue
 			}
@@ -88,35 +88,31 @@ func (a *Worker) StartJobListener(ctx context.Context, model string) {
 	}
 }
 
-// handleJob processes a single job request
+// handleJob processes one job request.
 func (a *Worker) handleJob(msg *nats.Msg) {
-	// 1. Recover from panics to keep the worker listener alive
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("🔥 Panic recovered while processing job: %v", r)
+			log.Printf("recovered panic while processing job: %v", r)
 			msg.Nak()
 		}
 	}()
 
-	// 2. Decode the incoming protobuf payload
 	var req workerpb.JobRequest
 	if err := proto.Unmarshal(msg.Data, &req); err != nil {
-		log.Printf("❌ Failed to unmarshal JobRequest: %v", err)
+		log.Printf("failed to unmarshal job request: %v", err)
 		msg.Term()
 		return
 	}
 
-	log.Printf("📥 Received job %s for model %s. Processing...", req.JobId, req.ModelName)
+	log.Printf("received job %s for model %s", req.JobId, req.ModelName)
 
-	// 3. Process the job: delegate to the executor
 	embeddingResult, err := a.executor.Execute(context.Background(), req.ModelName, req.InputText)
 	if err != nil {
-		log.Printf("❌ Job execution failed: %v", err)
+		log.Printf("job execution failed: %v", err)
 		msg.Nak()
 		return
 	}
 
-	// 4. Construct JobResponse
 	resp := &workerpb.JobResponse{
 		JobId:     req.JobId,
 		Success:   true,
@@ -124,17 +120,15 @@ func (a *Worker) handleJob(msg *nats.Msg) {
 		WorkerId:  a.id,
 	}
 
-	// 5. Publish result back to NATS results queue
 	err = a.broker.PublishProto(broker.SubjectResults, resp)
 	if err != nil {
-		log.Printf("❌ Failed to publish result: %v", err)
+		log.Printf("failed to publish job result: %v", err)
 		msg.Nak()
 		return
 	}
 
-	// 6. Acknowledge completed work
 	if err := msg.Ack(); err != nil {
-		log.Printf("⚠️ Failed to ack message: %v", err)
+		log.Printf("failed to ack message: %v", err)
 	}
-	log.Printf("✅ Successfully processed job %s and published embeddings", req.JobId)
+	log.Printf("processed job %s", req.JobId)
 }

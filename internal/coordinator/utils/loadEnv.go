@@ -1,5 +1,3 @@
-// to load the env files in the entire code
-
 package utils
 
 import (
@@ -8,6 +6,5 @@ import (
 
 func EnvInit(fileName string) error {
 	err := godotenv.Load(fileName)
-	return FailedOnError("Env Variables", err, "Failed to load env variables")
-
+	return FailedOnError("env", err, "failed to load environment variables")
 }

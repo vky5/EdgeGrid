@@ -4,20 +4,16 @@ import (
 	"context"
 )
 
-// EmbeddingExecutor handles local model inference and embedding generation
-type EmbeddingExecutor struct {
-	// In the future, this can hold references to ONNX runtimes, loaded model weights, or system resources
-}
+// EmbeddingExecutor handles local embedding generation.
+type EmbeddingExecutor struct{}
 
-// NewEmbeddingExecutor initializes a new executor instance
+// NewEmbeddingExecutor initializes an embedding executor.
 func NewEmbeddingExecutor() *EmbeddingExecutor {
 	return &EmbeddingExecutor{}
 }
 
-// Execute performs the embedding generation logic
+// Execute returns a deterministic placeholder embedding.
 func (e *EmbeddingExecutor) Execute(ctx context.Context, modelName string, inputText string) ([]float32, error) {
-	// Stub/Mock embedding generation
-	// This keeps the inference code clean and completely isolated from message-passing details.
 	vector := make([]float32, 128)
 	length := float32(len(inputText))
 	for i := 0; i < 128; i++ {

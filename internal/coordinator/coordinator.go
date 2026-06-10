@@ -35,17 +35,16 @@ func (c *Coordinator) EnsureStream() error {
 }
 
 func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
-	log.Println("🔄 Starting coordinator")
+	log.Println("starting coordinator")
 
-	// Ensure NATS Stream is initialized
 	if err := c.jsBroker.EnsureStream(); err != nil {
 		return fmt.Errorf("failed to verify/ensure NATS Stream: %w", err)
 	}
 
-	log.Println("🛠️ Worker manager initialized")
+	log.Println("worker manager initialized")
 
 	go c.manager.StartHealthChecker(ctx, 2*time.Minute)
-	log.Println("🩺 Health checker started for workers")
+	log.Println("worker health checker started")
 
 	if err := c.SubscribeToWorkerEvents(ctx); err != nil {
 		return fmt.Errorf("failed to subscribe to worker NATS events: %w", err)
@@ -58,6 +57,6 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 	go StartHTTPServer(apiAddr, c.jsBroker)
 
 	<-ctx.Done()
-	log.Println("👋 Shutting down coordinator gracefully...")
+	log.Println("shutting down coordinator")
 	return nil
 }

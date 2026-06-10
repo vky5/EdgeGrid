@@ -10,19 +10,18 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// SubscribeToWorkerEvents consumes registration and heartbeat events from NATS
+// SubscribeToWorkerEvents consumes registration and heartbeat events.
 func (c *Coordinator) SubscribeToWorkerEvents(ctx context.Context) error {
-	// Subscribe to registration events
 	_, err := c.jsBroker.JS.Subscribe(broker.SubjectRegister, func(msg *nats.Msg) {
 		var info workerpb.WorkerInfo
 		if err := proto.Unmarshal(msg.Data, &info); err != nil {
-			log.Printf("❌ Failed to unmarshal worker registration payload: %v", err)
+			log.Printf("failed to unmarshal worker registration payload: %v", err)
 			return
 		}
 
 		err := c.manager.RegisterWorker(ctx, &info)
 		if err != nil {
-			log.Printf("❌ Failed to register worker via NATS: %v", err)
+			log.Printf("failed to register worker from NATS: %v", err)
 			return
 		}
 		msg.Ack()
@@ -31,11 +30,10 @@ func (c *Coordinator) SubscribeToWorkerEvents(ctx context.Context) error {
 		return err
 	}
 
-	// Subscribe to heartbeat events
 	_, err = c.jsBroker.JS.Subscribe(broker.SubjectHeartbeat, func(msg *nats.Msg) {
 		var req workerpb.PingRequest
 		if err := proto.Unmarshal(msg.Data, &req); err != nil {
-			log.Printf("❌ Failed to unmarshal heartbeat payload: %v", err)
+			log.Printf("failed to unmarshal heartbeat payload: %v", err)
 			return
 		}
 
@@ -46,24 +44,24 @@ func (c *Coordinator) SubscribeToWorkerEvents(ctx context.Context) error {
 		return err
 	}
 
-	log.Println("👂 Subscribed to NATS worker events: workers.register, workers.heartbeat")
+	log.Println("subscribed to worker registration and heartbeat events")
 	return nil
 }
 
-// SubscribeToResults consumes completed job responses from workers
+// SubscribeToResults consumes completed job responses.
 func (c *Coordinator) SubscribeToResults(ctx context.Context) error {
 	_, err := c.jsBroker.JS.Subscribe(broker.SubjectResults, func(msg *nats.Msg) {
 		var resp workerpb.JobResponse
 		if err := proto.Unmarshal(msg.Data, &resp); err != nil {
-			log.Printf("❌ Failed to unmarshal job response: %v", err)
+			log.Printf("failed to unmarshal job response: %v", err)
 			return
 		}
 
 		if resp.Success {
-			log.Printf("✅ Job %s completed successfully by worker %s", resp.JobId, resp.WorkerId)
-			log.Printf("   Embedding vector length: %d", len(resp.Embedding))
+			log.Printf("job %s completed by worker %s", resp.JobId, resp.WorkerId)
+			log.Printf("embedding vector length: %d", len(resp.Embedding))
 		} else {
-			log.Printf("❌ Job %s failed on worker %s: %s", resp.JobId, resp.WorkerId, resp.Error)
+			log.Printf("job %s failed on worker %s: %s", resp.JobId, resp.WorkerId, resp.Error)
 		}
 		msg.Ack()
 	}, nats.ManualAck())
@@ -72,6 +70,6 @@ func (c *Coordinator) SubscribeToResults(ctx context.Context) error {
 		return err
 	}
 
-	log.Println("👂 Subscribed to NATS job results: jobs.results")
+	log.Println("subscribed to job result events")
 	return nil
 }
