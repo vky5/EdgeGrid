@@ -1,10 +1,12 @@
 package workerman
 
 import (
-	"sync"
+	"encoding/json"
 	"time"
 
+	"github.com/edgegrid/edgegrid/internal/broker"
 	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
+	"github.com/nats-io/nats.go"
 )
 
 const (
@@ -15,31 +17,44 @@ const (
 )
 
 type Job struct {
-	ID        string
-	Status    string
-	StartedAt time.Time
-	UpdatedAt time.Time
+	ID        string    `json:"id"`
+	Status    string    `json:"status"`
+	StartedAt time.Time `json:"started_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type Worker struct {
-	Info           *workerpb.WorkerInfo
-	LastSeen       time.Time
-	State          string
-	Job            *Job
-	SupportedModel []string
+	Info           *workerpb.WorkerInfo `json:"info"`
+	LastSeen       time.Time            `json:"last_seen"`
+	State          string               `json:"state"`
+	Job            *Job                 `json:"job"`
+	SupportedModel []string             `json:"supported_model"`
 }
 
 type WorkerManager struct {
-	mu      sync.Mutex
-	workers map[string]*Worker
+	kv nats.KeyValue
+}
+
+func NewWorkerManager(jsBroker *broker.Broker) (*WorkerManager, error) {
+	// Set TTL to 1 minute to auto-reap dead workers
+	kv, err := jsBroker.GetOrCreateKV("workers", 1*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+
+	return &WorkerManager{
+		kv: kv,
+	}, nil
 }
 
 func (wm *WorkerManager) SetWorkerState(workerID string, state string) {
-	wm.mu.Lock()
-	defer wm.mu.Unlock()
+	entry, err := wm.kv.Get(workerID)
+	if err != nil {
+		return
+	}
 
-	worker, exists := wm.workers[workerID]
-	if !exists {
+	var worker Worker
+	if err := json.Unmarshal(entry.Value(), &worker); err != nil {
 		return
 	}
 
@@ -48,10 +63,11 @@ func (wm *WorkerManager) SetWorkerState(workerID string, state string) {
 	if state == WorkerFree {
 		worker.Job = nil
 	}
-}
 
-func NewWorkerManager() *WorkerManager {
-	return &WorkerManager{
-		workers: make(map[string]*Worker),
+	data, err := json.Marshal(worker)
+	if err != nil {
+		return
 	}
+
+	_, _ = wm.kv.Put(workerID, data)
 }

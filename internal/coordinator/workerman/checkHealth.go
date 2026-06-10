@@ -7,15 +7,5 @@ import (
 )
 
 func (wm *WorkerManager) StartHealthChecker(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("health checker stopped")
-			return
-		case <-ticker.C:
-		}
-	}
+	log.Printf("Distributed health checking: relying on NATS KV TTL auto-reaping (TTL: 1m)")
 }

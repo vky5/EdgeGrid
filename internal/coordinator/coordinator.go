@@ -22,7 +22,10 @@ func NewCoordinatorWithConn(nc *nats.Conn) (*Coordinator, error) {
 		return nil, fmt.Errorf("failed to initialize shared broker: %w", err)
 	}
 
-	manager := workerman.NewWorkerManager()
+	manager, err := workerman.NewWorkerManager(jsBroker)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize worker manager: %w", err)
+	}
 
 	return &Coordinator{
 		jsBroker: jsBroker,

@@ -3,6 +3,7 @@ package broker
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
@@ -81,4 +82,23 @@ func (b *Broker) PublishProto(subject string, msg proto.Message) error {
 		return fmt.Errorf("failed to publish to subject %s: %w", subject, err)
 	}
 	return nil
+}
+
+// GetOrCreateKV creates or retrieves a Key-Value bucket
+func (b *Broker) GetOrCreateKV(
+	bucket string, 
+	ttl time.Duration, // for the individual key in the bucket not entire bucket
+) (nats.KeyValue, error) {
+	kv, err := b.JS.KeyValue(bucket)
+	if err != nil {
+		// Bucket might not exist, create it
+		kv, err = b.JS.CreateKeyValue(&nats.KeyValueConfig{
+			Bucket: bucket,
+			TTL:    ttl,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create KV bucket %s: %w", bucket, err)
+		}
+	}
+	return kv, nil
 }
