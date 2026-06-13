@@ -29,6 +29,7 @@ services:
       - PORT=8080
       - SUPPORTED_MODELS=coordinator-local
       - WORKER_ID=worker-coordinator-6
+      - EXECUTOR=mock
     depends_on:
       nats:
         condition: service_healthy
