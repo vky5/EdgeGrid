@@ -81,9 +81,10 @@ func TestAgent_EndToEndJobExecution(t *testing.T) {
 			Port:    httpAddr,
 		},
 		Client: config.ClientConfig{
-			Enabled:          true,
-			WorkerID:         "test-e2e-worker",
-			SupportedModels:  []string{"all-minilm"},
+			Enabled:         true,
+			WorkerID:        "test-e2e-worker",
+			SupportedModels: []string{"all-minilm"},
+			Executor:        "mock",
 		},
 	}
 
@@ -149,6 +150,23 @@ func TestAgent_EndToEndJobExecution(t *testing.T) {
 		t.Errorf("unexpected submit response: %+v", submitResp)
 	}
 
+	// Verify initial state via HTTP API
+	stateResp, err := http.Get("http://" + httpAddr + "/jobs/" + submitResp.JobID)
+	if err != nil {
+		t.Fatalf("failed to get job state: %v", err)
+	}
+	defer stateResp.Body.Close()
+	if stateResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected state status 200, got %d", stateResp.StatusCode)
+	}
+	var jobStatus map[string]interface{}
+	if err := json.NewDecoder(stateResp.Body).Decode(&jobStatus); err != nil {
+		t.Fatalf("failed to decode job status: %v", err)
+	}
+	if jobStatus["state"] != "QUEUED" && jobStatus["state"] != "RUNNING" && jobStatus["state"] != "COMPLETED" {
+		t.Errorf("unexpected job state: %v", jobStatus["state"])
+	}
+
 	// 5. Wait for the result to be published on the results subject
 	msg, err := sub.NextMsg(2 * time.Second)
 	if err != nil {
@@ -166,10 +184,46 @@ func TestAgent_EndToEndJobExecution(t *testing.T) {
 	if !jobResult.Success {
 		t.Errorf("job failed: %s", jobResult.Error)
 	}
-	if len(jobResult.Embedding) != 128 {
-		t.Errorf("expected embedding length of 128, got %d", len(jobResult.Embedding))
+	if len(jobResult.Embedding) != 384 {
+		t.Errorf("expected embedding length of 384, got %d", len(jobResult.Embedding))
 	}
 	if jobResult.WorkerId != "test-e2e-worker" {
 		t.Errorf("expected worker ID test-e2e-worker, got %s", jobResult.WorkerId)
+	}
+
+	// Wait up to 500ms for the coordinator subscriber to process and save StateCompleted to KV
+	var finalStatus map[string]interface{}
+	for i := 0; i < 5; i++ {
+		time.Sleep(100 * time.Millisecond)
+		sResp, err := http.Get("http://" + httpAddr + "/jobs/" + submitResp.JobID)
+		if err != nil {
+			continue
+		}
+		defer sResp.Body.Close()
+		if sResp.StatusCode == http.StatusOK {
+			_ = json.NewDecoder(sResp.Body).Decode(&finalStatus)
+			if finalStatus["state"] == "COMPLETED" {
+				break
+			}
+		}
+	}
+
+	if finalStatus["state"] != "COMPLETED" {
+		t.Errorf("expected final state to be COMPLETED, got %v", finalStatus["state"])
+	}
+	if finalStatus["worker_id"] != "test-e2e-worker" {
+		t.Errorf("expected final worker_id to be test-e2e-worker, got %v", finalStatus["worker_id"])
+	}
+
+	embeddingsRaw, exists := finalStatus["embedding"]
+	if !exists {
+		t.Fatalf("expected embedding vector in final job status response, but it was missing")
+	}
+	embeddingsList, ok := embeddingsRaw.([]interface{})
+	if !ok {
+		t.Fatalf("expected embedding to be a list, got %T", embeddingsRaw)
+	}
+	if len(embeddingsList) != 384 {
+		t.Errorf("expected embedding list length of 384, got %d", len(embeddingsList))
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/edgegrid/edgegrid/internal/broker"
+	"github.com/edgegrid/edgegrid/internal/jobstate"
 	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
@@ -93,23 +94,34 @@ func (a *Worker) handleJob(msg *nats.Msg) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("recovered panic while processing job: %v", r)
-			msg.Nak()
+			msg.Nak() // couldnt complete the job -> put back in queue to be picked up by another worker
 		}
 	}()
 
 	var req workerpb.JobRequest
 	if err := proto.Unmarshal(msg.Data, &req); err != nil {
 		log.Printf("failed to unmarshal job request: %v", err)
-		msg.Term()
+		msg.Term() // msg is broken (eg wrong bytes) don't retry
 		return
 	}
 
 	log.Printf("received job %s for model %s", req.JobId, req.ModelName)
 
-	embeddingResult, err := a.executor.Execute(context.Background(), req.ModelName, req.InputText)
+	kv, kvErr := a.broker.GetOrCreateKV("jobs_state", 24*time.Hour)
+	if kvErr == nil {
+		_ = jobstate.UpdateJobStatus(kv, req.JobId, jobstate.StateRunning, a.id, "", nil)
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // time for execution 30 sec
+	defer cancel()
+
+	embeddingResult, err := a.executor.Execute(timeoutCtx, req.ModelName, req.InputText)
 	if err != nil {
 		log.Printf("job execution failed: %v", err)
-		msg.Nak()
+		if kvErr == nil {
+			_ = jobstate.UpdateJobStatus(kv, req.JobId, jobstate.StateFailed, a.id, err.Error(), nil)
+		}
+		msg.Nak() 
 		return
 	}
 
@@ -123,6 +135,9 @@ func (a *Worker) handleJob(msg *nats.Msg) {
 	err = a.broker.PublishProto(broker.SubjectResults, resp)
 	if err != nil {
 		log.Printf("failed to publish job result: %v", err)
+		if kvErr == nil {
+			_ = jobstate.UpdateJobStatus(kv, req.JobId, jobstate.StateFailed, a.id, err.Error(), nil)
+		}
 		msg.Nak()
 		return
 	}

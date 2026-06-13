@@ -3,8 +3,10 @@ package coordinator
 import (
 	"context"
 	"log"
+	"time"
 
 	"github.com/edgegrid/edgegrid/internal/broker"
+	"github.com/edgegrid/edgegrid/internal/jobstate"
 	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
@@ -57,12 +59,25 @@ func (c *Coordinator) SubscribeToResults(ctx context.Context) error {
 			return
 		}
 
+		var state jobstate.State = jobstate.StateCompleted
+		var errMsg string
+		var embedding []float32
+
 		if resp.Success {
 			log.Printf("job %s completed by worker %s", resp.JobId, resp.WorkerId)
 			log.Printf("embedding vector length: %d", len(resp.Embedding))
+			embedding = resp.Embedding
 		} else {
+			state = jobstate.StateFailed
+			errMsg = resp.Error
 			log.Printf("job %s failed on worker %s: %s", resp.JobId, resp.WorkerId, resp.Error)
 		}
+
+		kv, err := c.jsBroker.GetOrCreateKV("jobs_state", 24*time.Hour)
+		if err == nil {
+			_ = jobstate.UpdateJobStatus(kv, resp.JobId, state, resp.WorkerId, errMsg, embedding)
+		}
+
 		msg.Ack()
 	}, nats.ManualAck())
 
