@@ -1,24 +1,40 @@
 # EdgeGrid: Decentralized Embedding Inference Network
 
-**EdgeGrid** is a decentralized, pull-based AI embedding inference network. It coordinates heterogeneous worker nodes (such as client laptops, PCs, or VMs) to generate text embeddings asynchronously via **NATS JetStream** based on model compatibility.
+**EdgeGrid** is a decentralized, pull-based AI embedding inference network. It coordinates heterogeneous worker nodes (laptops, PCs, VMs) to generate text embeddings asynchronously via **NATS JetStream**, routed by model compatibility.
 
 ---
 
 ## Architecture
 
-EdgeGrid is fully event-driven, operating without public ports or inbound listeners on workers. 
+EdgeGrid is fully event-driven. Workers have no inbound ports — they pull work from NATS.
 
-* **Orchestrator (Control Plane)**:
-  * Exposes a REST API (`POST /jobs`) to receive embedding jobs.
+* **Coordinator (Control Plane)**:
+  * Exposes a REST API (`POST /jobs`, `GET /jobs/<id>`) to submit and track embedding jobs.
   * Publishes jobs to model-specific NATS subjects (e.g. `jobs.build.all-minilm`).
-  * Subscribes to worker registration, heartbeats, and result events to maintain state and collect output vectors.
+  * Subscribes to worker registration, heartbeats, and result events.
+  * Stores worker registry and job lifecycle state in **NATS KV** buckets (`workers`, `jobs_state`).
 * **Worker (Client Node)**:
-  * Announces its model capability (e.g. `all-minilm`, `llama3`) to the registry.
-  * Heartbeats status periodically.
-  * Pulls pending jobs via NATS JetStream pull consumers matching its supported models.
-  * Calculates embedding vectors locally and publishes responses to `jobs.results`.
+  * Announces supported models (e.g. `all-minilm`) to the registry.
+  * Sends periodic heartbeats.
+  * Pulls pending jobs via NATS JetStream durable pull consumers.
+  * Runs local inference through a pluggable **executor** and publishes results to `jobs.results`.
 * **NATS JetStream (Message Broker)**:
-  * Acts as the scheduler and buffer. Jobs are stored durably and dynamically distributed to matching workers.
+  * Durable job queue and event bus. Jobs are buffered and distributed to matching workers.
+
+### Unified Agent Binary
+
+A single `edgegrid` binary can run as a coordinator, a worker, or both (default for local development):
+
+```bash
+# Coordinator + worker on one node (dev mode)
+./edgegrid
+
+# Coordinator only
+./edgegrid -server
+
+# Worker only
+./edgegrid -client -models all-minilm -executor mock
+```
 
 ---
 
@@ -26,9 +42,27 @@ EdgeGrid is fully event-driven, operating without public ports or inbound listen
 
 | Component | Responsibility |
 | :--- | :--- |
-| **`apps/coordinator`** | Control plane, HTTP API, registration monitor, and results accumulator |
-| **`apps/worker`** | Agent client that pulls compatible jobs and runs local embedding inference |
-| **`apps/shared`** | Unified protobuf schemas (`worker.proto`) and generated Go models |
+| **`cmd/edgegrid`** | Main entrypoint; boots the unified P2P agent |
+| **`internal/agent`** | Orchestrates coordinator and/or worker from a shared NATS connection |
+| **`internal/coordinator`** | HTTP API, worker registry, job state, result accumulation |
+| **`internal/worker`** | Job pull listeners, heartbeats, registration |
+| **`internal/worker/executor`** | Pluggable inference backends (`mock`, `huggingface`) |
+| **`internal/broker`** | Shared NATS JetStream and KV helpers |
+| **`internal/proto/worker`** | Protobuf schemas (`worker.proto`) and generated Go models |
+
+### Executors
+
+| Executor | Description |
+| :--- | :--- |
+| **`mock`** | Deterministic normalized vectors for testing and Docker Compose (no Python required) |
+| **`huggingface`** | Real inference via a Python sidecar (`runner.py`) over Unix domain sockets + Protobuf |
+
+Set via flag or environment variable:
+
+```bash
+EXECUTOR=mock    # fast, no dependencies
+EXECUTOR=huggingface  # requires Python 3; venv is auto-provisioned on first run
+```
 
 ---
 
@@ -36,64 +70,115 @@ EdgeGrid is fully event-driven, operating without public ports or inbound listen
 
 ### Prerequisites
 
-* **Go**: Version `1.24.6`
-* **NATS Server**: Installed and running with JetStream enabled (`nats-server -js`)
+* **Go**: `1.24+`
+* **NATS Server**: Running with JetStream enabled (`nats-server -js`)
+* **Python 3** (only for `huggingface` executor): auto-venv at `internal/worker/executor/.venv`
 
 ### Setup & Build
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/edgegrid/edgegrid.git
-   cd edgegrid
-   ```
+```bash
+git clone https://github.com/edgegrid/edgegrid.git
+cd edgegrid
 
-2. Compile protobuf files:
-   ```bash
-   make proto
-   ```
-
-3. Build the applications:
-   ```bash
-   # Build Coordinator
-   cd apps/coordinator && GOTOOLCHAIN=local go build ./...
-   
-   # Build Worker
-   cd ../worker && GOTOOLCHAIN=local go build ./...
-   ```
+make proto   # generate protobuf Go code
+make build   # produces ./edgegrid binary
+make test    # run all tests
+```
 
 ---
 
-## End-to-End Workflow Test
+## Local End-to-End Test
 
-To test the system locally:
+### Option A: Single binary (quickest)
 
-1. **Start NATS Server** (with JetStream enabled):
-   ```bash
-   nats-server -js
-   ```
+```bash
+# Terminal 1 — NATS
+nats-server -js
 
-2. **Run the Coordinator**:
-   ```bash
-   cd apps/coordinator
-   NATS_URL=nats://localhost:4222 PORT=8080 go run ./cmd
-   ```
+# Terminal 2 — agent (coordinator + worker, mock executor)
+NATS_URL=nats://localhost:4222 EXECUTOR=mock go run ./cmd/edgegrid
 
-3. **Run a Worker Node**:
-   Open a new terminal and run:
-   ```bash
-   cd apps/worker
-   NATS_URL=nats://localhost:4222 SUPPORTED_MODELS=all-minilm go run ./cmd
-   ```
+# Terminal 3 — submit a job
+curl -X POST http://localhost:8080/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"model_name": "all-minilm", "input_text": "EdgeGrid decentralized embedding inference"}'
 
-4. **Submit a Job**:
-   Open a new terminal and trigger an embedding job via the Coordinator's API:
-   ```bash
-   curl -X POST http://localhost:8080/jobs \
-     -H "Content-Type: application/json" \
-     -d '{"model_name": "all-minilm", "input_text": "EdgeGrid decentralized embedding inference"}'
-   ```
+# Check job status (replace <job_id> with the id from the response)
+curl http://localhost:8080/jobs/<job_id>
+```
 
-*You will observe:*
-* The Coordinator logging the incoming job and queueing it to NATS.
-* The Worker pulling the job, generating a stub embedding vector, and publishing the response.
-* The Coordinator receiving and logging the completed embedding response from `jobs.results`.
+### Option B: Docker Compose (multi-worker)
+
+Runs NATS, one coordinator, and five mock workers:
+
+```bash
+make compose-up
+```
+
+Submit a job:
+
+```bash
+curl -X POST http://localhost:8080/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"model_name": "all-minilm", "input_text": "hello from docker compose"}'
+```
+
+Tear down:
+
+```bash
+make compose-down
+```
+
+> **Note:** The Docker image is Go-only. Use `EXECUTOR=mock` in containers. For real HuggingFace inference, run the worker on bare metal with `EXECUTOR=huggingface`.
+
+---
+
+## Configuration
+
+Flags take precedence over environment variables.
+
+| Flag | Env var | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `-server` | — | `true`* | Enable coordinator (HTTP API) |
+| `-client` | — | `true`* | Enable worker |
+| `-nats` | `NATS_URL` | `nats://localhost:4222` | NATS connection URL |
+| `-port` | `PORT` | `8080` | Coordinator HTTP port |
+| `-models` | `SUPPORTED_MODELS` | `all-minilm` | Comma-separated model list |
+| `-worker-id` | `WORKER_ID` | auto-generated | Custom worker identifier |
+| `-executor` | `EXECUTOR` | `huggingface` | Executor backend (`mock` or `huggingface`) |
+
+\*If neither `-server` nor `-client` is passed, both are enabled.
+
+### Job Lifecycle States
+
+Jobs progress through NATS KV (`jobs_state` bucket):
+
+`QUEUED` → `RUNNING` → `COMPLETED` | `FAILED`
+
+Poll status via `GET /jobs/<job_id>`.
+
+---
+
+## HTTP API
+
+### `POST /jobs`
+
+Submit an embedding job.
+
+```json
+{"model_name": "all-minilm", "input_text": "your text here"}
+```
+
+Response (`202 Accepted`):
+
+```json
+{"job_id": "a1b2c3d4", "status": "queued"}
+```
+
+### `GET /jobs/<job_id>`
+
+Retrieve full job state including embedding vector on completion.
+
+### `GET /health`
+
+Health check endpoint used by Docker Compose.

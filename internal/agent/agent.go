@@ -8,6 +8,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/config"
 	"github.com/edgegrid/edgegrid/internal/coordinator"
 	"github.com/edgegrid/edgegrid/internal/worker"
+	"github.com/edgegrid/edgegrid/internal/worker/executor"
 	"github.com/nats-io/nats.go"
 )
 
@@ -40,7 +41,23 @@ func NewAgent(cfg *config.Config) (*Agent, error) {
 
 	var workerAgent *worker.Worker
 	if cfg.Client.Enabled {
-		workerAgent, err = worker.NewWorkerWithConn(nc, cfg.Client.SupportedModels, cfg.Client.WorkerID)
+		var execInstance executor.Executor
+		switch cfg.Client.Executor {
+		case "mock":
+			execInstance = executor.NewMockExecutor()
+		case "huggingface", "":
+			execInstance = executor.NewHuggingFaceExecutor()
+		default:
+			nc.Close()
+			return nil, fmt.Errorf("unknown executor type: %s", cfg.Client.Executor)
+		}
+
+		workerAgent, err = worker.NewWorkerWithConn(
+			nc,
+			cfg.Client.SupportedModels,
+			cfg.Client.WorkerID,
+			execInstance,
+		)
 		if err != nil {
 			nc.Close()
 			return nil, fmt.Errorf("failed to initialize worker: %w", err)
@@ -80,6 +97,9 @@ func (a *Agent) Start(ctx context.Context) error {
 
 func (a *Agent) Close() {
 	log.Println("shutting down EdgeGrid services")
+	if a.worker != nil {
+		a.worker.Close()
+	}
 	if a.natsConn != nil {
 		a.natsConn.Close()
 		log.Println("closed NATS connection")

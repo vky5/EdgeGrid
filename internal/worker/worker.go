@@ -19,16 +19,15 @@ type Worker struct {
 	id       string
 	models   []string
 	broker   *broker.Broker
-	executor *executor.EmbeddingExecutor
+	executor executor.Executor
 }
 
-// NewWorkerWithConn creates a worker with a shared NATS connection.
-func NewWorkerWithConn(nc *nats.Conn, supportedModels []string, workerID string) (*Worker, error) {
+// NewWorkerWithConn creates a worker with a shared NATS connection and injected executor.
+func NewWorkerWithConn(nc *nats.Conn, supportedModels []string, workerID string, exec executor.Executor) (*Worker, error) {
 	if workerID == "" {
 		workerID = generateWorkerID()
 	}
 
-	exec := executor.NewEmbeddingExecutor()
 	wb, err := broker.NewBroker(nc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize shared broker: %w", err)
@@ -44,6 +43,10 @@ func NewWorkerWithConn(nc *nats.Conn, supportedModels []string, workerID string)
 
 // Start registers the worker and starts background listeners.
 func (w *Worker) Start(ctx context.Context) error {
+	if err := w.executor.Start(ctx, w.models); err != nil {
+		return fmt.Errorf("failed to start executor: %w", err)
+	}
+
 	err := w.RegisterWorker()
 	if err != nil {
 		return fmt.Errorf("registration failed: %w", err)
@@ -58,6 +61,13 @@ func (w *Worker) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// Close stops the worker and cleans up the executor resources.
+func (w *Worker) Close() {
+	if w.executor != nil {
+		_ = w.executor.Close()
+	}
 }
 
 // generateWorkerID creates a unique worker ID.

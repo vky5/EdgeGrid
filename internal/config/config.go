@@ -21,6 +21,7 @@ type ClientConfig struct {
 	Enabled         bool
 	SupportedModels []string
 	WorkerID        string
+	Executor        string
 }
 
 func LoadConfig() *Config {
@@ -30,6 +31,7 @@ func LoadConfig() *Config {
 	apiPort := flag.String("port", "", "Coordinator HTTP API Port")
 	supportedModels := flag.String("models", "", "Comma-separated list of supported models (worker only)")
 	workerID := flag.String("worker-id", "", "Custom worker ID (worker only)")
+	executorType := flag.String("executor", "", "Executor backend (huggingface or mock)")
 
 	flag.Parse()
 
@@ -81,6 +83,14 @@ func LoadConfig() *Config {
 		finalWorkerID = os.Getenv("WORKER_ID")
 	}
 
+	finalExecutor := *executorType
+	if finalExecutor == "" {
+		finalExecutor = os.Getenv("EXECUTOR")
+		if finalExecutor == "" {
+			finalExecutor = "huggingface"
+		}
+	}
+
 	return &Config{
 		NatsURL: finalNatsURL,
 		Server: ServerConfig{
@@ -91,6 +101,7 @@ func LoadConfig() *Config {
 			Enabled:         runClient,
 			SupportedModels: models,
 			WorkerID:        finalWorkerID,
+			Executor:        finalExecutor,
 		},
 	}
 }
