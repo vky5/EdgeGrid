@@ -3,13 +3,15 @@ package config
 import (
 	"flag"
 	"os"
+	"strconv"
 	"strings"
 )
 
 type Config struct {
-	NatsURL string
-	Server  ServerConfig
-	Client  ClientConfig
+	NatsURL  string
+	Replicas int // NATS JetStream replication factor: 1=dev, 3=prod
+	Server   ServerConfig
+	Client   ClientConfig
 }
 
 type ServerConfig struct {
@@ -24,6 +26,15 @@ type ClientConfig struct {
 	Executor        string
 }
 
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
 func LoadConfig() *Config {
 	roleServer := flag.Bool("server", false, "Start the coordinator server")
 	roleClient := flag.Bool("client", false, "Start the worker client agent")
@@ -31,7 +42,8 @@ func LoadConfig() *Config {
 	apiPort := flag.String("port", "", "Coordinator HTTP API Port")
 	supportedModels := flag.String("models", "", "Comma-separated list of supported models (worker only)")
 	workerID := flag.String("worker-id", "", "Custom worker ID (worker only)")
-	executorType := flag.String("executor", "", "Executor backend (huggingface or mock)")
+	executorType := flag.String("executor", "", "Executor backend (mock or training)")
+	replicas := flag.Int("replicas", 0, "NATS JetStream replication factor (0 = auto-detect from env)")
 
 	flag.Parse()
 
@@ -74,9 +86,7 @@ func LoadConfig() *Config {
 			}
 		}
 	}
-	if len(models) == 0 {
-		models = []string{"all-minilm"}
-	}
+	// No default models — workers must explicitly declare what they support
 
 	finalWorkerID := *workerID
 	if finalWorkerID == "" {
@@ -87,12 +97,21 @@ func LoadConfig() *Config {
 	if finalExecutor == "" {
 		finalExecutor = os.Getenv("EXECUTOR")
 		if finalExecutor == "" {
-			finalExecutor = "huggingface"
+			finalExecutor = "mock"
 		}
 	}
 
+	finalReplicas := *replicas
+	if finalReplicas == 0 {
+		finalReplicas = envInt("NATS_REPLICAS", 1)
+	}
+	if finalReplicas < 1 {
+		finalReplicas = 1
+	}
+
 	return &Config{
-		NatsURL: finalNatsURL,
+		NatsURL:  finalNatsURL,
+		Replicas: finalReplicas,
 		Server: ServerConfig{
 			Enabled: runServer,
 			Port:    finalPort,

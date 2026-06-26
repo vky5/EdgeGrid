@@ -12,21 +12,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// RegisterWorker publishes the worker capabilities.
+// RegisterWorker publishes the worker's capabilities to the coordinator.
 func (a *Worker) RegisterWorker() error {
 	info := &workerpb.WorkerInfo{
 		Id:             a.id,
 		SupportedModel: a.models,
 	}
-
-	err := a.broker.PublishProto(broker.SubjectRegister, info)
-	if err != nil {
-		return err
-	}
-	return nil
+	return a.broker.PublishProto(broker.SubjectRegister, info)
 }
 
-// StartHeartbeat sends periodic worker status updates.
+// StartHeartbeat sends periodic worker status updates to the coordinator.
 func (a *Worker) StartHeartbeat(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -40,30 +35,25 @@ func (a *Worker) StartHeartbeat(ctx context.Context, interval time.Duration) {
 				Id:     a.id,
 				Status: "free",
 			}
-
-			err := a.broker.PublishProto(broker.SubjectHeartbeat, req)
-			if err != nil {
+			if err := a.broker.PublishProto(broker.SubjectHeartbeat, req); err != nil {
 				log.Printf("failed to publish heartbeat: %v", err)
 			}
 		}
 	}
 }
 
-// StartJobListener pulls and executes jobs for one model.
+// StartJobListener pulls training jobs for one model type from NATS JetStream.
 func (a *Worker) StartJobListener(ctx context.Context, model string) {
-	subject := broker.SubjectJobsPrefix + model
-	durableConsumer := "consumer-" + model
-	sub, err := a.broker.JS.PullSubscribe(
-		subject,
-		durableConsumer,
-		nats.ManualAck(),
-	)
+	subject := broker.SubjectTrainPrefix + model
+	durableConsumer := "training-consumer-" + model
+
+	sub, err := a.broker.JS.PullSubscribe(subject, durableConsumer, nats.ManualAck())
 	if err != nil {
-		log.Printf("failed to subscribe to subject %s: %v", subject, err)
+		log.Printf("failed to subscribe to %s: %v", subject, err)
 		return
 	}
 
-	log.Printf("listening for jobs on %s with durable consumer %s", subject, durableConsumer)
+	log.Printf("listening for training jobs on %s", subject)
 
 	for {
 		select {
@@ -75,7 +65,7 @@ func (a *Worker) StartJobListener(ctx context.Context, model string) {
 				if err == nats.ErrTimeout {
 					continue
 				}
-				log.Printf("error fetching message on %s: %v", subject, err)
+				log.Printf("error fetching from %s: %v", subject, err)
 				time.Sleep(1 * time.Second)
 				continue
 			}
@@ -84,66 +74,43 @@ func (a *Worker) StartJobListener(ctx context.Context, model string) {
 				continue
 			}
 
-			a.handleJob(msgs[0])
+			a.handleJob(ctx, msgs[0])
 		}
 	}
 }
 
-// handleJob processes one job request.
-func (a *Worker) handleJob(msg *nats.Msg) {
+// handleJob processes one training job request.
+func (a *Worker) handleJob(ctx context.Context, msg *nats.Msg) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("recovered panic while processing job: %v", r)
-			msg.Nak() // couldnt complete the job -> put back in queue to be picked up by another worker
+			log.Printf("recovered panic in job handler: %v", r)
+			msg.Nak()
 		}
 	}()
 
-	var req workerpb.JobRequest
+	var req workerpb.TrainingJobRequest
 	if err := proto.Unmarshal(msg.Data, &req); err != nil {
-		log.Printf("failed to unmarshal job request: %v", err)
-		msg.Term() // msg is broken (eg wrong bytes) don't retry
+		log.Printf("failed to unmarshal training job request: %v", err)
+		msg.Term()
 		return
 	}
 
-	log.Printf("received job %s for model %s", req.JobId, req.ModelName)
+	log.Printf("received training job %s (base_model: %s, dataset: %s %s)",
+		req.JobId, req.BaseModelRef, req.DatasetType, req.DatasetRef)
 
 	kv, kvErr := a.broker.GetOrCreateKV("jobs_state", 24*time.Hour)
 	if kvErr == nil {
-		_ = jobstate.UpdateJobStatus(kv, req.JobId, jobstate.StateRunning, a.id, "", nil)
+		_ = jobstate.UpdateJobStatus(kv, req.JobId, jobstate.StateRunning, a.id, "", "")
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // time for execution 30 sec
-	defer cancel()
-
-	embeddingResult, err := a.executor.Execute(timeoutCtx, req.ModelName, req.InputText)
-	if err != nil {
-		log.Printf("job execution failed: %v", err)
-		if kvErr == nil {
-			_ = jobstate.UpdateJobStatus(kv, req.JobId, jobstate.StateFailed, a.id, err.Error(), nil)
-		}
-		msg.Nak() 
-		return
-	}
-
-	resp := &workerpb.JobResponse{
-		JobId:     req.JobId,
-		Success:   true,
-		Embedding: embeddingResult,
-		WorkerId:  a.id,
-	}
-
-	err = a.broker.PublishProto(broker.SubjectResults, resp)
-	if err != nil {
-		log.Printf("failed to publish job result: %v", err)
-		if kvErr == nil {
-			_ = jobstate.UpdateJobStatus(kv, req.JobId, jobstate.StateFailed, a.id, err.Error(), nil)
-		}
-		msg.Nak()
-		return
-	}
-
-	if err := msg.Ack(); err != nil {
-		log.Printf("failed to ack message: %v", err)
-	}
-	log.Printf("processed job %s", req.JobId)
+	// TODO: implement full training execution pipeline:
+	//   1. disk pre-check (syscall.Statfs)
+	//   2. pull dataset (HF download or broker.PullDataset)
+	//   3. resolve venv (SHA256 cache)
+	//   4. check for resume checkpoint
+	//   5. run executor.Execute(ctx, &req, jobDir)
+	//   6. broker.PushCheckpoint(req.JobId, checkpointReader)
+	//   7. publish JobResponse to jobs.results
+	log.Printf("training executor not yet implemented — NAKing job %s for redelivery", req.JobId)
+	msg.Nak()
 }

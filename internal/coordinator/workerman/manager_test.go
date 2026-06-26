@@ -63,7 +63,7 @@ func TestWorkerManager_RegistrationAndHeartbeats(t *testing.T) {
 	}
 	defer nc.Close()
 
-	br, err := broker.NewBroker(nc)
+	br, err := broker.NewBroker(nc, 1)
 	if err != nil {
 		t.Fatalf("failed to initialize broker: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestWorkerManager_RegistrationAndHeartbeats(t *testing.T) {
 	ctx := context.Background()
 	workerInfo := &workerpb.WorkerInfo{
 		Id:             "test-worker-1",
-		SupportedModel: []string{"all-minilm"},
+		SupportedModel: []string{"gpt2"},
 	}
 
 	// 1. Test registration
@@ -131,7 +131,7 @@ func TestWorkerManager_TTLAutoReaping(t *testing.T) {
 	}
 	defer nc.Close()
 
-	br, err := broker.NewBroker(nc)
+	br, err := broker.NewBroker(nc, 1)
 	if err != nil {
 		t.Fatalf("failed to initialize broker: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestWorkerManager_TTLAutoReaping(t *testing.T) {
 		t.Fatalf("failed to get or create KV: %v", err)
 	}
 
-	wm, err := workerman.NewWorkerManager(br) // Note: this will fetch the existing "workers" KV
+	wm, err := workerman.NewWorkerManager(br)
 	if err != nil {
 		t.Fatalf("failed to initialize workerman: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestWorkerManager_TTLAutoReaping(t *testing.T) {
 	ctx := context.Background()
 	workerInfo := &workerpb.WorkerInfo{
 		Id:             "temp-worker",
-		SupportedModel: []string{"clip"},
+		SupportedModel: []string{"gpt2"},
 	}
 
 	// Register worker
@@ -189,8 +189,8 @@ func TestWorkerManager_CrossCoordinatorVisibility(t *testing.T) {
 	nc2, _ := nats.Connect(url)
 	defer nc2.Close()
 
-	br1, _ := broker.NewBroker(nc1)
-	br2, _ := broker.NewBroker(nc2)
+	br1, _ := broker.NewBroker(nc1, 1)
+	br2, _ := broker.NewBroker(nc2, 1)
 
 	wm1, _ := workerman.NewWorkerManager(br1)
 	wm2, _ := workerman.NewWorkerManager(br2)
@@ -198,7 +198,7 @@ func TestWorkerManager_CrossCoordinatorVisibility(t *testing.T) {
 	ctx := context.Background()
 	workerInfo := &workerpb.WorkerInfo{
 		Id:             "shared-worker",
-		SupportedModel: []string{"nomic-embed-text"},
+		SupportedModel: []string{"gpt2"},
 	}
 
 	// Register on Coordinator 1

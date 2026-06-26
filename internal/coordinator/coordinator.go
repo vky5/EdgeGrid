@@ -16,8 +16,8 @@ type Coordinator struct {
 	manager  *workerman.WorkerManager
 }
 
-func NewCoordinatorWithConn(nc *nats.Conn) (*Coordinator, error) {
-	jsBroker, err := broker.NewBroker(nc)
+func NewCoordinatorWithConn(nc *nats.Conn, replicas int) (*Coordinator, error) {
+	jsBroker, err := broker.NewBroker(nc, replicas)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize shared broker: %w", err)
 	}

@@ -25,7 +25,13 @@ const (
 type WorkerInfo struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	SupportedModel []string               `protobuf:"bytes,2,rep,name=supported_model,json=supportedModel,proto3" json:"supported_model,omitempty"` // e.g. ["llama3", "all-minilm"]
+	SupportedModel []string               `protobuf:"bytes,2,rep,name=supported_model,json=supportedModel,proto3" json:"supported_model,omitempty"`
+	HasGpu         bool                   `protobuf:"varint,3,opt,name=has_gpu,json=hasGpu,proto3" json:"has_gpu,omitempty"`
+	GpuVramGb      float32                `protobuf:"fixed32,4,opt,name=gpu_vram_gb,json=gpuVramGb,proto3" json:"gpu_vram_gb,omitempty"`
+	RamGb          float32                `protobuf:"fixed32,5,opt,name=ram_gb,json=ramGb,proto3" json:"ram_gb,omitempty"`
+	DiskFreeGb     float32                `protobuf:"fixed32,6,opt,name=disk_free_gb,json=diskFreeGb,proto3" json:"disk_free_gb,omitempty"`
+	GpuName        string                 `protobuf:"bytes,7,opt,name=gpu_name,json=gpuName,proto3" json:"gpu_name,omitempty"`
+	Sandbox        string                 `protobuf:"bytes,8,opt,name=sandbox,proto3" json:"sandbox,omitempty"` // "none" or "docker"
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -74,11 +80,53 @@ func (x *WorkerInfo) GetSupportedModel() []string {
 	return nil
 }
 
+func (x *WorkerInfo) GetHasGpu() bool {
+	if x != nil {
+		return x.HasGpu
+	}
+	return false
+}
+
+func (x *WorkerInfo) GetGpuVramGb() float32 {
+	if x != nil {
+		return x.GpuVramGb
+	}
+	return 0
+}
+
+func (x *WorkerInfo) GetRamGb() float32 {
+	if x != nil {
+		return x.RamGb
+	}
+	return 0
+}
+
+func (x *WorkerInfo) GetDiskFreeGb() float32 {
+	if x != nil {
+		return x.DiskFreeGb
+	}
+	return 0
+}
+
+func (x *WorkerInfo) GetGpuName() string {
+	if x != nil {
+		return x.GpuName
+	}
+	return ""
+}
+
+func (x *WorkerInfo) GetSandbox() string {
+	if x != nil {
+		return x.Sandbox
+	}
+	return ""
+}
+
 // Heartbeat sent by the worker over NATS
 type PingRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"` // e.g. "free", "busy"
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"` // "free" or "busy"
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -127,30 +175,39 @@ func (x *PingRequest) GetStatus() string {
 	return ""
 }
 
-// JobRequest represents the embedding generation details sent via NATS JetStream
-type JobRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	ModelName     string                 `protobuf:"bytes,2,opt,name=model_name,json=modelName,proto3" json:"model_name,omitempty"` // e.g. "all-minilm"
-	InputText     string                 `protobuf:"bytes,3,opt,name=input_text,json=inputText,proto3" json:"input_text,omitempty"` // The text to generate embeddings for
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+// TrainingJobRequest represents a distributed model training job
+type TrainingJobRequest struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	JobId              string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	TrainingScript     []byte                 `protobuf:"bytes,2,opt,name=training_script,json=trainingScript,proto3" json:"training_script,omitempty"`               // raw bytes of the .py training file
+	Requirements       string                 `protobuf:"bytes,3,opt,name=requirements,proto3" json:"requirements,omitempty"`                                         // raw requirements.txt content, inlined
+	DatasetType        string                 `protobuf:"bytes,4,opt,name=dataset_type,json=datasetType,proto3" json:"dataset_type,omitempty"`                        // "hf" or "object_store"
+	DatasetRef         string                 `protobuf:"bytes,5,opt,name=dataset_ref,json=datasetRef,proto3" json:"dataset_ref,omitempty"`                           // HF dataset ID or Object Store key
+	BaseModelType      string                 `protobuf:"bytes,6,opt,name=base_model_type,json=baseModelType,proto3" json:"base_model_type,omitempty"`                // "hf" or "object_store"
+	BaseModelRef       string                 `protobuf:"bytes,7,opt,name=base_model_ref,json=baseModelRef,proto3" json:"base_model_ref,omitempty"`                   // HF model ID or Object Store key
+	TrainingConfigJson string                 `protobuf:"bytes,8,opt,name=training_config_json,json=trainingConfigJson,proto3" json:"training_config_json,omitempty"` // JSON-encoded hyperparameters
+	RequiresGpu        bool                   `protobuf:"varint,9,opt,name=requires_gpu,json=requiresGpu,proto3" json:"requires_gpu,omitempty"`
+	MinRamGb           float32                `protobuf:"fixed32,10,opt,name=min_ram_gb,json=minRamGb,proto3" json:"min_ram_gb,omitempty"`
+	MinVramGb          float32                `protobuf:"fixed32,11,opt,name=min_vram_gb,json=minVramGb,proto3" json:"min_vram_gb,omitempty"`
+	MinDiskGb          float32                `protobuf:"fixed32,12,opt,name=min_disk_gb,json=minDiskGb,proto3" json:"min_disk_gb,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
-func (x *JobRequest) Reset() {
-	*x = JobRequest{}
+func (x *TrainingJobRequest) Reset() {
+	*x = TrainingJobRequest{}
 	mi := &file_worker_worker_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *JobRequest) String() string {
+func (x *TrainingJobRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*JobRequest) ProtoMessage() {}
+func (*TrainingJobRequest) ProtoMessage() {}
 
-func (x *JobRequest) ProtoReflect() protoreflect.Message {
+func (x *TrainingJobRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_worker_worker_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -162,40 +219,103 @@ func (x *JobRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use JobRequest.ProtoReflect.Descriptor instead.
-func (*JobRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use TrainingJobRequest.ProtoReflect.Descriptor instead.
+func (*TrainingJobRequest) Descriptor() ([]byte, []int) {
 	return file_worker_worker_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *JobRequest) GetJobId() string {
+func (x *TrainingJobRequest) GetJobId() string {
 	if x != nil {
 		return x.JobId
 	}
 	return ""
 }
 
-func (x *JobRequest) GetModelName() string {
+func (x *TrainingJobRequest) GetTrainingScript() []byte {
 	if x != nil {
-		return x.ModelName
+		return x.TrainingScript
+	}
+	return nil
+}
+
+func (x *TrainingJobRequest) GetRequirements() string {
+	if x != nil {
+		return x.Requirements
 	}
 	return ""
 }
 
-func (x *JobRequest) GetInputText() string {
+func (x *TrainingJobRequest) GetDatasetType() string {
 	if x != nil {
-		return x.InputText
+		return x.DatasetType
 	}
 	return ""
 }
 
-// JobResponse represents the result of the embedding generation
+func (x *TrainingJobRequest) GetDatasetRef() string {
+	if x != nil {
+		return x.DatasetRef
+	}
+	return ""
+}
+
+func (x *TrainingJobRequest) GetBaseModelType() string {
+	if x != nil {
+		return x.BaseModelType
+	}
+	return ""
+}
+
+func (x *TrainingJobRequest) GetBaseModelRef() string {
+	if x != nil {
+		return x.BaseModelRef
+	}
+	return ""
+}
+
+func (x *TrainingJobRequest) GetTrainingConfigJson() string {
+	if x != nil {
+		return x.TrainingConfigJson
+	}
+	return ""
+}
+
+func (x *TrainingJobRequest) GetRequiresGpu() bool {
+	if x != nil {
+		return x.RequiresGpu
+	}
+	return false
+}
+
+func (x *TrainingJobRequest) GetMinRamGb() float32 {
+	if x != nil {
+		return x.MinRamGb
+	}
+	return 0
+}
+
+func (x *TrainingJobRequest) GetMinVramGb() float32 {
+	if x != nil {
+		return x.MinVramGb
+	}
+	return 0
+}
+
+func (x *TrainingJobRequest) GetMinDiskGb() float32 {
+	if x != nil {
+		return x.MinDiskGb
+	}
+	return 0
+}
+
+// JobResponse represents the result of a training job
 type JobResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
 	Success       bool                   `protobuf:"varint,2,opt,name=success,proto3" json:"success,omitempty"`
-	Embedding     []float32              `protobuf:"fixed32,3,rep,packed,name=embedding,proto3" json:"embedding,omitempty"` // The output float vector
-	Error         string                 `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
-	WorkerId      string                 `protobuf:"bytes,5,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	WorkerId      string                 `protobuf:"bytes,4,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	CheckpointKey string                 `protobuf:"bytes,5,opt,name=checkpoint_key,json=checkpointKey,proto3" json:"checkpoint_key,omitempty"` // Object Store key for the trained checkpoint
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -244,13 +364,6 @@ func (x *JobResponse) GetSuccess() bool {
 	return false
 }
 
-func (x *JobResponse) GetEmbedding() []float32 {
-	if x != nil {
-		return x.Embedding
-	}
-	return nil
-}
-
 func (x *JobResponse) GetError() string {
 	if x != nil {
 		return x.Error
@@ -265,31 +378,137 @@ func (x *JobResponse) GetWorkerId() string {
 	return ""
 }
 
+func (x *JobResponse) GetCheckpointKey() string {
+	if x != nil {
+		return x.CheckpointKey
+	}
+	return ""
+}
+
+// TrainingProgress is published periodically by the worker during training
+type TrainingProgress struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	WorkerId      string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	Epoch         int32                  `protobuf:"varint,3,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Step          int32                  `protobuf:"varint,4,opt,name=step,proto3" json:"step,omitempty"`
+	Loss          float32                `protobuf:"fixed32,5,opt,name=loss,proto3" json:"loss,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TrainingProgress) Reset() {
+	*x = TrainingProgress{}
+	mi := &file_worker_worker_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TrainingProgress) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TrainingProgress) ProtoMessage() {}
+
+func (x *TrainingProgress) ProtoReflect() protoreflect.Message {
+	mi := &file_worker_worker_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TrainingProgress.ProtoReflect.Descriptor instead.
+func (*TrainingProgress) Descriptor() ([]byte, []int) {
+	return file_worker_worker_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *TrainingProgress) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *TrainingProgress) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *TrainingProgress) GetEpoch() int32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *TrainingProgress) GetStep() int32 {
+	if x != nil {
+		return x.Step
+	}
+	return 0
+}
+
+func (x *TrainingProgress) GetLoss() float32 {
+	if x != nil {
+		return x.Loss
+	}
+	return 0
+}
+
 var File_worker_worker_proto protoreflect.FileDescriptor
 
 const file_worker_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x13worker/worker.proto\x12\x06worker\"E\n" +
+	"\x13worker/worker.proto\x12\x06worker\"\xec\x01\n" +
 	"\n" +
 	"WorkerInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
-	"\x0fsupported_model\x18\x02 \x03(\tR\x0esupportedModel\"5\n" +
+	"\x0fsupported_model\x18\x02 \x03(\tR\x0esupportedModel\x12\x17\n" +
+	"\ahas_gpu\x18\x03 \x01(\bR\x06hasGpu\x12\x1e\n" +
+	"\vgpu_vram_gb\x18\x04 \x01(\x02R\tgpuVramGb\x12\x15\n" +
+	"\x06ram_gb\x18\x05 \x01(\x02R\x05ramGb\x12 \n" +
+	"\fdisk_free_gb\x18\x06 \x01(\x02R\n" +
+	"diskFreeGb\x12\x19\n" +
+	"\bgpu_name\x18\a \x01(\tR\agpuName\x12\x18\n" +
+	"\asandbox\x18\b \x01(\tR\asandbox\"5\n" +
 	"\vPingRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"a\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\xbd\x03\n" +
+	"\x12TrainingJobRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12'\n" +
+	"\x0ftraining_script\x18\x02 \x01(\fR\x0etrainingScript\x12\"\n" +
+	"\frequirements\x18\x03 \x01(\tR\frequirements\x12!\n" +
+	"\fdataset_type\x18\x04 \x01(\tR\vdatasetType\x12\x1f\n" +
+	"\vdataset_ref\x18\x05 \x01(\tR\n" +
+	"datasetRef\x12&\n" +
+	"\x0fbase_model_type\x18\x06 \x01(\tR\rbaseModelType\x12$\n" +
+	"\x0ebase_model_ref\x18\a \x01(\tR\fbaseModelRef\x120\n" +
+	"\x14training_config_json\x18\b \x01(\tR\x12trainingConfigJson\x12!\n" +
+	"\frequires_gpu\x18\t \x01(\bR\vrequiresGpu\x12\x1c\n" +
 	"\n" +
-	"JobRequest\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1d\n" +
-	"\n" +
-	"model_name\x18\x02 \x01(\tR\tmodelName\x12\x1d\n" +
-	"\n" +
-	"input_text\x18\x03 \x01(\tR\tinputText\"\x8f\x01\n" +
+	"min_ram_gb\x18\n" +
+	" \x01(\x02R\bminRamGb\x12\x1e\n" +
+	"\vmin_vram_gb\x18\v \x01(\x02R\tminVramGb\x12\x1e\n" +
+	"\vmin_disk_gb\x18\f \x01(\x02R\tminDiskGb\"\x98\x01\n" +
 	"\vJobResponse\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x18\n" +
-	"\asuccess\x18\x02 \x01(\bR\asuccess\x12\x1c\n" +
-	"\tembedding\x18\x03 \x03(\x02R\tembedding\x12\x14\n" +
-	"\x05error\x18\x04 \x01(\tR\x05error\x12\x1b\n" +
-	"\tworker_id\x18\x05 \x01(\tR\bworkerIdB=Z;github.com/edgegrid/edgegrid/internal/proto/worker;workerpbb\x06proto3"
+	"\asuccess\x18\x02 \x01(\bR\asuccess\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\x12\x1b\n" +
+	"\tworker_id\x18\x04 \x01(\tR\bworkerId\x12%\n" +
+	"\x0echeckpoint_key\x18\x05 \x01(\tR\rcheckpointKey\"\x84\x01\n" +
+	"\x10TrainingProgress\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
+	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x14\n" +
+	"\x05epoch\x18\x03 \x01(\x05R\x05epoch\x12\x12\n" +
+	"\x04step\x18\x04 \x01(\x05R\x04step\x12\x12\n" +
+	"\x04loss\x18\x05 \x01(\x02R\x04lossB=Z;github.com/edgegrid/edgegrid/internal/proto/worker;workerpbb\x06proto3"
 
 var (
 	file_worker_worker_proto_rawDescOnce sync.Once
@@ -303,12 +522,13 @@ func file_worker_worker_proto_rawDescGZIP() []byte {
 	return file_worker_worker_proto_rawDescData
 }
 
-var file_worker_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_worker_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_worker_worker_proto_goTypes = []any{
-	(*WorkerInfo)(nil),  // 0: worker.WorkerInfo
-	(*PingRequest)(nil), // 1: worker.PingRequest
-	(*JobRequest)(nil),  // 2: worker.JobRequest
-	(*JobResponse)(nil), // 3: worker.JobResponse
+	(*WorkerInfo)(nil),         // 0: worker.WorkerInfo
+	(*PingRequest)(nil),        // 1: worker.PingRequest
+	(*TrainingJobRequest)(nil), // 2: worker.TrainingJobRequest
+	(*JobResponse)(nil),        // 3: worker.JobResponse
+	(*TrainingProgress)(nil),   // 4: worker.TrainingProgress
 }
 var file_worker_worker_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -329,7 +549,7 @@ func file_worker_worker_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_worker_worker_proto_rawDesc), len(file_worker_worker_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -2,6 +2,8 @@
 
 This document captures architectural design challenges, trade-offs, and plans for future improvements to the EdgeGrid codebase.
 
+> **Training Extension**: All decisions around distributed model training (artifact transport, GPU detection, venv caching, security model, mid-training resume, directory isolation) are documented separately in [`training_extension.md`](./training_extension.md).
+
 ## 1. Subprocess Exit & Crash Detection (Executor Sidecars)
 
 ### Current Behavior
@@ -28,8 +30,16 @@ EdgeGrid uses **Unix Domain Sockets (UDS) + Protobuf** for local inter-process c
 * **Direct Binary Serialization**: Requests and responses are serialized directly into binary protobuf payloads (`JobRequest` and `JobResponse`), bypassing text JSON parsing.
 
 ### Future Work
-* **Request Batching**: Collect incoming single embedding jobs and pass them as a batch (e.g. up to 16/32 texts) to `SentenceTransformer` to speed up neural network vectorization.
-* **ONNX Runtime (CGO)**: Eliminate the Python sidecar process entirely by converting Hugging Face models to ONNX and executing them directly in-process within the Go worker.
+* **Request Batching**: Collect incoming single embedding jobs and pass them as a batch (e.g. up to 16/32 texts) to the inference engine to speed up neural network vectorization.
+* **GPU/CUDA Acceleration (Large Model Path)**:
+  * **CUDA Auto-Detection**: *(Design decided)* Detect GPU at worker startup via `nvidia-smi --query-gpu=name,memory.total --format=csv,noheader`. Result is stored in the extended `WorkerInfo` proto fields (`has_gpu`, `gpu_vram_gb`, `gpu_name`). Device is passed to the Python subprocess via `DEVICE=cuda` env var. See [`training_extension.md § GPU Detection`](./training_extension.md).
+  * **Precision Optimizations**: Enable half-precision (FP16 or BF16) to reduce VRAM memory footprint and increase inference throughput.
+  * **Hardware Metadata Registration**: *(Design decided)* `WorkerInfo` proto extended with `has_gpu`, `gpu_vram_gb`, `ram_gb`, `disk_free_gb`, `gpu_name`, `sandbox`. Coordinator uses these fields to route training jobs only to qualifying workers. See [`training_extension.md § Proto Changes`](./training_extension.md).
+* **WasmEdge Sandboxing (Lightweight Edge Path)**:
+  * **Eliminate Python Sidecar**: Compile a lightweight WebAssembly module (`.wasm` runner) written in Rust/C++ that utilizes the **WASI-NN API** for executing model graphs.
+  * **Model Format Transition**: Export PyTorch model weights to ONNX format (or GGUF for llama.cpp/ggml backends) and load them dynamically into WasmEdge.
+  * **Sandbox Security & Portability**: *(v1 approach decided)* v1 uses `--allow-arbitrary-code` flag + OS resource limits (`RLIMIT_AS`, `RLIMIT_CPU`) + Docker isolation when available. WasmEdge remains the long-term target. See [`training_extension.md § Security Model`](./training_extension.md).
+  * **Dynamic Resource & Model Management**: Allow the Go agent to dynamically download, cache, and delete model files from the filesystem while passing paths to the Wasm module at runtime.
 
 ## 3. Performance Optimization Opportunities
 
@@ -56,4 +66,15 @@ To prepare EdgeGrid for high-throughput production workloads, the following low-
 * **Problem**: Allocating a fresh byte slice for every response (`make([]byte, respLength)`) triggers high garbage collection overhead in Go.
 * **Solution**: Implement a `sync.Pool` to reuse byte slices for reading socket payloads.
 
+---
+
+## 4. Training Extension
+
+All training-specific future work is tracked in [`training_extension.md`](./training_extension.md). Items still open after the initial design:
+
+* **Multi-GPU / Distributed Training**: PyTorch DDP across multiple workers requires workers to communicate directly with each other — a separate coordination layer on top of the current architecture. Deferred post-v1.
+* **Large Dataset Support (> 50GB)**: NATS Object Store is bounded by coordinator disk. For very large datasets, the job spec should accept a presigned S3/GCS/R2 URL as a third `dataset.type` option (`"url"`), with the worker downloading directly. No coordinator involvement.
+* **Persistent Job History**: Current job state TTL is 24h in NATS KV. Long-term, a lightweight SQLite or embedded key-value store on the coordinator would allow querying historical jobs and checkpoint keys beyond the TTL window.
+* **Job Priority Queue**: NATS JetStream delivers FIFO. A priority mechanism would require a separate subject per priority tier (e.g. `jobs.train.high.<model>`, `jobs.train.low.<model>`) with workers subscribing to higher-priority subjects first.
+* **Federated / Split Training**: A single worker handles one job entirely. Split training (sharding a model across multiple workers) requires a new coordination protocol between workers and is out of scope for the current architecture.
 

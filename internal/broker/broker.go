@@ -3,45 +3,58 @@ package broker
 import (
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
 )
 
 const (
-	StreamName          = "JOBS"
-	SubjectJobsPrefix   = "jobs.build."
-	SubjectJobsWildcard = "jobs.build.*"
-	SubjectResults      = "jobs.results"
-	SubjectRegister     = "workers.register"
-	SubjectHeartbeat    = "workers.heartbeat"
+	StreamName = "JOBS"
+
+	// Training job subjects
+	SubjectTrainPrefix   = "jobs.train."
+	SubjectTrainWildcard = "jobs.train.*"
+	SubjectResults       = "jobs.results"
+	SubjectProgress      = "jobs.progress"
+	SubjectCancel        = "jobs.cancel"
+
+	// Worker lifecycle subjects
+	SubjectRegister  = "workers.register"
+	SubjectHeartbeat = "workers.heartbeat"
+
+	// Object Store bucket names
+	BucketDatasets    = "datasets"
+	BucketCheckpoints = "checkpoints"
 )
 
 // Broker wraps the shared NATS JetStream client.
 type Broker struct {
-	Conn *nats.Conn
-	JS   nats.JetStreamContext
+	Conn     *nats.Conn
+	JS       nats.JetStreamContext
+	Replicas int // number of NATS nodes that store each stream/KV/object replica
 }
 
 // NewBroker creates a broker from an existing NATS connection.
-func NewBroker(nc *nats.Conn) (*Broker, error) {
+// replicas controls the JetStream replication factor: 1 for single-node dev,
+// 3 for a production cluster (tolerates 1 replica node failure).
+func NewBroker(nc *nats.Conn, replicas int) (*Broker, error) {
 	js, err := nc.JetStream()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
-
-	return &Broker{
-		Conn: nc,
-		JS:   js,
-	}, nil
+	if replicas < 1 {
+		replicas = 1
+	}
+	return &Broker{Conn: nc, JS: js, Replicas: replicas}, nil
 }
 
-// EnsureStream creates or updates the JOBS stream.
+// EnsureStream creates or updates the JOBS stream covering all subjects.
 func (b *Broker) EnsureStream() error {
 	subjects := []string{
-		SubjectJobsWildcard,
+		SubjectTrainWildcard,
 		SubjectResults,
+		SubjectProgress,
+		SubjectCancel,
 		SubjectRegister,
 		SubjectHeartbeat,
 	}
@@ -51,15 +64,17 @@ func (b *Broker) EnsureStream() error {
 		_, err = b.JS.AddStream(&nats.StreamConfig{
 			Name:     StreamName,
 			Subjects: subjects,
+			Replicas: b.Replicas,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to add stream: %w", err)
 		}
-		log.Printf("JetStream stream %q created", StreamName)
+		log.Printf("JetStream stream %q created (replicas=%d)", StreamName, b.Replicas)
 	} else {
 		_, err = b.JS.UpdateStream(&nats.StreamConfig{
 			Name:     StreamName,
 			Subjects: subjects,
+			Replicas: b.Replicas,
 		})
 		if err != nil {
 			log.Printf("could not update JetStream stream configuration: %v", err)
@@ -70,35 +85,15 @@ func (b *Broker) EnsureStream() error {
 	return nil
 }
 
-// PublishProto publishes a protobuf message to a NATS subject.
+// PublishProto serializes a protobuf message and publishes it to a NATS subject.
 func (b *Broker) PublishProto(subject string, msg proto.Message) error {
 	data, err := proto.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal proto message: %w", err)
 	}
-
 	_, err = b.JS.Publish(subject, data)
 	if err != nil {
 		return fmt.Errorf("failed to publish to subject %s: %w", subject, err)
 	}
 	return nil
-}
-
-// GetOrCreateKV creates or retrieves a Key-Value bucket
-func (b *Broker) GetOrCreateKV(
-	bucket string, 
-	ttl time.Duration, // for the individual key in the bucket not entire bucket
-) (nats.KeyValue, error) {
-	kv, err := b.JS.KeyValue(bucket)
-	if err != nil {
-		// Bucket might not exist, create it
-		kv, err = b.JS.CreateKeyValue(&nats.KeyValueConfig{
-			Bucket: bucket,
-			TTL:    ttl,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create KV bucket %s: %w", bucket, err)
-		}
-	}
-	return kv, nil
 }

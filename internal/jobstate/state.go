@@ -18,23 +18,22 @@ const (
 )
 
 type JobStatus struct {
-	JobID     string    `json:"job_id"`
-	State     State     `json:"state"`
-	WorkerID  string    `json:"worker_id,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	Embedding []float32 `json:"embedding,omitempty"`
-	UpdatedAt time.Time `json:"updated_at"`
+	JobID         string    `json:"job_id"`
+	State         State     `json:"state"`
+	WorkerID      string    `json:"worker_id,omitempty"`
+	Error         string    `json:"error,omitempty"`
+	CheckpointKey string    `json:"checkpoint_key,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
-// UpdateJobStatus updates the status of a job in the NATS KeyValue bucket.
-func UpdateJobStatus(kv nats.KeyValue, jobID string, state State, workerID string, errMsg string, embedding []float32) error {
+func UpdateJobStatus(kv nats.KeyValue, jobID string, state State, workerID string, errMsg string, checkpointKey string) error {
 	status := JobStatus{
-		JobID:     jobID,
-		State:     state,
-		WorkerID:  workerID,
-		Error:     errMsg,
-		Embedding: embedding,
-		UpdatedAt: time.Now(),
+		JobID:         jobID,
+		State:         state,
+		WorkerID:      workerID,
+		Error:         errMsg,
+		CheckpointKey: checkpointKey,
+		UpdatedAt:     time.Now(),
 	}
 
 	bytes, err := json.Marshal(status)
@@ -49,7 +48,6 @@ func UpdateJobStatus(kv nats.KeyValue, jobID string, state State, workerID strin
 	return nil
 }
 
-// GetJobStatus retrieves the status of a job from the NATS KeyValue bucket.
 func GetJobStatus(kv nats.KeyValue, jobID string) (*JobStatus, error) {
 	entry, err := kv.Get(jobID)
 	if err != nil {

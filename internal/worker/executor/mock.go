@@ -2,62 +2,45 @@ package executor
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
-	"fmt"
-	"math"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"time"
+
+	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
 )
 
-// MockExecutor generates high-quality deterministic embedding vectors for testing/mocking.
+// MockExecutor simulates a training run without requiring Python or a GPU.
+// It writes a fake checkpoint to jobDir/output/ after a short delay.
+// Used for Docker Compose setups and tests.
 type MockExecutor struct{}
 
-// NewMockExecutor initializes a MockExecutor.
 func NewMockExecutor() *MockExecutor {
 	return &MockExecutor{}
 }
 
-// Start is a no-op for MockExecutor.
-func (e *MockExecutor) Start(ctx context.Context, models []string) error {
-	return nil
-}
-
-// Close is a no-op for MockExecutor.
-func (e *MockExecutor) Close() error {
-	return nil
-}
-
-// Execute returns a deterministic, normalized embedding vector based on input hash.
-func (e *MockExecutor) Execute(ctx context.Context, modelName string, inputText string) ([]float32, error) {
-	dimensions := 128
-	switch modelName {
-	case "all-minilm":
-		dimensions = 384
-	case "clip":
-		dimensions = 512
-	case "nomic-embed-text":
-		dimensions = 768
+func (e *MockExecutor) Execute(ctx context.Context, req *workerpb.TrainingJobRequest, jobDir string) error {
+	outputDir := filepath.Join(jobDir, "output")
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return err
 	}
 
-	vector := make([]float32, dimensions)
-	var sumSquares float64
-
-	for i := 0; i < dimensions; i++ {
-		seed := fmt.Sprintf("%s:%s:%d", modelName, inputText, i)
-		hash := sha256.Sum256([]byte(seed))
-
-		valUint := binary.BigEndian.Uint32(hash[:4])
-		valFloat := (float32(valUint) / float32(math.MaxUint32)) * 2.0 - 1.0
-
-		vector[i] = valFloat
-		sumSquares += float64(valFloat * valFloat)
+	// Simulate training time
+	select {
+	case <-time.After(2 * time.Second):
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
-	norm := math.Sqrt(sumSquares)
-	if norm > 0 {
-		for i := 0; i < dimensions; i++ {
-			vector[i] = float32(float64(vector[i]) / norm)
-		}
+	// Write a fake config.json so the output looks like a real HF checkpoint
+	config := map[string]any{
+		"mock":       true,
+		"job_id":     req.JobId,
+		"base_model": req.BaseModelRef,
+		"dataset":    req.DatasetRef,
 	}
-
-	return vector, nil
+	data, _ := json.MarshalIndent(config, "", "  ")
+	return os.WriteFile(filepath.Join(outputDir, "config.json"), data, 0644)
 }
+
+func (e *MockExecutor) Close() error { return nil }

@@ -23,12 +23,12 @@ type Worker struct {
 }
 
 // NewWorkerWithConn creates a worker with a shared NATS connection and injected executor.
-func NewWorkerWithConn(nc *nats.Conn, supportedModels []string, workerID string, exec executor.Executor) (*Worker, error) {
+func NewWorkerWithConn(nc *nats.Conn, supportedModels []string, workerID string, exec executor.Executor, replicas int) (*Worker, error) {
 	if workerID == "" {
 		workerID = generateWorkerID()
 	}
 
-	wb, err := broker.NewBroker(nc)
+	wb, err := broker.NewBroker(nc, replicas)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize shared broker: %w", err)
 	}
@@ -43,10 +43,6 @@ func NewWorkerWithConn(nc *nats.Conn, supportedModels []string, workerID string,
 
 // Start registers the worker and starts background listeners.
 func (w *Worker) Start(ctx context.Context) error {
-	if err := w.executor.Start(ctx, w.models); err != nil {
-		return fmt.Errorf("failed to start executor: %w", err)
-	}
-
 	err := w.RegisterWorker()
 	if err != nil {
 		return fmt.Errorf("registration failed: %w", err)

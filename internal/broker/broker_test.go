@@ -27,9 +27,7 @@ func runNatsServer(t *testing.T) (*natsserver.Server, string) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	t.Cleanup(func() {
-		os.RemoveAll(dir)
-	})
+	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	opts := &natsserver.Options{
 		Host:      addr.IP.String(),
@@ -61,37 +59,35 @@ func TestBroker_EnsureStreamAndPublish(t *testing.T) {
 	}
 	defer nc.Close()
 
-	b, err := broker.NewBroker(nc)
+	b, err := broker.NewBroker(nc, 1)
 	if err != nil {
 		t.Fatalf("failed to initialize broker: %v", err)
 	}
 
 	// 1. Verify stream creation
-	err = b.EnsureStream()
-	if err != nil {
+	if err := b.EnsureStream(); err != nil {
 		t.Fatalf("failed to ensure stream first time: %v", err)
 	}
 
-	// 2. Verify idempotency (should succeed without error)
-	err = b.EnsureStream()
-	if err != nil {
+	// 2. Verify idempotency
+	if err := b.EnsureStream(); err != nil {
 		t.Fatalf("failed to ensure stream second time: %v", err)
 	}
 
 	// 3. Test protobuf publication
-	testMsg := &workerpb.JobRequest{
-		JobId:     "test-job-uuid",
-		ModelName: "all-minilm",
-		InputText: "test payload string",
+	testMsg := &workerpb.TrainingJobRequest{
+		JobId:        "test-job-uuid",
+		DatasetType:  "object_store",
+		DatasetRef:   "dataset-key-123",
+		BaseModelRef: "gpt2",
 	}
 
-	err = b.PublishProto(broker.SubjectJobsPrefix+"all-minilm", testMsg)
-	if err != nil {
+	if err := b.PublishProto(broker.SubjectTrainPrefix+"gpt2", testMsg); err != nil {
 		t.Fatalf("failed to publish proto message: %v", err)
 	}
 
-	// Subscribe and verify message content
-	sub, err := b.JS.SubscribeSync(broker.SubjectJobsPrefix + "all-minilm")
+	// 4. Subscribe and verify message content
+	sub, err := b.JS.SubscribeSync(broker.SubjectTrainPrefix + "gpt2")
 	if err != nil {
 		t.Fatalf("failed to subscribe: %v", err)
 	}
@@ -101,13 +97,12 @@ func TestBroker_EnsureStreamAndPublish(t *testing.T) {
 		t.Fatalf("failed to fetch message: %v", err)
 	}
 
-	var received workerpb.JobRequest
-	err = proto.Unmarshal(msg.Data, &received)
-	if err != nil {
+	var received workerpb.TrainingJobRequest
+	if err := proto.Unmarshal(msg.Data, &received); err != nil {
 		t.Fatalf("failed to unmarshal message: %v", err)
 	}
 
-	if received.JobId != testMsg.JobId || received.InputText != testMsg.InputText {
+	if received.JobId != testMsg.JobId || received.DatasetRef != testMsg.DatasetRef {
 		t.Errorf("received message does not match: expected %+v, got %+v", testMsg, received)
 	}
 }

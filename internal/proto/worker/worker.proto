@@ -6,27 +6,51 @@ option go_package = "github.com/edgegrid/edgegrid/internal/proto/worker;workerpb
 // Registration info sent by the worker over NATS
 message WorkerInfo {
   string id = 1;
-  repeated string supported_model = 2; // e.g. ["llama3", "all-minilm"]
+  repeated string supported_model = 2;
+  bool has_gpu = 3;
+  float gpu_vram_gb = 4;
+  float ram_gb = 5;
+  float disk_free_gb = 6;
+  string gpu_name = 7;
+  string sandbox = 8; // "none" or "docker"
 }
 
 // Heartbeat sent by the worker over NATS
 message PingRequest {
   string id = 1;
-  string status = 2; // e.g. "free", "busy"
+  string status = 2; // "free" or "busy"
 }
 
-// JobRequest represents the embedding generation details sent via NATS JetStream
-message JobRequest {
+// TrainingJobRequest represents a distributed model training job
+message TrainingJobRequest {
   string job_id = 1;
-  string model_name = 2; // e.g. "all-minilm"
-  string input_text = 3; // The text to generate embeddings for
+  bytes training_script = 2;        // raw bytes of the .py training file
+  string requirements = 3;          // raw requirements.txt content, inlined
+  string dataset_type = 4;          // "hf" or "object_store"
+  string dataset_ref = 5;           // HF dataset ID or Object Store key
+  string base_model_type = 6;       // "hf" or "object_store"
+  string base_model_ref = 7;        // HF model ID or Object Store key
+  string training_config_json = 8;  // JSON-encoded hyperparameters
+  bool requires_gpu = 9;
+  float min_ram_gb = 10;
+  float min_vram_gb = 11;
+  float min_disk_gb = 12;
 }
 
-// JobResponse represents the result of the embedding generation
+// JobResponse represents the result of a training job
 message JobResponse {
   string job_id = 1;
   bool success = 2;
-  repeated float embedding = 3; // The output float vector
-  string error = 4;
-  string worker_id = 5;
+  string error = 3;
+  string worker_id = 4;
+  string checkpoint_key = 5; // Object Store key for the trained checkpoint
+}
+
+// TrainingProgress is published periodically by the worker during training
+message TrainingProgress {
+  string job_id = 1;
+  string worker_id = 2;
+  int32 epoch = 3;
+  int32 step = 4;
+  float loss = 5;
 }

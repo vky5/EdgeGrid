@@ -21,14 +21,18 @@ type Agent struct {
 
 func NewAgent(cfg *config.Config) (*Agent, error) {
 	log.Printf("connecting to NATS at %s", cfg.NatsURL)
-	nc, err := nats.Connect(cfg.NatsURL)
+	nc, err := nats.Connect(cfg.NatsURL,
+		nats.RetryOnFailedConnect(true),
+		nats.MaxReconnects(-1),
+		nats.ReconnectWait(2*nats.DefaultReconnectWait),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to NATS: %w", err)
 	}
 
 	var coord *coordinator.Coordinator
 	if cfg.Server.Enabled {
-		coord, err = coordinator.NewCoordinatorWithConn(nc)
+		coord, err = coordinator.NewCoordinatorWithConn(nc, cfg.Replicas)
 		if err != nil {
 			nc.Close()
 			return nil, fmt.Errorf("failed to initialize coordinator: %w", err)
@@ -43,13 +47,11 @@ func NewAgent(cfg *config.Config) (*Agent, error) {
 	if cfg.Client.Enabled {
 		var execInstance executor.Executor
 		switch cfg.Client.Executor {
-		case "mock":
+		case "mock", "":
 			execInstance = executor.NewMockExecutor()
-		case "huggingface", "":
-			execInstance = executor.NewHuggingFaceExecutor()
 		default:
 			nc.Close()
-			return nil, fmt.Errorf("unknown executor type: %s", cfg.Client.Executor)
+			return nil, fmt.Errorf("unknown executor type %q — valid options: mock", cfg.Client.Executor)
 		}
 
 		workerAgent, err = worker.NewWorkerWithConn(
@@ -57,6 +59,7 @@ func NewAgent(cfg *config.Config) (*Agent, error) {
 			cfg.Client.SupportedModels,
 			cfg.Client.WorkerID,
 			execInstance,
+			cfg.Replicas,
 		)
 		if err != nil {
 			nc.Close()
