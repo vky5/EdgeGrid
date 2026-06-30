@@ -13,6 +13,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 	"github.com/edgegrid/edgegrid/internal/jobstate"
 	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
+	"google.golang.org/protobuf/proto"
 )
 
 type SubmitJobRequest struct {
@@ -113,19 +114,6 @@ func handleSubmitJob(w http.ResponseWriter, r *http.Request, jsBroker *broker.Br
 
 	jobID := generateJobID()
 
-	kv, err := jsBroker.GetOrCreateKV("jobs_state", 24*time.Hour)
-	if err != nil {
-		log.Printf("failed to get jobs_state KV: %v", err)
-		http.Error(w, "failed to connect to state store", http.StatusInternalServerError)
-		return
-	}
-
-	if err := jobstate.UpdateJobStatus(kv, jobID, jobstate.StateQueued, "", "", ""); err != nil {
-		log.Printf("failed to write initial job state: %v", err)
-		http.Error(w, "failed to initialize job state", http.StatusInternalServerError)
-		return
-	}
-
 	req := &workerpb.TrainingJobRequest{
 		JobId:              jobID,
 		TrainingScript:     []byte(body.TrainingScript),
@@ -141,21 +129,40 @@ func handleSubmitJob(w http.ResponseWriter, r *http.Request, jsBroker *broker.Br
 		MinDiskGb:          body.MinDiskGB,
 	}
 
+	reqBytes, err := proto.Marshal(req)
+	if err != nil {
+		log.Printf("failed to marshal job request: %v", err)
+		http.Error(w, "failed to serialize job", http.StatusInternalServerError)
+		return
+	}
+
+	kv, err := jsBroker.GetOrCreateKV("jobs_state", 24*time.Hour)
+	if err != nil {
+		log.Printf("failed to get jobs_state KV: %v", err)
+		http.Error(w, "failed to connect to state store", http.StatusInternalServerError)
+		return
+	}
+
+	if err := jobstate.InitJobState(kv, jobID, reqBytes); err != nil {
+		log.Printf("failed to write initial job state: %v", err)
+		http.Error(w, "failed to initialize job state", http.StatusInternalServerError)
+		return
+	}
+
 	workerID, err := manager.FindAndAssignWorker(jobID, req)
 	if err != nil {
-		log.Printf("no worker available for job %s: %v", jobID, err)
-		http.Error(w, "no available worker: "+err.Error(), http.StatusServiceUnavailable)
-		return
+		// No free worker right now — job stays QUEUED and will be dispatched
+		// when a capable worker becomes available.
+		log.Printf("no free worker for job %s, leaving queued: %v", jobID, err)
+	} else {
+		subject := broker.SubjectTrainPrefix + workerID
+		if pubErr := jsBroker.PublishProto(subject, req); pubErr != nil {
+			log.Printf("failed to dispatch job %s to worker %s: %v", jobID, workerID, pubErr)
+			http.Error(w, "failed to dispatch job", http.StatusInternalServerError)
+			return
+		}
+		log.Printf("job %s dispatched to worker %s", jobID, workerID)
 	}
-
-	subject := broker.SubjectTrainPrefix + workerID
-	if err := jsBroker.PublishProto(subject, req); err != nil {
-		log.Printf("failed to publish job %s to worker %s: %v", jobID, workerID, err)
-		http.Error(w, "failed to dispatch job", http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("job %s dispatched to worker %s", jobID, workerID)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)

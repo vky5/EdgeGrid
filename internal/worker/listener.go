@@ -18,16 +18,15 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// RegisterWorker probes local hardware then publishes the worker's capabilities.
+// RegisterWorker publishes the worker's hardware capabilities detected at startup.
 func (a *Worker) RegisterWorker() error {
-	hw := detectHardware()
 	info := &workerpb.WorkerInfo{
 		Id:         a.id,
-		HasGpu:     hw.HasGPU,
-		GpuName:    hw.GPUName,
-		GpuVramGb:  hw.GPUVramGB,
-		RamGb:      hw.RAMGB,
-		DiskFreeGb: hw.DiskFreeGB,
+		HasGpu:     a.hw.HasGPU,
+		GpuName:    a.hw.GPUName,
+		GpuVramGb:  a.hw.GPUVramGB,
+		RamGb:      a.hw.RAMGB,
+		DiskFreeGb: a.hw.DiskFreeGB,
 		Sandbox:    "none",
 	}
 	return a.broker.PublishProto(broker.SubjectRegister, info)
@@ -43,9 +42,13 @@ func (a *Worker) StartHeartbeat(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			status := WorkerFree
+			if a.busy.Load() {
+				status = WorkerBusy
+			}
 			req := &workerpb.PingRequest{
 				Id:     a.id,
-				Status: "free",
+				Status: status,
 			}
 			if err := a.broker.PublishProto(broker.SubjectHeartbeat, req); err != nil {
 				log.Printf("failed to publish heartbeat: %v", err)
@@ -99,6 +102,12 @@ func (a *Worker) handleJob(ctx context.Context, msg *nats.Msg) {
 			msg.Nak()
 		}
 	}()
+
+	if !a.busy.CompareAndSwap(false, true) {
+		msg.NakWithDelay(10 * time.Second)
+		return
+	}
+	defer a.busy.Store(false)
 
 	var req workerpb.TrainingJobRequest
 	if err := proto.Unmarshal(msg.Data, &req); err != nil {

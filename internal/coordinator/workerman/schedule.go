@@ -32,7 +32,7 @@ func (wm *WorkerManager) FindAndAssignWorker(jobID string, req *workerpb.Trainin
 			continue
 		}
 
-		if !meetsRequirements(worker.Info, req) {
+		if !MeetsRequirements(worker.Info, req) {
 			continue
 		}
 
@@ -63,7 +63,8 @@ func (wm *WorkerManager) FindAndAssignWorker(jobID string, req *workerpb.Trainin
 		req.RequiresGpu, req.MinRamGb, req.MinVramGb, req.MinDiskGb)
 }
 
-func meetsRequirements(info *workerpb.WorkerInfo, req *workerpb.TrainingJobRequest) bool {
+// MeetsRequirements returns true if the worker's hardware satisfies the job's requirements.
+func MeetsRequirements(info *workerpb.WorkerInfo, req *workerpb.TrainingJobRequest) bool {
 	if req.RequiresGpu && !info.HasGpu {
 		return false
 	}
@@ -77,4 +78,49 @@ func meetsRequirements(info *workerpb.WorkerInfo, req *workerpb.TrainingJobReque
 		return false
 	}
 	return true
+}
+
+// GetWorker reads a worker's current state from KV without modifying it.
+func (wm *WorkerManager) GetWorker(workerID string) (*Worker, error) {
+	entry, err := wm.kv.Get(workerID)
+	if err != nil {
+		return nil, err
+	}
+	var worker Worker
+	if err := json.Unmarshal(entry.Value(), &worker); err != nil {
+		return nil, err
+	}
+	return &worker, nil
+}
+
+// TryAssignWorker atomically marks a specific worker as busy for the given job.
+// Uses CAS on the KV revision to prevent two coordinators assigning the same worker.
+func (wm *WorkerManager) TryAssignWorker(workerID, jobID string) error {
+	entry, err := wm.kv.Get(workerID)
+	if err != nil {
+		return fmt.Errorf("worker not found: %w", err)
+	}
+	var worker Worker
+	if err := json.Unmarshal(entry.Value(), &worker); err != nil {
+		return err
+	}
+	if worker.State != WorkerFree {
+		return fmt.Errorf("worker %s is %s", workerID, worker.State)
+	}
+	worker.State = WorkerBusy
+	worker.LastSeen = time.Now()
+	worker.Job = &Job{
+		ID:        jobID,
+		Status:    "running",
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	data, err := json.Marshal(worker)
+	if err != nil {
+		return err
+	}
+	if _, err := wm.kv.Update(workerID, data, entry.Revision()); err != nil {
+		return fmt.Errorf("CAS conflict — worker grabbed by another coordinator: %w", err)
+	}
+	return nil
 }

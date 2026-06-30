@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/edgegrid/edgegrid/internal/broker"
@@ -14,10 +15,17 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+const (
+	WorkerFree = "free"
+	WorkerBusy = "busy"
+)
+
 type Worker struct {
 	id       string
 	broker   *broker.Broker
 	executor executor.Executor
+	hw       HardwareSpec
+	busy     atomic.Bool
 }
 
 func NewWorkerWithConn(nc *nats.Conn, workerID string, exec executor.Executor, replicas int) (*Worker, error) {
@@ -38,6 +46,8 @@ func NewWorkerWithConn(nc *nats.Conn, workerID string, exec executor.Executor, r
 }
 
 func (w *Worker) Start(ctx context.Context) error {
+	w.hw = detectHardware()
+
 	if err := w.RegisterWorker(); err != nil {
 		return fmt.Errorf("registration failed: %w", err)
 	}
