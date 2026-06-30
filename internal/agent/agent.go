@@ -47,11 +47,13 @@ func NewAgent(cfg *config.Config) (*Agent, error) {
 	if cfg.Client.Enabled {
 		var execInstance executor.Executor
 		switch cfg.Client.Executor {
+		case "training":
+			execInstance = executor.NewTrainingExecutor()
 		case "mock", "":
 			execInstance = executor.NewMockExecutor()
 		default:
 			nc.Close()
-			return nil, fmt.Errorf("unknown executor type %q — valid options: mock", cfg.Client.Executor)
+			return nil, fmt.Errorf("unknown executor type %q — valid options: training, mock", cfg.Client.Executor)
 		}
 
 		workerAgent, err = worker.NewWorkerWithConn(

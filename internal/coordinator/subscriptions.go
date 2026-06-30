@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/edgegrid/edgegrid/internal/broker"
+	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 	"github.com/edgegrid/edgegrid/internal/jobstate"
 	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
 	"github.com/nats-io/nats.go"
@@ -74,6 +75,11 @@ func (c *Coordinator) SubscribeToResults(ctx context.Context) error {
 		} else {
 			log.Printf("job %s failed on worker %s: %s", resp.JobId, resp.WorkerId, resp.Error)
 			_ = jobstate.UpdateJobStatus(kv, resp.JobId, jobstate.StateFailed, resp.WorkerId, resp.Error, "")
+		}
+
+		// Mark the worker free so it can accept new jobs
+		if resp.WorkerId != "" {
+			c.manager.SetWorkerState(resp.WorkerId, workerman.WorkerFree)
 		}
 
 		msg.Ack()
