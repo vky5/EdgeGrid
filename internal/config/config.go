@@ -20,10 +20,9 @@ type ServerConfig struct {
 }
 
 type ClientConfig struct {
-	Enabled         bool
-	SupportedModels []string
-	WorkerID        string
-	Executor        string
+	Enabled  bool
+	WorkerID string
+	Executor string
 }
 
 func envInt(key string, fallback int) int {
@@ -40,7 +39,6 @@ func LoadConfig() *Config {
 	roleClient := flag.Bool("client", false, "Start the worker client agent")
 	natsURL := flag.String("nats", "", "NATS Connection URL")
 	apiPort := flag.String("port", "", "Coordinator HTTP API Port")
-	supportedModels := flag.String("models", "", "Comma-separated list of supported models (worker only)")
 	workerID := flag.String("worker-id", "", "Custom worker ID (worker only)")
 	executorType := flag.String("executor", "", "Executor backend (mock or training)")
 	replicas := flag.Int("replicas", 0, "NATS JetStream replication factor (0 = auto-detect from env)")
@@ -73,21 +71,6 @@ func LoadConfig() *Config {
 		finalPort = ":" + finalPort
 	}
 
-	modelsStr := *supportedModels
-	if modelsStr == "" {
-		modelsStr = os.Getenv("SUPPORTED_MODELS")
-	}
-	var models []string
-	if modelsStr != "" {
-		for _, m := range strings.Split(modelsStr, ",") {
-			m = strings.TrimSpace(m)
-			if m != "" {
-				models = append(models, m)
-			}
-		}
-	}
-	// No default models — workers must explicitly declare what they support
-
 	finalWorkerID := *workerID
 	if finalWorkerID == "" {
 		finalWorkerID = os.Getenv("WORKER_ID")
@@ -117,10 +100,9 @@ func LoadConfig() *Config {
 			Port:    finalPort,
 		},
 		Client: ClientConfig{
-			Enabled:         runClient,
-			SupportedModels: models,
-			WorkerID:        finalWorkerID,
-			Executor:        finalExecutor,
+			Enabled:  runClient,
+			WorkerID: finalWorkerID,
+			Executor: finalExecutor,
 		},
 	}
 }

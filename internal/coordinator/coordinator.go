@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/edgegrid/edgegrid/internal/broker"
 	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
@@ -45,9 +44,6 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 	}
 
 	log.Println("worker manager initialized")
-
-	go c.manager.StartHealthChecker(ctx, 2*time.Minute)
-	log.Println("worker health checker started")
 
 	if err := c.SubscribeToWorkerEvents(ctx); err != nil {
 		return fmt.Errorf("failed to subscribe to worker NATS events: %w", err)
