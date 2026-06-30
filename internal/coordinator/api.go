@@ -10,8 +10,24 @@ import (
 	"time"
 
 	"github.com/edgegrid/edgegrid/internal/broker"
+	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 	"github.com/edgegrid/edgegrid/internal/jobstate"
+	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
 )
+
+type SubmitJobRequest struct {
+	TrainingScript     string  `json:"training_script"`      // Python script content (plain text)
+	Requirements       string  `json:"requirements"`         // requirements.txt content
+	DatasetType        string  `json:"dataset_type"`         // "hf" or "object_store"
+	DatasetRef         string  `json:"dataset_ref"`          // HF dataset name or object store key
+	BaseModelType      string  `json:"base_model_type"`      // "hf" or "object_store"
+	BaseModelRef       string  `json:"base_model_ref"`       // HF model name or object store key
+	TrainingConfigJSON string  `json:"training_config_json"` // arbitrary JSON passed to training script
+	RequiresGPU        bool    `json:"requires_gpu"`
+	MinRAMGB           float32 `json:"min_ram_gb"`
+	MinVRAMGB          float32 `json:"min_vram_gb"`
+	MinDiskGB          float32 `json:"min_disk_gb"`
+}
 
 type SubmitJobResponse struct {
 	JobID  string `json:"job_id"`
@@ -24,7 +40,7 @@ func generateJobID() string {
 	return hex.EncodeToString(b)
 }
 
-func StartHTTPServer(addr string, jsBroker *broker.Broker) {
+func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager) {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +58,7 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker) {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		handleSubmitJob(w, r, jsBroker)
+		handleSubmitJob(w, r, jsBroker, manager)
 	})
 
 	// /jobs/{id}           → GET job status
@@ -58,7 +74,6 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker) {
 			return
 		}
 
-		// No sub-action: status check
 		if len(parts) == 1 {
 			handleGetJobStatus(w, r, jsBroker, jobID)
 			return
@@ -80,9 +95,22 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker) {
 	}
 }
 
-func handleSubmitJob(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker) {
-	// TODO: decode TrainingJobRequest, validate, publish to jobs.train.<model>
-	// This handler will be fully implemented when the training executor is wired up.
+func handleSubmitJob(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, manager *workerman.WorkerManager) {
+	var body SubmitJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if body.DatasetRef == "" {
+		http.Error(w, "dataset_ref is required", http.StatusBadRequest)
+		return
+	}
+	if body.TrainingScript == "" {
+		http.Error(w, "training_script is required", http.StatusBadRequest)
+		return
+	}
+
 	jobID := generateJobID()
 
 	kv, err := jsBroker.GetOrCreateKV("jobs_state", 24*time.Hour)
@@ -94,7 +122,40 @@ func handleSubmitJob(w http.ResponseWriter, r *http.Request, jsBroker *broker.Br
 
 	if err := jobstate.UpdateJobStatus(kv, jobID, jobstate.StateQueued, "", "", ""); err != nil {
 		log.Printf("failed to write initial job state: %v", err)
+		http.Error(w, "failed to initialize job state", http.StatusInternalServerError)
+		return
 	}
+
+	req := &workerpb.TrainingJobRequest{
+		JobId:              jobID,
+		TrainingScript:     []byte(body.TrainingScript),
+		Requirements:       body.Requirements,
+		DatasetType:        body.DatasetType,
+		DatasetRef:         body.DatasetRef,
+		BaseModelType:      body.BaseModelType,
+		BaseModelRef:       body.BaseModelRef,
+		TrainingConfigJson: body.TrainingConfigJSON,
+		RequiresGpu:        body.RequiresGPU,
+		MinRamGb:           body.MinRAMGB,
+		MinVramGb:          body.MinVRAMGB,
+		MinDiskGb:          body.MinDiskGB,
+	}
+
+	workerID, err := manager.FindAndAssignWorker(jobID, req)
+	if err != nil {
+		log.Printf("no worker available for job %s: %v", jobID, err)
+		http.Error(w, "no available worker: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	subject := broker.SubjectTrainPrefix + workerID
+	if err := jsBroker.PublishProto(subject, req); err != nil {
+		log.Printf("failed to publish job %s to worker %s: %v", jobID, workerID, err)
+		http.Error(w, "failed to dispatch job", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("job %s dispatched to worker %s", jobID, workerID)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)

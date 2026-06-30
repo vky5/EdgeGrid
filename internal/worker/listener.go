@@ -12,11 +12,17 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// RegisterWorker publishes the worker's capabilities to the coordinator.
+// RegisterWorker probes local hardware then publishes the worker's capabilities.
 func (a *Worker) RegisterWorker() error {
+	hw := detectHardware()
 	info := &workerpb.WorkerInfo{
-		Id:             a.id,
-		SupportedModel: a.models,
+		Id:         a.id,
+		HasGpu:     hw.HasGPU,
+		GpuName:    hw.GPUName,
+		GpuVramGb:  hw.GPUVramGB,
+		RamGb:      hw.RAMGB,
+		DiskFreeGb: hw.DiskFreeGB,
+		Sandbox:    "none",
 	}
 	return a.broker.PublishProto(broker.SubjectRegister, info)
 }
@@ -42,10 +48,10 @@ func (a *Worker) StartHeartbeat(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// StartJobListener pulls training jobs for one model type from NATS JetStream.
-func (a *Worker) StartJobListener(ctx context.Context, model string) {
-	subject := broker.SubjectTrainPrefix + model
-	durableConsumer := "training-consumer-" + model
+// StartJobListener pulls training jobs addressed to this worker from NATS JetStream.
+func (a *Worker) StartJobListener(ctx context.Context) {
+	subject := broker.SubjectTrainPrefix + a.id
+	durableConsumer := "training-consumer-" + a.id
 
 	sub, err := a.broker.JS.PullSubscribe(subject, durableConsumer, nats.ManualAck())
 	if err != nil {

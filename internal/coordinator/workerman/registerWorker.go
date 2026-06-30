@@ -12,10 +12,9 @@ import (
 
 func (wm *WorkerManager) RegisterWorker(ctx context.Context, info *workerpb.WorkerInfo) error {
 	worker := &Worker{
-		Info:           info,
-		LastSeen:       time.Now(),
-		State:          WorkerFree,
-		SupportedModel: info.SupportedModel,
+		Info:     info,
+		LastSeen: time.Now(),
+		State:    WorkerFree,
 	}
 
 	data, err := json.Marshal(worker)
@@ -28,6 +27,7 @@ func (wm *WorkerManager) RegisterWorker(ctx context.Context, info *workerpb.Work
 		return fmt.Errorf("failed to write worker to KV store: %w", err)
 	}
 
-	log.Printf("registered worker %s with models %v", info.Id, info.SupportedModel)
+	log.Printf("registered worker %s (gpu=%v ram=%.1fGB disk=%.1fGB)",
+		info.Id, info.HasGpu, info.RamGb, info.DiskFreeGb)
 	return nil
 }

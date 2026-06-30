@@ -57,7 +57,7 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 		return fmt.Errorf("failed to subscribe to job results: %w", err)
 	}
 
-	go StartHTTPServer(apiAddr, c.jsBroker)
+	go StartHTTPServer(apiAddr, c.jsBroker, c.manager)
 
 	<-ctx.Done()
 	log.Println("shutting down coordinator")

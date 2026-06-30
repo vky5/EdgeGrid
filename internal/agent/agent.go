@@ -56,7 +56,6 @@ func NewAgent(cfg *config.Config) (*Agent, error) {
 
 		workerAgent, err = worker.NewWorkerWithConn(
 			nc,
-			cfg.Client.SupportedModels,
 			cfg.Client.WorkerID,
 			execInstance,
 			cfg.Replicas,

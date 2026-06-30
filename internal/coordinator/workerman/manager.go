@@ -24,11 +24,10 @@ type Job struct {
 }
 
 type Worker struct {
-	Info           *workerpb.WorkerInfo `json:"info"`
-	LastSeen       time.Time            `json:"last_seen"`
-	State          string               `json:"state"`
-	Job            *Job                 `json:"job"`
-	SupportedModel []string             `json:"supported_model"`
+	Info     *workerpb.WorkerInfo `json:"info"`
+	LastSeen time.Time            `json:"last_seen"`
+	State    string               `json:"state"`
+	Job      *Job                 `json:"job"`
 }
 
 type WorkerManager struct {
