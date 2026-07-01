@@ -13,14 +13,19 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// coordinatorGroup is the NATS queue group name shared by all coordinator
-// instances. NATS delivers each message to exactly one member of the group,
-// preventing duplicate processing when multiple coordinators are running.
-const coordinatorGroup = "coordinators"
+// Each consumer group name must be unique per subject because JetStream
+// derives the durable consumer name from the queue group name. Two
+// subscriptions with the same group name but different subjects would cause
+// "subject does not match consumer" errors.
+const (
+	groupRegister  = "coord-register"
+	groupHeartbeat = "coord-heartbeat"
+	groupResults   = "coord-results"
+)
 
 // SubscribeToWorkerEvents consumes registration and heartbeat events.
 func (c *Coordinator) SubscribeToWorkerEvents(ctx context.Context) error {
-	_, err := c.jsBroker.JS.QueueSubscribe(broker.SubjectRegister, coordinatorGroup, func(msg *nats.Msg) {
+	_, err := c.jsBroker.JS.QueueSubscribe(broker.SubjectRegister, groupRegister, func(msg *nats.Msg) {
 		var info workerpb.WorkerInfo
 		if err := proto.Unmarshal(msg.Data, &info); err != nil {
 			log.Printf("failed to unmarshal worker registration payload: %v", err)
@@ -37,7 +42,7 @@ func (c *Coordinator) SubscribeToWorkerEvents(ctx context.Context) error {
 		return err
 	}
 
-	_, err = c.jsBroker.JS.QueueSubscribe(broker.SubjectHeartbeat, coordinatorGroup, func(msg *nats.Msg) {
+	_, err = c.jsBroker.JS.QueueSubscribe(broker.SubjectHeartbeat, groupHeartbeat, func(msg *nats.Msg) {
 		var req workerpb.PingRequest
 		if err := proto.Unmarshal(msg.Data, &req); err != nil {
 			log.Printf("failed to unmarshal heartbeat payload: %v", err)
@@ -56,7 +61,7 @@ func (c *Coordinator) SubscribeToWorkerEvents(ctx context.Context) error {
 
 // SubscribeToResults consumes completed job responses from workers.
 func (c *Coordinator) SubscribeToResults(ctx context.Context) error {
-	_, err := c.jsBroker.JS.QueueSubscribe(broker.SubjectResults, coordinatorGroup, func(msg *nats.Msg) {
+	_, err := c.jsBroker.JS.QueueSubscribe(broker.SubjectResults, groupResults, func(msg *nats.Msg) {
 		var resp workerpb.JobResponse
 		if err := proto.Unmarshal(msg.Data, &resp); err != nil {
 			log.Printf("failed to unmarshal job response: %v", err)
