@@ -46,6 +46,29 @@ func NewWorkerManager(jsBroker *broker.Broker) (*WorkerManager, error) {
 	}, nil
 }
 
+// FreeWorkerIDs returns the IDs of all workers currently in free state.
+func (wm *WorkerManager) FreeWorkerIDs() ([]string, error) {
+	keys, err := wm.kv.Keys()
+	if err != nil {
+		return nil, err
+	}
+	var free []string
+	for _, key := range keys {
+		entry, err := wm.kv.Get(key)
+		if err != nil {
+			continue
+		}
+		var w Worker
+		if err := json.Unmarshal(entry.Value(), &w); err != nil {
+			continue
+		}
+		if w.State == WorkerFree {
+			free = append(free, key)
+		}
+	}
+	return free, nil
+}
+
 func (wm *WorkerManager) SetWorkerState(workerID string, state string) {
 	entry, err := wm.kv.Get(workerID)
 	if err != nil {

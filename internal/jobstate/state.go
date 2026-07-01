@@ -68,6 +68,31 @@ func UpdateJobStatus(kv nats.KeyValue, jobID string, state State, workerID strin
 	return nil
 }
 
+// RequeueJob resets a job back to QUEUED, preserving its RequestProto so
+// TryDispatchQueued can re-dispatch it when a worker becomes available.
+func RequeueJob(kv nats.KeyValue, jobID string) error {
+	entry, err := kv.Get(jobID)
+	if err != nil {
+		return fmt.Errorf("failed to get job %s: %w", jobID, err)
+	}
+	var status JobStatus
+	if err := json.Unmarshal(entry.Value(), &status); err != nil {
+		return fmt.Errorf("failed to unmarshal job %s: %w", jobID, err)
+	}
+	status.State = StateQueued
+	status.WorkerID = ""
+	status.Error = ""
+	status.CheckpointKey = ""
+	status.UpdatedAt = time.Now()
+	// RequestProto is preserved so the coordinator can re-dispatch.
+	bytes, err := json.Marshal(status)
+	if err != nil {
+		return fmt.Errorf("failed to marshal job %s: %w", jobID, err)
+	}
+	_, err = kv.Put(jobID, bytes)
+	return err
+}
+
 func GetJobStatus(kv nats.KeyValue, jobID string) (*JobStatus, error) {
 	entry, err := kv.Get(jobID)
 	if err != nil {
