@@ -2,7 +2,7 @@ interface Job {
   id: string
   submitted: string
   worker: string
-  state: 'RUNNING' | 'COMPLETED' | 'FAILED' | 'QUEUED'
+  state: 'RUNNING' | 'COMPLETED' | 'FAILED' | 'QUEUED' | 'PENDING_REVIEW' | 'CANCELLED'
   duration: string
   logs: string
 }
@@ -14,34 +14,26 @@ interface JobsPanelProps {
 }
 
 export function JobsPanel({ jobs, expandedJobId, onSelectJob }: JobsPanelProps) {
-  const getStateColor = (state: string) => {
-    switch (state) {
-      case 'RUNNING':
-        return 'text-[#f59e0b]'
-      case 'COMPLETED':
-        return 'text-[#22c55e]'
-      case 'FAILED':
-        return 'text-[#ef4444]'
-      case 'QUEUED':
-        return 'text-[#6b7280]'
-      default:
-        return 'text-[#d4d4d4]'
-    }
+  const STATE_COLOR: Record<string, string> = {
+    RUNNING:        '#f59e0b',
+    PENDING_REVIEW: '#8b5cf6',
+    COMPLETED:      '#22c55e',
+    FAILED:         '#ef4444',
+    CANCELLED:      '#ef4444',
+    QUEUED:         '#6b7280',
   }
 
+  const getStateColor = (state: string): string => STATE_COLOR[state] ?? '#6b7280'
+
   const getStateDot = (state: string) => {
-    switch (state) {
-      case 'RUNNING':
-        return <span className="inline-block w-1.5 h-1.5 bg-[#f59e0b] rounded-full animate-pulse"></span>
-      case 'COMPLETED':
-        return <span className="inline-block w-1.5 h-1.5 bg-[#22c55e] rounded-full"></span>
-      case 'FAILED':
-        return <span className="inline-block w-1.5 h-1.5 bg-[#ef4444] rounded-full"></span>
-      case 'QUEUED':
-        return <span className="inline-block w-1.5 h-1.5 bg-[#6b7280] rounded-full"></span>
-      default:
-        return null
-    }
+    const c = STATE_COLOR[state] ?? '#6b7280'
+    const pulse = state === 'RUNNING' || state === 'PENDING_REVIEW'
+    return (
+      <span
+        className={`inline-block w-1.5 h-1.5 rounded-full ${pulse ? 'animate-pulse' : ''}`}
+        style={{ backgroundColor: c }}
+      />
+    )
   }
 
   const expandedJob = jobs.find((j) => j.id === expandedJobId)
@@ -73,7 +65,7 @@ export function JobsPanel({ jobs, expandedJobId, onSelectJob }: JobsPanelProps) 
                 <div className="w-32 font-mono text-[#f59e0b]">{job.id}</div>
                 <div className="w-24 text-[#6b7280]">{job.submitted}</div>
                 <div className="flex-1 text-[#d4d4d4]">{job.worker}</div>
-                <div className={`w-20 flex items-center gap-1.5 ${getStateColor(job.state)}`}>
+                <div className="w-20 flex items-center gap-1.5" style={{ color: getStateColor(job.state) }}>
                   {getStateDot(job.state)}
                   <span className="font-mono text-xs">{job.state}</span>
                 </div>
@@ -93,16 +85,13 @@ export function JobsPanel({ jobs, expandedJobId, onSelectJob }: JobsPanelProps) 
               LOGS // {expandedJob.id} // {expandedJob.worker}
               <span
                 className={`inline-block w-1.5 h-1.5 rounded-full ${
-                  expandedJob.state === 'RUNNING'
-                    ? 'bg-[#f59e0b] animate-pulse'
-                    : expandedJob.state === 'COMPLETED'
-                      ? 'bg-[#22c55e]'
-                      : expandedJob.state === 'FAILED'
-                        ? 'bg-[#ef4444]'
-                        : 'bg-[#6b7280]'
+                  expandedJob.state === 'RUNNING' || expandedJob.state === 'PENDING_REVIEW'
+                    ? 'animate-pulse'
+                    : ''
                 }`}
-              ></span>
-              <span className="text-[#6b7280]">{expandedJob.state}</span>
+                style={{ backgroundColor: getStateColor(expandedJob.state) }}
+              />
+              <span style={{ color: getStateColor(expandedJob.state) }}>{expandedJob.state}</span>
             </div>
           </div>
 

@@ -43,6 +43,14 @@ export default function Page() {
       logs: '[14:28:00] Error: VRAM exhausted on device 0\n[14:28:01] Attempting recovery...\n[14:28:02] Recovery failed. Job terminated.',
     },
     {
+      id: 'job-r7s8t9u0',
+      submitted: '3 min ago',
+      worker: 'worker-gpu-02',
+      state: 'PENDING_REVIEW',
+      duration: '—',
+      logs: 'Awaiting worker approval before execution.',
+    },
+    {
       id: 'job-q5r6s7t8',
       submitted: '25 min ago',
       worker: 'worker-cpu-01',

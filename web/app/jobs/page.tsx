@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useState } from 'react'
 import { JOBS, JobState, stateColor } from '@/lib/mock-data'
 
-const FILTERS: (JobState | 'ALL')[] = ['ALL', 'RUNNING', 'QUEUED', 'COMPLETED', 'FAILED', 'CANCELLED']
+const FILTERS: (JobState | 'ALL')[] = ['ALL', 'RUNNING', 'PENDING_REVIEW', 'QUEUED', 'COMPLETED', 'FAILED', 'CANCELLED']
 
 function StateDot({ state }: { state: JobState }) {
   const color = stateColor(state)

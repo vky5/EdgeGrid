@@ -42,11 +42,23 @@ export default function JobDetailPage() {
         >
           {job.state}
         </span>
-        {(job.state === 'RUNNING' || job.state === 'QUEUED') && (
-          <button className="ml-auto font-mono text-[10px] text-[#ef4444] border border-[#ef4444] px-3 py-1 hover:bg-[#ef4444]/10 transition-colors tracking-widest">
-            CANCEL JOB
-          </button>
-        )}
+        <div className="ml-auto flex items-center gap-2">
+          {job.state === 'PENDING_REVIEW' && (
+            <>
+              <button className="font-mono text-[10px] text-[#22c55e] border border-[#22c55e] px-3 py-1 hover:bg-[#22c55e]/10 transition-colors tracking-widest">
+                APPROVE →
+              </button>
+              <button className="font-mono text-[10px] text-[#ef4444] border border-[#ef4444] px-3 py-1 hover:bg-[#ef4444]/10 transition-colors tracking-widest">
+                REJECT
+              </button>
+            </>
+          )}
+          {(job.state === 'RUNNING' || job.state === 'QUEUED' || job.state === 'PENDING_REVIEW') && (
+            <button className="font-mono text-[10px] text-[#6b7280] border border-[#1f1f1f] px-3 py-1 hover:border-[#ef4444] hover:text-[#ef4444] transition-colors tracking-widest">
+              CANCEL
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Body: two columns */}
@@ -103,6 +115,14 @@ export default function JobDetailPage() {
             )}
             <span className="font-mono text-[10px] text-[#6b7280]">{job.id}</span>
           </div>
+          {job.state === 'PENDING_REVIEW' && (
+            <div className="border-b border-[#8b5cf6]/30 bg-[#8b5cf6]/5 px-4 py-2 flex items-center gap-3">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#8b5cf6] animate-pulse" />
+              <span className="font-mono text-[10px] text-[#8b5cf6] tracking-widest">
+                AWAITING WORKER APPROVAL — worker-gpu-02 must approve before execution starts
+              </span>
+            </div>
+          )}
           <div className="flex-1 overflow-y-auto bg-black font-mono text-[11px] leading-relaxed p-4 space-y-0">
             {job.logs.split('\n').map((line, idx) => {
               const isEpoch = line.includes('Epoch') || line.includes('epoch')

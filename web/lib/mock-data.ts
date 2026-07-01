@@ -1,5 +1,5 @@
 export type WorkerState = 'healthy' | 'busy' | 'dead'
-export type JobState = 'RUNNING' | 'QUEUED' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+export type JobState = 'RUNNING' | 'QUEUED' | 'PENDING_REVIEW' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
 
 export interface Worker {
   id: string
@@ -196,6 +196,20 @@ export const JOBS: Job[] = [
 [14:04:10] Job cancelled by user request.`,
   },
   {
+    id: 'job-r7s8t9u0',
+    state: 'PENDING_REVIEW',
+    worker: 'worker-gpu-02',
+    submittedAt: '3 min ago',
+    startedAt: null,
+    finishedAt: null,
+    duration: '—',
+    requiresGpu: true,
+    minRam: 32,
+    minVram: 16,
+    checkpointKey: null,
+    logs: 'Awaiting worker approval before execution.',
+  },
+  {
     id: 'job-t3u4v5w6',
     state: 'COMPLETED',
     worker: 'worker-cpu-01',
@@ -242,6 +256,8 @@ export function stateColor(state: JobState | WorkerState): string {
     case 'CANCELLED':
     case 'dead':
       return '#ef4444'
+    case 'PENDING_REVIEW':
+      return '#8b5cf6'
     case 'QUEUED':
       return '#6b7280'
     default:
