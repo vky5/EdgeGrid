@@ -11,10 +11,11 @@ import (
 type State string
 
 const (
-	StateQueued    State = "QUEUED"
-	StateRunning   State = "RUNNING"
-	StateCompleted State = "COMPLETED"
-	StateFailed    State = "FAILED"
+	StateQueued     State = "QUEUED"
+	StateRunning    State = "RUNNING"
+	StateCompleted  State = "COMPLETED"
+	StateFailed     State = "FAILED"
+	StateCancelled  State = "CANCELLED"
 )
 
 type JobStatus struct {

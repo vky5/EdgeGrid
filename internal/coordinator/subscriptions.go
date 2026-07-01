@@ -70,7 +70,12 @@ func (c *Coordinator) SubscribeToResults(ctx context.Context) error {
 			return
 		}
 
-		if resp.Success {
+		// Skip state update if the coordinator already marked this job cancelled —
+		// the worker result arriving after cancellation should not overwrite it.
+		current, _ := jobstate.GetJobStatus(kv, resp.JobId)
+		if current != nil && current.State == jobstate.StateCancelled {
+			log.Printf("job %s result ignored (already cancelled)", resp.JobId)
+		} else if resp.Success {
 			log.Printf("job %s completed by worker %s (checkpoint: %s)", resp.JobId, resp.WorkerId, resp.CheckpointKey)
 			_ = jobstate.UpdateJobStatus(kv, resp.JobId, jobstate.StateCompleted, resp.WorkerId, "", resp.CheckpointKey)
 		} else {

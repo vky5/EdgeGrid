@@ -78,7 +78,14 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 		}
 
 		if len(parts) == 1 {
-			handleGetJobStatus(w, r, jsBroker, jobID)
+			switch r.Method {
+			case http.MethodGet:
+				handleGetJobStatus(w, r, jsBroker, jobID)
+			case http.MethodDelete:
+				handleCancelJob(w, r, jsBroker, jobID)
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
 			return
 		}
 
@@ -236,7 +243,7 @@ func handleJobLogs(w http.ResponseWriter, r *http.Request, jsBroker *broker.Brok
 			if err != nil || status == nil {
 				return
 			}
-			if status.State == jobstate.StateCompleted || status.State == jobstate.StateFailed {
+			if status.State == jobstate.StateCompleted || status.State == jobstate.StateFailed || status.State == jobstate.StateCancelled {
 				// Drain any log lines that arrived between the last read and now.
 				for {
 					select {
@@ -252,6 +259,43 @@ func handleJobLogs(w http.ResponseWriter, r *http.Request, jsBroker *broker.Brok
 			}
 		}
 	}
+}
+
+func handleCancelJob(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, jobID string) {
+	kv, err := jsBroker.GetOrCreateKV("jobs_state", 24*time.Hour)
+	if err != nil {
+		http.Error(w, "failed to get state store", http.StatusInternalServerError)
+		return
+	}
+
+	status, err := jobstate.GetJobStatus(kv, jobID)
+	if err != nil {
+		http.Error(w, "failed to retrieve job", http.StatusInternalServerError)
+		return
+	}
+	if status == nil {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+
+	if status.State != jobstate.StateQueued && status.State != jobstate.StateRunning {
+		http.Error(w, fmt.Sprintf("job is %s, cannot cancel", status.State), http.StatusConflict)
+		return
+	}
+
+	if err := jobstate.UpdateJobStatus(kv, jobID, jobstate.StateCancelled, status.WorkerID, "cancelled by user", ""); err != nil {
+		http.Error(w, "failed to update job state", http.StatusInternalServerError)
+		return
+	}
+
+	// If the job is running, signal the worker to stop it.
+	if status.State == jobstate.StateRunning {
+		if _, err := jsBroker.JS.Publish(broker.SubjectCancel, []byte(jobID)); err != nil {
+			log.Printf("failed to publish cancel signal for job %s: %v", jobID, err)
+		}
+	}
+
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func handleGetJobStatus(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, jobID string) {

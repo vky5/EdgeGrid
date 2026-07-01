@@ -57,6 +57,28 @@ func (a *Worker) StartHeartbeat(ctx context.Context, interval time.Duration) {
 	}
 }
 
+// StartCancelListener subscribes to jobs.cancel and cancels any running job
+// whose ID matches. Every worker receives every cancel message; only the worker
+// that holds the job in its cancels map acts on it.
+func (a *Worker) StartCancelListener(ctx context.Context) {
+	sub, err := a.broker.JS.Subscribe(broker.SubjectCancel, func(msg *nats.Msg) {
+		jobID := string(msg.Data)
+		a.mu.Lock()
+		if cancel, ok := a.cancels[jobID]; ok {
+			cancel()
+			log.Printf("cancelling job %s on coordinator request", jobID)
+		}
+		a.mu.Unlock()
+		msg.Ack()
+	}, nats.DeliverNew(), nats.ManualAck())
+	if err != nil {
+		log.Printf("failed to subscribe to cancel events: %v", err)
+		return
+	}
+	defer sub.Unsubscribe()
+	<-ctx.Done()
+}
+
 // StartJobListener pulls training jobs addressed to this worker from NATS JetStream.
 func (a *Worker) StartJobListener(ctx context.Context) {
 	subject := broker.SubjectTrainPrefix + a.id
@@ -119,12 +141,24 @@ func (a *Worker) handleJob(ctx context.Context, msg *nats.Msg) {
 	log.Printf("received training job %s (base_model: %s, dataset: %s %s)",
 		req.JobId, req.BaseModelRef, req.DatasetType, req.DatasetRef)
 
+	// Per-job context so this job can be cancelled independently of the worker.
+	jobCtx, cancel := context.WithCancel(ctx)
+	a.mu.Lock()
+	a.cancels[req.JobId] = cancel
+	a.mu.Unlock()
+	defer func() {
+		cancel()
+		a.mu.Lock()
+		delete(a.cancels, req.JobId)
+		a.mu.Unlock()
+	}()
+
 	kv, kvErr := a.broker.GetOrCreateKV("jobs_state", 24*time.Hour)
 	if kvErr == nil {
 		_ = jobstate.UpdateJobStatus(kv, req.JobId, jobstate.StateRunning, a.id, "", "")
 	}
 
-	checkpointKey, err := a.runTrainingPipeline(ctx, &req)
+	checkpointKey, err := a.runTrainingPipeline(jobCtx, &req)
 
 	resp := &workerpb.JobResponse{
 		JobId:    req.JobId,

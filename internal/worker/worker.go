@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,6 +27,8 @@ type Worker struct {
 	executor executor.Executor
 	hw       HardwareSpec
 	busy     atomic.Bool
+	mu       sync.Mutex
+	cancels  map[string]context.CancelFunc // jobID → cancel func for running jobs
 }
 
 func NewWorkerWithConn(nc *nats.Conn, workerID string, exec executor.Executor, replicas int) (*Worker, error) {
@@ -42,6 +45,7 @@ func NewWorkerWithConn(nc *nats.Conn, workerID string, exec executor.Executor, r
 		id:       workerID,
 		broker:   wb,
 		executor: exec,
+		cancels:  make(map[string]context.CancelFunc),
 	}, nil
 }
 
@@ -55,6 +59,7 @@ func (w *Worker) Start(ctx context.Context) error {
 
 	go w.StartHeartbeat(ctx, 10*time.Second)
 	go w.StartJobListener(ctx)
+	go w.StartCancelListener(ctx)
 
 	return nil
 }
