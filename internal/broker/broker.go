@@ -28,6 +28,10 @@ const (
 	SubjectWorkerReject      = "workers.reject"
 	SubjectWorkerDecisionFmt = "workers.decision.%s.%s" // workerID, jobID
 
+	// Live resource usage published at each heartbeat (NATS Core, not JetStream)
+	SubjectWorkerStatsWildcard = "workers.stats.*"
+	SubjectWorkerStatsFmt      = "workers.stats.%s" // workerID
+
 	// Object Store bucket names
 	BucketDatasets    = "datasets"
 	BucketCheckpoints = "checkpoints"

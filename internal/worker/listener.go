@@ -19,6 +19,13 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// WorkerStats is published at each heartbeat over NATS Core (not JetStream).
+type WorkerStats struct {
+	RAMUsedGB   float32 `json:"ram_used_gb"`
+	DiskUsedGB  float32 `json:"disk_used_gb"`
+	DiskTotalGB float32 `json:"disk_total_gb"`
+}
+
 const approvalTimeout = 60 * time.Second
 
 type rejectionMsg struct {
@@ -60,6 +67,18 @@ func (a *Worker) StartHeartbeat(ctx context.Context, interval time.Duration) {
 			}
 			if err := a.broker.PublishProto(broker.SubjectHeartbeat, req); err != nil {
 				log.Printf("failed to publish heartbeat: %v", err)
+			}
+
+			// Publish live resource usage on a separate NATS Core subject so
+			// the coordinator can update the dashboard without proto changes.
+			stats := WorkerStats{
+				RAMUsedGB:   liveRAMUsedGB(),
+				DiskUsedGB:  liveDiskUsedGB(),
+				DiskTotalGB: liveDiskTotalGB(),
+			}
+			if data, err := json.Marshal(stats); err == nil {
+				subject := fmt.Sprintf(broker.SubjectWorkerStatsFmt, a.id)
+				_ = a.broker.Conn.Publish(subject, data)
 			}
 		}
 	}

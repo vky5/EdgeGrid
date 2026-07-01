@@ -35,11 +35,18 @@ export interface WorkerJob {
   updated_at: string
 }
 
+export interface WorkerStats {
+  ram_used_gb: number
+  disk_used_gb: number
+  disk_total_gb: number
+}
+
 export interface LiveWorker {
   info: WorkerInfo
   last_seen: string
   state: 'free' | 'busy' | 'dead'
   job: WorkerJob | null
+  stats: WorkerStats
 }
 
 export async function submitJob(body: SubmitJobRequest): Promise<SubmitJobResponse> {

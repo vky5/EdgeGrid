@@ -111,7 +111,6 @@ export function WorkerNodes() {
                       <span className="text-[#6b7280]">GPU {info.gpu_name}</span>
                       <span className="text-[#d4d4d4]">{info.gpu_vram_gb.toFixed(0)}GB VRAM</span>
                     </div>
-                    {/* VRAM usage not in heartbeat yet — show capacity bar at 0% */}
                     <HardwareBar pct={0} />
                   </div>
                 )}
@@ -119,17 +118,31 @@ export function WorkerNodes() {
                 <div>
                   <div className="flex justify-between mb-0.5">
                     <span className="text-[#6b7280]">RAM</span>
-                    <span className="text-[#d4d4d4]">{info?.ram_gb.toFixed(0)}GB total</span>
+                    <span className="text-[#d4d4d4]">
+                      {worker.stats?.ram_used_gb > 0
+                        ? `${worker.stats.ram_used_gb.toFixed(1)} / ${info?.ram_gb.toFixed(0)}GB`
+                        : `${info?.ram_gb.toFixed(0)}GB total`}
+                    </span>
                   </div>
-                  <HardwareBar pct={0} />
+                  <HardwareBar
+                    pct={info?.ram_gb > 0 ? (worker.stats?.ram_used_gb / info.ram_gb) * 100 : 0}
+                  />
                 </div>
 
                 <div>
                   <div className="flex justify-between mb-0.5">
                     <span className="text-[#6b7280]">DISK</span>
-                    <span className="text-[#d4d4d4]">{info?.disk_free_gb.toFixed(0)}GB free</span>
+                    <span className="text-[#d4d4d4]">
+                      {worker.stats?.disk_total_gb > 0
+                        ? `${worker.stats.disk_used_gb.toFixed(1)} / ${worker.stats.disk_total_gb.toFixed(0)}GB`
+                        : `${info?.disk_free_gb.toFixed(0)}GB free`}
+                    </span>
                   </div>
-                  <HardwareBar pct={0} />
+                  <HardwareBar
+                    pct={worker.stats?.disk_total_gb > 0
+                      ? (worker.stats.disk_used_gb / worker.stats.disk_total_gb) * 100
+                      : 0}
+                  />
                 </div>
               </div>
 

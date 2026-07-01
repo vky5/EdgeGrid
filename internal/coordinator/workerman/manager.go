@@ -24,11 +24,19 @@ type Job struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// WorkerStats carries live resource usage published at each heartbeat.
+type WorkerStats struct {
+	RAMUsedGB   float32 `json:"ram_used_gb"`
+	DiskUsedGB  float32 `json:"disk_used_gb"`
+	DiskTotalGB float32 `json:"disk_total_gb"`
+}
+
 type Worker struct {
 	Info     *workerpb.WorkerInfo `json:"info"`
 	LastSeen time.Time            `json:"last_seen"`
 	State    string               `json:"state"`
 	Job      *Job                 `json:"job"`
+	Stats    WorkerStats          `json:"stats"`
 }
 
 type WorkerManager struct {
@@ -92,6 +100,22 @@ func (wm *WorkerManager) FreeWorkerIDs() ([]string, error) {
 		}
 	}
 	return free, nil
+}
+
+// UpdateWorkerStats merges live resource usage into the stored worker entry.
+func (wm *WorkerManager) UpdateWorkerStats(workerID string, stats WorkerStats) {
+	entry, err := wm.kv.Get(workerID)
+	if err != nil {
+		return
+	}
+	var w Worker
+	if err := json.Unmarshal(entry.Value(), &w); err != nil {
+		return
+	}
+	w.Stats = stats
+	if data, err := json.Marshal(w); err == nil {
+		_, _ = wm.kv.Put(workerID, data)
+	}
 }
 
 func (wm *WorkerManager) SetWorkerState(workerID string, state string) {

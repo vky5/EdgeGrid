@@ -2,7 +2,9 @@ package coordinator
 
 import (
 	"context"
+	"encoding/json"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/edgegrid/edgegrid/internal/broker"
@@ -56,6 +58,29 @@ func (c *Coordinator) SubscribeToWorkerEvents(ctx context.Context) error {
 	}
 
 	log.Println("subscribed to worker registration and heartbeat events")
+	return nil
+}
+
+// SubscribeToWorkerStats listens for live resource usage published by workers at
+// each heartbeat. Uses NATS Core (not JetStream) — these are ephemeral updates.
+func (c *Coordinator) SubscribeToWorkerStats() error {
+	_, err := c.jsBroker.Conn.Subscribe(broker.SubjectWorkerStatsWildcard, func(msg *nats.Msg) {
+		// Subject is "workers.stats.<workerID>" — extract the ID from the last segment.
+		parts := strings.Split(msg.Subject, ".")
+		if len(parts) != 3 {
+			return
+		}
+		workerID := parts[2]
+		var stats workerman.WorkerStats
+		if err := json.Unmarshal(msg.Data, &stats); err != nil {
+			return
+		}
+		c.manager.UpdateWorkerStats(workerID, stats)
+	})
+	if err != nil {
+		return err
+	}
+	log.Println("subscribed to worker live stats")
 	return nil
 }
 

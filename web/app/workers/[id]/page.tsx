@@ -2,9 +2,10 @@
 
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import { getWorker, JOB_HISTORY_BY_WORKER, stateColor, WorkerState } from '@/lib/mock-data'
+import { useEffect, useState } from 'react'
+import { listWorkers, LiveWorker } from '@/lib/api'
 
-function HardwareBar({ used, total, label, unit = 'GB' }: { used: number; total: number; label: string; unit?: string }) {
+function HardwareBar({ used, total, label }: { used: number; total: number; label: string }) {
   const pct = total > 0 ? Math.min((used / total) * 100, 100) : 0
   const warn = pct > 80
   return (
@@ -12,12 +13,12 @@ function HardwareBar({ used, total, label, unit = 'GB' }: { used: number; total:
       <div className="flex justify-between text-xs">
         <span className="text-[#6b7280] font-mono">{label}</span>
         <span className="font-mono text-[#d4d4d4]">
-          {used.toFixed(1)} / {total} {unit}
+          {used.toFixed(1)} / {total.toFixed(1)} GB
         </span>
       </div>
       <div className="h-1.5 bg-[#1f1f1f]">
         <div
-          className="h-full"
+          className="h-full transition-all duration-500"
           style={{ width: `${pct}%`, backgroundColor: warn ? '#ef4444' : '#f59e0b' }}
         />
       </div>
@@ -26,24 +27,48 @@ function HardwareBar({ used, total, label, unit = 'GB' }: { used: number; total:
   )
 }
 
-const STATE_COLOR: Record<WorkerState, string> = {
-  healthy: '#22c55e',
-  busy: '#f59e0b',
-  dead: '#ef4444',
+function relativeTime(iso: string): string {
+  if (!iso) return '?'
+  const diff = Date.now() - new Date(iso).getTime()
+  if (diff < 10_000) return 'just now'
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  return `${Math.floor(diff / 3_600_000)}h ago`
 }
 
-const STATE_LABEL: Record<WorkerState, string> = {
-  healthy: 'IDLE',
-  busy: 'BUSY',
-  dead: 'OFFLINE',
-}
+const STATE_COLOR = { free: '#22c55e', busy: '#f59e0b', dead: '#ef4444' } as const
+const STATE_LABEL = { free: 'IDLE', busy: 'BUSY', dead: 'OFFLINE' } as const
 
 export default function WorkerDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const worker = getWorker(id)
-  const jobs = JOB_HISTORY_BY_WORKER[id] ?? []
+  const [worker, setWorker] = useState<LiveWorker | null | undefined>(undefined)
 
-  if (!worker) {
+  useEffect(() => {
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const all = await listWorkers()
+        if (!cancelled) {
+          setWorker(all.find((w) => w.info?.id === id) ?? null)
+        }
+      } catch {
+        if (!cancelled) setWorker(null)
+      }
+    }
+    poll()
+    const t = setInterval(poll, 5_000)
+    return () => { cancelled = true; clearInterval(t) }
+  }, [id])
+
+  if (worker === undefined) {
+    return (
+      <div className="h-full flex items-center justify-center bg-[#0c0c0c] text-[#6b7280] font-mono text-sm">
+        connecting...
+      </div>
+    )
+  }
+
+  if (worker === null) {
     return (
       <div className="h-full flex items-center justify-center bg-[#0c0c0c] text-[#6b7280] font-mono text-sm">
         WORKER {id} NOT FOUND
@@ -51,7 +76,10 @@ export default function WorkerDetailPage() {
     )
   }
 
-  const color = STATE_COLOR[worker.state]
+  const state = worker.state as 'free' | 'busy' | 'dead'
+  const color = STATE_COLOR[state]
+  const info = worker.info
+  const stats = worker.stats ?? { ram_used_gb: 0, disk_used_gb: 0, disk_total_gb: 0 }
 
   return (
     <div className="h-full flex flex-col bg-[#0c0c0c] text-[#d4d4d4]">
@@ -64,12 +92,12 @@ export default function WorkerDetailPage() {
           ← WORKERS
         </Link>
         <span className="text-[#1f1f1f]">/</span>
-        <span className="font-mono text-xs text-[#d4d4d4]">{worker.id}</span>
+        <span className="font-mono text-xs text-[#d4d4d4]">{info.id}</span>
         <span
           className="font-mono text-[10px] px-1.5 py-0.5 border"
           style={{ color, borderColor: color, backgroundColor: `${color}15` }}
         >
-          {STATE_LABEL[worker.state]}
+          {STATE_LABEL[state]}
         </span>
       </div>
 
@@ -82,24 +110,22 @@ export default function WorkerDetailPage() {
             <div className="terminal-label mb-3">STATUS</div>
             <div className="flex items-center gap-3">
               <span
-                className={`w-3 h-3 rounded-full ${worker.state === 'busy' ? 'animate-pulse' : ''}`}
+                className={`w-3 h-3 rounded-full ${state === 'busy' ? 'animate-pulse' : ''}`}
                 style={{ backgroundColor: color }}
               />
               <div>
-                <div className="font-mono text-sm" style={{ color }}>
-                  {STATE_LABEL[worker.state]}
-                </div>
-                <div className="font-mono text-[10px] text-[#6b7280]">last seen {worker.lastSeen}</div>
+                <div className="font-mono text-sm" style={{ color }}>{STATE_LABEL[state]}</div>
+                <div className="font-mono text-[10px] text-[#6b7280]">last seen {relativeTime(worker.last_seen)}</div>
               </div>
             </div>
-            {worker.currentJob && (
+            {worker.job && (
               <div className="mt-3 border border-[#1f1f1f] p-2">
                 <div className="terminal-label text-[9px] mb-1">RUNNING JOB</div>
                 <Link
-                  href={`/jobs/${worker.currentJob}`}
+                  href={`/jobs/${worker.job.id}`}
                   className="font-mono text-xs text-[#f59e0b] hover:text-[#fbbf24] transition-colors"
                 >
-                  {worker.currentJob} →
+                  {worker.job.id} →
                 </Link>
               </div>
             )}
@@ -109,14 +135,12 @@ export default function WorkerDetailPage() {
           <div className="p-4 border-b border-[#1f1f1f] space-y-4">
             <div className="terminal-label">HARDWARE</div>
 
-            {worker.gpu ? (
-              <>
-                <div className="border border-[#1f1f1f] p-3">
-                  <div className="terminal-label text-[9px] mb-2">GPU</div>
-                  <div className="font-mono text-sm text-[#d4d4d4] mb-2">{worker.gpu}</div>
-                  <HardwareBar used={worker.gpuUsed} total={worker.gpuTotal} label="VRAM" />
-                </div>
-              </>
+            {info.has_gpu ? (
+              <div className="border border-[#1f1f1f] p-3 space-y-3">
+                <div className="terminal-label text-[9px]">GPU</div>
+                <div className="font-mono text-sm text-[#d4d4d4]">{info.gpu_name}</div>
+                <HardwareBar used={0} total={info.gpu_vram_gb} label="VRAM" />
+              </div>
             ) : (
               <div className="border border-[#1f1f1f] p-3">
                 <div className="terminal-label text-[9px]">CPU ONLY</div>
@@ -124,83 +148,48 @@ export default function WorkerDetailPage() {
               </div>
             )}
 
-            <HardwareBar used={worker.ramUsed} total={worker.ram} label="RAM" />
             <HardwareBar
-              used={worker.disk - worker.diskFree}
-              total={worker.disk}
+              used={stats.ram_used_gb}
+              total={info.ram_gb}
+              label="RAM"
+            />
+            <HardwareBar
+              used={stats.disk_used_gb}
+              total={stats.disk_total_gb > 0 ? stats.disk_total_gb : info.disk_free_gb}
               label="DISK USED"
             />
           </div>
 
           {/* Stats */}
           <div className="p-4">
-            <div className="terminal-label mb-3">LIFETIME</div>
+            <div className="terminal-label mb-3">CAPACITY</div>
             <div className="grid grid-cols-2 gap-3">
               <div className="border border-[#1f1f1f] p-2">
-                <div className="terminal-label text-[9px]">JOBS DONE</div>
-                <div className="font-mono text-xl text-[#f59e0b] mt-1">{worker.jobsCompleted}</div>
+                <div className="terminal-label text-[9px]">TOTAL RAM</div>
+                <div className="font-mono text-xl text-[#f59e0b] mt-1">{info.ram_gb.toFixed(0)}GB</div>
               </div>
               <div className="border border-[#1f1f1f] p-2">
                 <div className="terminal-label text-[9px]">DISK FREE</div>
-                <div className="font-mono text-xl text-[#d4d4d4] mt-1">{worker.diskFree}GB</div>
+                <div className="font-mono text-xl text-[#d4d4d4] mt-1">{info.disk_free_gb.toFixed(0)}GB</div>
               </div>
             </div>
-            <div className="border border-[#1f1f1f] p-2 mt-3">
-              <div className="terminal-label text-[9px]">REGISTERED</div>
-              <div className="font-mono text-xs text-[#6b7280] mt-1">
-                {new Date(worker.registeredAt).toLocaleString()}
+            {info.has_gpu && (
+              <div className="border border-[#1f1f1f] p-2 mt-3">
+                <div className="terminal-label text-[9px]">GPU VRAM</div>
+                <div className="font-mono text-xl text-[#d4d4d4] mt-1">{info.gpu_vram_gb.toFixed(0)}GB</div>
               </div>
-            </div>
+            )}
           </div>
         </div>
 
-        {/* RIGHT: job history */}
+        {/* RIGHT: placeholder for job history (not yet in API) */}
         <div className="flex-1 flex flex-col min-w-0">
           <div className="h-10 flex items-center px-6 border-b border-[#1f1f1f] shrink-0">
-            <span className="terminal-label">JOB HISTORY // {jobs.length} JOBS</span>
+            <span className="terminal-label">JOB HISTORY</span>
           </div>
-
-          {jobs.length === 0 ? (
-            <div className="flex items-center justify-center flex-1 text-[#6b7280] font-mono text-xs">
-              NO JOBS RUN ON THIS WORKER
-            </div>
-          ) : (
-            <div className="flex-1 overflow-y-auto">
-              {/* Column headers */}
-              <div className="grid grid-cols-[1fr_100px_100px_80px_1fr] gap-4 px-6 h-9 items-center border-b border-[#1f1f1f] sticky top-0 bg-[#0c0c0c]">
-                <span className="terminal-label text-[9px]">JOB ID</span>
-                <span className="terminal-label text-[9px]">STATE</span>
-                <span className="terminal-label text-[9px]">DURATION</span>
-                <span className="terminal-label text-[9px]">GPU</span>
-                <span className="terminal-label text-[9px]">SUBMITTED</span>
-              </div>
-
-              {jobs.map((job) => {
-                const jColor = stateColor(job.state)
-                return (
-                  <div
-                    key={job.id}
-                    className="grid grid-cols-[1fr_100px_100px_80px_1fr] gap-4 px-6 h-10 items-center border-b border-[#1f1f1f] hover:bg-[#1a1a1a] transition-colors group"
-                  >
-                    <Link
-                      href={`/jobs/${job.id}`}
-                      className="font-mono text-xs text-[#f59e0b] hover:text-[#fbbf24] truncate"
-                    >
-                      {job.id}
-                    </Link>
-                    <span className="font-mono text-xs" style={{ color: jColor }}>
-                      {job.state}
-                    </span>
-                    <span className="font-mono text-xs text-[#6b7280]">{job.duration}</span>
-                    <span className="font-mono text-xs text-[#6b7280]">
-                      {job.requiresGpu ? 'YES' : 'NO'}
-                    </span>
-                    <span className="font-mono text-xs text-[#6b7280]">{job.submittedAt}</span>
-                  </div>
-                )
-              })}
-            </div>
-          )}
+          <div className="flex items-center justify-center flex-1 text-[#6b7280] font-mono text-xs">
+            job history per worker not yet available via API
+          </div>
         </div>
       </div>
     </div>

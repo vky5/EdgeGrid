@@ -57,6 +57,10 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 		return fmt.Errorf("failed to subscribe to worker rejections: %w", err)
 	}
 
+	if err := c.SubscribeToWorkerStats(); err != nil {
+		return fmt.Errorf("failed to subscribe to worker stats: %w", err)
+	}
+
 	go c.StartStaleJobRecovery(ctx)
 	go StartHTTPServer(apiAddr, c.jsBroker, c.manager)
 
