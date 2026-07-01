@@ -32,7 +32,7 @@ func (wm *WorkerManager) FindAndAssignWorker(jobID string, req *workerpb.Trainin
 			continue
 		}
 
-		if !MeetsRequirements(worker.Info, req) {
+		if !MeetsRequirements(worker.Info, worker.Stats, req) {
 			continue
 		}
 
@@ -63,13 +63,21 @@ func (wm *WorkerManager) FindAndAssignWorker(jobID string, req *workerpb.Trainin
 		req.RequiresGpu, req.MinRamGb, req.MinVramGb, req.MinDiskGb)
 }
 
-// MeetsRequirements returns true if the worker's hardware satisfies the job's requirements.
-func MeetsRequirements(info *workerpb.WorkerInfo, req *workerpb.TrainingJobRequest) bool {
+// MeetsRequirements returns true if the worker's hardware satisfies the job's
+// requirements. RAM check uses available (total - currently used) so a busy
+// machine with little headroom won't be assigned a memory-hungry job.
+func MeetsRequirements(info *workerpb.WorkerInfo, stats WorkerStats, req *workerpb.TrainingJobRequest) bool {
 	if req.RequiresGpu && !info.HasGpu {
 		return false
 	}
-	if req.MinRamGb > 0 && info.RamGb < req.MinRamGb {
-		return false
+	if req.MinRamGb > 0 {
+		availableRAM := info.RamGb
+		if stats.RAMUsedGB > 0 {
+			availableRAM = info.RamGb - stats.RAMUsedGB
+		}
+		if availableRAM < req.MinRamGb {
+			return false
+		}
 	}
 	if req.MinVramGb > 0 && info.GpuVramGb < req.MinVramGb {
 		return false

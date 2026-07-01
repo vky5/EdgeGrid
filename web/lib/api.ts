@@ -62,6 +62,29 @@ export async function submitJob(body: SubmitJobRequest): Promise<SubmitJobRespon
   return res.json()
 }
 
+export interface LiveJob {
+  job_id: string
+  state: string
+  worker_id: string
+  error: string
+  checkpoint_key: string
+  updated_at: string
+}
+
+export async function listJobs(): Promise<LiveJob[]> {
+  const res = await fetch(`${BASE}/jobs`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const data = await res.json()
+  return Array.isArray(data) ? data : []
+}
+
+export async function getJob(jobID: string): Promise<LiveJob | null> {
+  const res = await fetch(`${BASE}/jobs/${jobID}`)
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
 export async function listWorkers(): Promise<LiveWorker[]> {
   const res = await fetch(`${BASE}/workers`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)

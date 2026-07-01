@@ -85,13 +85,17 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 		_ = json.NewEncoder(w).Encode(workers)
 	})
 
+	// GET /jobs  — list all jobs (strips request_proto from response, too large)
 	// POST /jobs — submit a training job
 	mux.HandleFunc("/jobs", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
+		switch r.Method {
+		case http.MethodGet:
+			handleListJobs(w, jsBroker)
+		case http.MethodPost:
+			handleSubmitJob(w, r, jsBroker, manager)
+		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
 		}
-		handleSubmitJob(w, r, jsBroker, manager)
 	})
 
 	// /jobs/{id}           → GET job status
@@ -378,6 +382,64 @@ func handleJobDecision(w http.ResponseWriter, r *http.Request, jsBroker *broker.
 	}
 
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// jobStatusPublic is JobStatus with request_proto stripped — it's large binary
+// that the dashboard doesn't need and bloats every list response.
+type jobStatusPublic struct {
+	JobID         string          `json:"job_id"`
+	State         jobstate.State  `json:"state"`
+	WorkerID      string          `json:"worker_id,omitempty"`
+	Error         string          `json:"error,omitempty"`
+	CheckpointKey string          `json:"checkpoint_key,omitempty"`
+	UpdatedAt     time.Time       `json:"updated_at"`
+}
+
+func handleListJobs(w http.ResponseWriter, jsBroker *broker.Broker) {
+	kv, err := jsBroker.GetOrCreateKV("jobs_state", 24*time.Hour)
+	if err != nil {
+		http.Error(w, "failed to connect to state store", http.StatusInternalServerError)
+		return
+	}
+
+	keys, err := kv.Keys()
+	if err != nil {
+		if err == nats.ErrNoKeysFound {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]jobStatusPublic{})
+			return
+		}
+		http.Error(w, "failed to list jobs", http.StatusInternalServerError)
+		return
+	}
+
+	jobs := make([]jobStatusPublic, 0, len(keys))
+	for _, key := range keys {
+		status, err := jobstate.GetJobStatus(kv, key)
+		if err != nil || status == nil {
+			continue
+		}
+		jobs = append(jobs, jobStatusPublic{
+			JobID:         status.JobID,
+			State:         status.State,
+			WorkerID:      status.WorkerID,
+			Error:         status.Error,
+			CheckpointKey: status.CheckpointKey,
+			UpdatedAt:     status.UpdatedAt,
+		})
+	}
+
+	// Sort newest-first by UpdatedAt
+	for i := 0; i < len(jobs)-1; i++ {
+		for j := i + 1; j < len(jobs); j++ {
+			if jobs[j].UpdatedAt.After(jobs[i].UpdatedAt) {
+				jobs[i], jobs[j] = jobs[j], jobs[i]
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(jobs)
 }
 
 func handleGetJobStatus(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, jobID string) {

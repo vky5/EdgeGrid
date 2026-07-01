@@ -2,9 +2,17 @@
 
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
-import { useState } from 'react'
-import { getJob, stateColor } from '@/lib/mock-data'
-import { approveJob, rejectJob, cancelJob } from '@/lib/api'
+import { useEffect, useState } from 'react'
+import { getJob, approveJob, rejectJob, cancelJob, LiveJob } from '@/lib/api'
+
+const STATE_COLOR: Record<string, string> = {
+  RUNNING:        '#f59e0b',
+  PENDING_REVIEW: '#8b5cf6',
+  QUEUED:         '#6b7280',
+  COMPLETED:      '#22c55e',
+  FAILED:         '#ef4444',
+  CANCELLED:      '#ef4444',
+}
 
 function MetaRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -15,18 +23,49 @@ function MetaRow({ label, value }: { label: string; value: React.ReactNode }) {
   )
 }
 
+function relativeTime(iso: string): string {
+  if (!iso) return '—'
+  const diff = Date.now() - new Date(iso).getTime()
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  return new Date(iso).toLocaleString()
+}
+
 export default function JobDetailPage() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
+  const [job, setJob] = useState<LiveJob | null | undefined>(undefined)
   const [acting, setActing] = useState(false)
-  const job = getJob(id)
+
+  useEffect(() => {
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const data = await getJob(id)
+        if (!cancelled) setJob(data)
+      } catch {
+        if (!cancelled) setJob(null)
+      }
+    }
+    poll()
+    const t = setInterval(poll, 3_000)
+    return () => { cancelled = true; clearInterval(t) }
+  }, [id])
 
   const act = async (fn: () => Promise<void>) => {
     setActing(true)
-    try { await fn() } catch (e) { console.error(e) } finally { setActing(false); router.refresh() }
+    try { await fn() } catch (e) { console.error(e) } finally { setActing(false) }
   }
 
-  if (!job) {
+  if (job === undefined) {
+    return (
+      <div className="h-full flex items-center justify-center bg-[#0c0c0c] text-[#6b7280] font-mono text-sm">
+        connecting...
+      </div>
+    )
+  }
+
+  if (job === null) {
     return (
       <div className="h-full flex items-center justify-center bg-[#0c0c0c] text-[#6b7280] font-mono text-sm">
         JOB {id} NOT FOUND
@@ -34,7 +73,8 @@ export default function JobDetailPage() {
     )
   }
 
-  const color = stateColor(job.state)
+  const color = STATE_COLOR[job.state] ?? '#6b7280'
+  const isActive = job.state === 'RUNNING' || job.state === 'QUEUED' || job.state === 'PENDING_REVIEW'
 
   return (
     <div className="h-full flex flex-col bg-[#0c0c0c] text-[#d4d4d4]">
@@ -44,13 +84,14 @@ export default function JobDetailPage() {
           ← JOBS
         </Link>
         <span className="text-[#1f1f1f]">/</span>
-        <span className="font-mono text-xs text-[#f59e0b]">{job.id}</span>
+        <span className="font-mono text-xs text-[#f59e0b]">{job.job_id}</span>
         <span
           className="font-mono text-[10px] px-1.5 py-0.5 border"
           style={{ color, borderColor: color, backgroundColor: `${color}15` }}
         >
           {job.state}
         </span>
+
         <div className="ml-auto flex items-center gap-2">
           {job.state === 'PENDING_REVIEW' && (
             <>
@@ -70,7 +111,7 @@ export default function JobDetailPage() {
               </button>
             </>
           )}
-          {(job.state === 'RUNNING' || job.state === 'QUEUED' || job.state === 'PENDING_REVIEW') && (
+          {isActive && (
             <button
               disabled={acting}
               onClick={() => act(() => cancelJob(id))}
@@ -82,7 +123,7 @@ export default function JobDetailPage() {
         </div>
       </div>
 
-      {/* Body: two columns */}
+      {/* Body */}
       <div className="flex-1 flex overflow-hidden">
         {/* LEFT: metadata */}
         <div className="w-72 border-r border-[#1f1f1f] flex flex-col shrink-0 overflow-y-auto">
@@ -90,35 +131,46 @@ export default function JobDetailPage() {
             <div className="terminal-label">JOB METADATA</div>
           </div>
           <div className="px-4 pb-4">
-            <MetaRow label="JOB ID" value={job.id} />
+            <MetaRow label="JOB ID" value={job.job_id} />
             <MetaRow label="STATE" value={<span style={{ color }}>{job.state}</span>} />
-            <MetaRow label="WORKER" value={job.worker ?? <span className="text-[#6b7280]">unassigned</span>} />
-            <MetaRow label="SUBMITTED" value={job.submittedAt} />
-            <MetaRow label="STARTED" value={job.startedAt ?? <span className="text-[#6b7280]">—</span>} />
-            <MetaRow label="FINISHED" value={job.finishedAt ?? <span className="text-[#6b7280]">—</span>} />
-            <MetaRow label="DURATION" value={job.duration} />
+            <MetaRow
+              label="WORKER"
+              value={
+                job.worker_id ? (
+                  <Link href={`/workers/${job.worker_id}`} className="text-[#f59e0b] hover:text-[#fbbf24]">
+                    {job.worker_id}
+                  </Link>
+                ) : (
+                  <span className="text-[#6b7280]">unassigned</span>
+                )
+              }
+            />
+            <MetaRow label="UPDATED" value={relativeTime(job.updated_at)} />
+            {job.error && (
+              <MetaRow label="ERROR" value={<span className="text-[#ef4444]">{job.error}</span>} />
+            )}
           </div>
 
-          <div className="px-4 pb-4">
-            <div className="terminal-label text-[9px] mb-3 pt-2">REQUIREMENTS</div>
-            <MetaRow label="GPU" value={job.requiresGpu ? 'YES' : 'NO'} />
-            <MetaRow label="MIN RAM" value={`${job.minRam} GB`} />
-            <MetaRow label="MIN VRAM" value={job.requiresGpu ? `${job.minVram} GB` : '—'} />
-          </div>
-
-          {job.checkpointKey && (
+          {job.checkpoint_key && (
             <div className="px-4 pb-4">
               <div className="terminal-label text-[9px] mb-3 pt-2">CHECKPOINT</div>
               <div className="bg-black border border-[#1f1f1f] p-2 font-mono text-[10px] text-[#22c55e] break-all">
-                {job.checkpointKey}
+                {job.checkpoint_key}
               </div>
+              <Link
+                href={`http://localhost:8080/jobs/${job.job_id}/artifact`}
+                target="_blank"
+                className="block mt-2 font-mono text-[9px] text-[#6b7280] border border-[#1f1f1f] px-3 py-2 text-center hover:border-[#22c55e] hover:text-[#22c55e] transition-colors tracking-widest"
+              >
+                DOWNLOAD →
+              </Link>
             </div>
           )}
 
-          {job.worker && (
+          {job.worker_id && (
             <div className="px-4 pb-4 mt-auto pt-4 border-t border-[#1f1f1f]">
               <Link
-                href={`/workers/${job.worker}`}
+                href={`/workers/${job.worker_id}`}
                 className="block w-full font-mono text-[10px] text-[#6b7280] border border-[#1f1f1f] px-3 py-2 text-center hover:border-[#f59e0b] hover:text-[#f59e0b] transition-colors tracking-widest"
               >
                 VIEW WORKER →
@@ -134,37 +186,48 @@ export default function JobDetailPage() {
             {job.state === 'RUNNING' && (
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#f59e0b] animate-pulse" />
             )}
-            <span className="font-mono text-[10px] text-[#6b7280]">{job.id}</span>
+            <span className="font-mono text-[10px] text-[#6b7280]">{job.job_id}</span>
           </div>
+
           {job.state === 'PENDING_REVIEW' && (
-            <div className="border-b border-[#8b5cf6]/30 bg-[#8b5cf6]/5 px-4 py-2 flex items-center gap-3">
+            <div className="border-b border-[#8b5cf6]/30 bg-[#8b5cf6]/5 px-4 py-3 flex items-center gap-3">
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#8b5cf6] animate-pulse" />
-              <span className="font-mono text-[10px] text-[#8b5cf6] tracking-widest">
-                AWAITING WORKER APPROVAL — worker-gpu-02 must approve before execution starts
+              <div>
+                <div className="font-mono text-[10px] text-[#8b5cf6] tracking-widest mb-0.5">
+                  AWAITING WORKER APPROVAL
+                </div>
+                <div className="font-mono text-[10px] text-[#6b7280]">
+                  Worker <span className="text-[#d4d4d4]">{job.worker_id}</span> must approve before execution starts.
+                  Will auto-reject after 60s.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {job.state === 'QUEUED' && (
+            <div className="border-b border-[#6b7280]/30 bg-[#6b7280]/5 px-4 py-3 flex items-center gap-3">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#6b7280]" />
+              <span className="font-mono text-[10px] text-[#6b7280]">
+                Waiting for a free worker that meets requirements
               </span>
             </div>
           )}
-          <div className="flex-1 overflow-y-auto bg-black font-mono text-[11px] leading-relaxed p-4 space-y-0">
-            {job.logs.split('\n').map((line, idx) => {
-              const isEpoch = line.includes('Epoch') || line.includes('epoch')
-              const isError =
-                line.toLowerCase().includes('error') || line.toLowerCase().includes('failed')
-              const timestampMatch = line.match(/^\[(\d{2}:\d{2}:\d{2})\]/)
-              const timestamp = timestampMatch?.[1]
-              const message = timestampMatch ? line.slice(line.indexOf(']') + 1) : line
 
-              return (
-                <div
-                  key={idx}
-                  className={`whitespace-pre-wrap break-words py-0.5 ${isEpoch ? 'bg-[#f59e0b]/10' : ''}`}
-                >
-                  {timestamp && <span className="text-[#6b7280]">[{timestamp}]</span>}
-                  <span className={isError ? 'text-[#ef4444]' : 'text-[#d4d4d4]'}>{message}</span>
-                </div>
-              )
-            })}
+          <div className="flex-1 overflow-y-auto bg-black font-mono text-[11px] leading-relaxed p-4">
+            {(job.state === 'QUEUED' || job.state === 'PENDING_REVIEW') && (
+              <div className="text-[#3f3f3f]">logs will appear here once the job starts running</div>
+            )}
             {job.state === 'RUNNING' && (
-              <div className="text-[#f59e0b] animate-pulse mt-1">▌</div>
+              <div className="text-[#f59e0b] animate-pulse">▌ streaming logs — wire SSE endpoint to see live output</div>
+            )}
+            {job.state === 'COMPLETED' && (
+              <div className="text-[#22c55e]">job completed — checkpoint key: {job.checkpoint_key || 'none'}</div>
+            )}
+            {job.state === 'FAILED' && (
+              <div className="text-[#ef4444]">job failed: {job.error || 'unknown error'}</div>
+            )}
+            {job.state === 'CANCELLED' && (
+              <div className="text-[#6b7280]">job was cancelled</div>
             )}
           </div>
         </div>

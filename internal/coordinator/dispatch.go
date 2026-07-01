@@ -55,7 +55,7 @@ func (c *Coordinator) TryDispatchQueued(ctx context.Context, workerID string) {
 		if err := proto.Unmarshal(status.RequestProto, &req); err != nil {
 			continue
 		}
-		if !workerman.MeetsRequirements(worker.Info, &req) {
+		if !workerman.MeetsRequirements(worker.Info, worker.Stats, &req) {
 			continue
 		}
 		if bestStatus == nil || status.UpdatedAt.Before(bestStatus.UpdatedAt) {
