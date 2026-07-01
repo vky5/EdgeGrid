@@ -2,8 +2,10 @@
 
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { getJob, approveJob, rejectJob, cancelJob, LiveJob } from '@/lib/api'
+
+const BASE = (process.env.NEXT_PUBLIC_COORDINATOR_URL ?? 'http://localhost:8080').replace(/\/$/, '')
 
 const STATE_COLOR: Record<string, string> = {
   RUNNING:        '#f59e0b',
@@ -36,7 +38,10 @@ export default function JobDetailPage() {
   const router = useRouter()
   const [job, setJob] = useState<LiveJob | null | undefined>(undefined)
   const [acting, setActing] = useState(false)
+  const [logs, setLogs] = useState<string[]>([])
+  const logEndRef = useRef<HTMLDivElement>(null)
 
+  // Poll job state
   useEffect(() => {
     let cancelled = false
     const poll = async () => {
@@ -51,6 +56,23 @@ export default function JobDetailPage() {
     const t = setInterval(poll, 3_000)
     return () => { cancelled = true; clearInterval(t) }
   }, [id])
+
+  // Stream logs via SSE
+  useEffect(() => {
+    setLogs([])
+    const es = new EventSource(`${BASE}/jobs/${id}/logs`)
+    es.onmessage = (e) => {
+      setLogs((prev) => [...prev, e.data])
+    }
+    es.addEventListener('done', () => es.close())
+    es.onerror = () => es.close()
+    return () => es.close()
+  }, [id])
+
+  // Auto-scroll to bottom as logs arrive
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [logs])
 
   const act = async (fn: () => Promise<void>) => {
     setActing(true)
@@ -214,21 +236,32 @@ export default function JobDetailPage() {
           )}
 
           <div className="flex-1 overflow-y-auto bg-black font-mono text-[11px] leading-relaxed p-4">
-            {(job.state === 'QUEUED' || job.state === 'PENDING_REVIEW') && (
-              <div className="text-[#3f3f3f]">logs will appear here once the job starts running</div>
+            {logs.length === 0 && (
+              <div className="text-[#3f3f3f]">
+                {job.state === 'QUEUED' && 'waiting for a free worker…'}
+                {job.state === 'PENDING_REVIEW' && 'awaiting worker approval…'}
+                {job.state === 'RUNNING' && <span className="text-[#f59e0b] animate-pulse">▌ waiting for first log line…</span>}
+                {job.state === 'COMPLETED' && 'no logs stored'}
+                {job.state === 'FAILED' && `failed: ${job.error || 'unknown error'}`}
+                {job.state === 'CANCELLED' && 'cancelled'}
+              </div>
             )}
-            {job.state === 'RUNNING' && (
-              <div className="text-[#f59e0b] animate-pulse">▌ streaming logs — wire SSE endpoint to see live output</div>
+            {logs.map((line, i) => {
+              const isError = /error|failed|exception/i.test(line)
+              const isEpoch = /epoch/i.test(line)
+              return (
+                <div
+                  key={i}
+                  className={`whitespace-pre-wrap break-words py-0.5 ${isEpoch ? 'bg-[#f59e0b]/5' : ''}`}
+                >
+                  <span className={isError ? 'text-[#ef4444]' : 'text-[#d4d4d4]'}>{line}</span>
+                </div>
+              )
+            })}
+            {job.state === 'RUNNING' && logs.length > 0 && (
+              <div className="text-[#f59e0b] animate-pulse mt-1">▌</div>
             )}
-            {job.state === 'COMPLETED' && (
-              <div className="text-[#22c55e]">job completed — checkpoint key: {job.checkpoint_key || 'none'}</div>
-            )}
-            {job.state === 'FAILED' && (
-              <div className="text-[#ef4444]">job failed: {job.error || 'unknown error'}</div>
-            )}
-            {job.state === 'CANCELLED' && (
-              <div className="text-[#6b7280]">job was cancelled</div>
-            )}
+            <div ref={logEndRef} />
           </div>
         </div>
       </div>

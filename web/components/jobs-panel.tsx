@@ -1,3 +1,5 @@
+import Link from 'next/link'
+
 interface Job {
   id: string
   submitted: string
@@ -95,33 +97,22 @@ export function JobsPanel({ jobs, expandedJobId, onSelectJob }: JobsPanelProps) 
             </div>
           </div>
 
-          {/* Log Content */}
-          <div className="flex-1 overflow-y-auto bg-black font-mono text-[11px] leading-relaxed p-3 space-y-0">
-            {expandedJob.logs.split('\n').map((line, idx) => {
-              let lineColor = 'text-[#d4d4d4]'
-              let highlightColor = ''
-
-              if (line.includes('Epoch')) {
-                highlightColor = 'bg-[#f59e0b]/10'
-              } else if (line.toLowerCase().includes('error') || line.toLowerCase().includes('failed')) {
-                lineColor = 'text-[#ef4444]'
-              }
-
-              // Extract timestamp
-              const timestampMatch = line.match(/^\[(\d{2}:\d{2}:\d{2})\]/)
-              const timestamp = timestampMatch ? timestampMatch[1] : null
-              const messageStart = timestampMatch ? line.indexOf(']') + 1 : 0
-
-              return (
-                <div key={idx} className={`whitespace-pre-wrap break-words ${highlightColor}`}>
-                  {timestamp && <span className="text-[#6b7280]">[{timestamp}]</span>}
-                  <span className={lineColor}>{line.substring(messageStart || 0)}</span>
-                </div>
-              )
-            })}
-            {expandedJob.state === 'RUNNING' && (
-              <div className="text-[#f59e0b] animate-pulse">▌</div>
-            )}
+          {/* Log Content — full logs on detail page */}
+          <div className="flex-1 overflow-y-auto bg-black font-mono text-[11px] leading-relaxed p-3 flex flex-col gap-2">
+            <div className="text-[#3f3f3f]">
+              {expandedJob.state === 'QUEUED' && 'waiting for a free worker…'}
+              {expandedJob.state === 'PENDING_REVIEW' && 'awaiting worker approval…'}
+              {expandedJob.state === 'RUNNING' && <span className="text-[#f59e0b] animate-pulse">▌ running</span>}
+              {expandedJob.state === 'COMPLETED' && <span className="text-[#22c55e]">completed</span>}
+              {expandedJob.state === 'FAILED' && <span className="text-[#ef4444]">failed</span>}
+              {expandedJob.state === 'CANCELLED' && 'cancelled'}
+            </div>
+            <Link
+              href={`/jobs/${expandedJob.id}`}
+              className="font-mono text-[9px] text-[#6b7280] border border-[#1f1f1f] px-3 py-2 text-center hover:border-[#f59e0b] hover:text-[#f59e0b] transition-colors tracking-widest w-fit"
+            >
+              VIEW FULL LOGS →
+            </Link>
           </div>
         </div>
       )}

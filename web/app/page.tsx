@@ -1,78 +1,55 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { WorkerNodes } from '@/components/worker-nodes'
 import { JobsPanel } from '@/components/jobs-panel'
 import { SubmitJobPanel } from '@/components/submit-job-panel'
+import { listJobs, LiveJob } from '@/lib/api'
+
+function relativeTime(iso: string): string {
+  if (!iso) return '—'
+  const diff = Date.now() - new Date(iso).getTime()
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  return `${Math.floor(diff / 3_600_000)}h ago`
+}
 
 export default function Page() {
-  const [expandedJobId, setExpandedJobId] = useState<string | null>('job-a1b2c3d4')
-  const [jobs, setJobs] = useState([
-    {
-      id: 'job-a1b2c3d4',
-      submitted: '2 min ago',
-      worker: 'worker-gpu-01',
-      state: 'RUNNING',
-      duration: '1m 23s',
-      logs: `[14:32:15] Initializing distributed training session
-[14:32:16] Connecting to parameter server...
-[14:32:17] Connected. Sync point 1/10.
-[14:32:18] Model loaded: 2.4GB
-[14:32:19] Gradient accumulation steps: 4
-[14:32:20] Starting epoch 1/20...
-[14:32:45] Epoch 1: loss = 2.341 | val_accuracy = 0.764
-[14:33:10] Epoch 2: loss = 1.892 | val_accuracy = 0.821
-[14:33:35] Epoch 3: loss = 1.564 | val_accuracy = 0.856
-[14:34:00] Computing batch norm statistics...
-[14:34:05] Batch norm complete. Ready for next epoch.`,
-    },
-    {
-      id: 'job-x7y8z9w0',
-      submitted: '8 min ago',
-      worker: 'worker-gpu-02',
-      state: 'COMPLETED',
-      duration: '5m 42s',
-      logs: 'Job completed successfully.',
-    },
-    {
-      id: 'job-m1n2o3p4',
-      submitted: '15 min ago',
-      worker: 'worker-gpu-03',
-      state: 'FAILED',
-      duration: '3m 21s',
-      logs: '[14:28:00] Error: VRAM exhausted on device 0\n[14:28:01] Attempting recovery...\n[14:28:02] Recovery failed. Job terminated.',
-    },
-    {
-      id: 'job-r7s8t9u0',
-      submitted: '3 min ago',
-      worker: 'worker-gpu-02',
-      state: 'PENDING_REVIEW',
-      duration: '—',
-      logs: 'Awaiting worker approval before execution.',
-    },
-    {
-      id: 'job-q5r6s7t8',
-      submitted: '25 min ago',
-      worker: 'worker-cpu-01',
-      state: 'QUEUED',
-      duration: '—',
-      logs: 'Waiting for worker availability.',
-    },
-  ])
+  const [expandedJobId, setExpandedJobId] = useState<string | null>(null)
+  const [liveJobs, setLiveJobs] = useState<LiveJob[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const data = await listJobs()
+        if (!cancelled) setLiveJobs(data)
+      } catch { /* coordinator offline — keep showing last known state */ }
+    }
+    poll()
+    const t = setInterval(poll, 5_000)
+    return () => { cancelled = true; clearInterval(t) }
+  }, [])
+
+  const jobs = liveJobs.map((j) => ({
+    id: j.job_id,
+    submitted: relativeTime(j.updated_at),
+    worker: j.worker_id || '—',
+    state: j.state as any,
+    duration: '—',
+    logs: '',
+  }))
 
   return (
     <div className="h-full w-full bg-[#0c0c0c] text-[#d4d4d4] flex overflow-hidden">
-      {/* LEFT COLUMN: Worker Nodes Panel */}
       <div className="w-60 border-r border-[#1f1f1f] flex flex-col">
         <WorkerNodes />
       </div>
 
-      {/* CENTER COLUMN: Jobs + Log Viewer */}
       <div className="flex-1 flex flex-col border-r border-[#1f1f1f]">
         <JobsPanel jobs={jobs} expandedJobId={expandedJobId} onSelectJob={setExpandedJobId} />
       </div>
 
-      {/* RIGHT COLUMN: Submit Job + Stats */}
       <div className="w-72 flex flex-col border-l border-[#1f1f1f]">
         <SubmitJobPanel />
       </div>

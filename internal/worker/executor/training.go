@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -101,7 +102,9 @@ func (e *TrainingExecutor) resolveVenv(ctx context.Context, requirements, inputD
 }
 
 func (e *TrainingExecutor) runScript(ctx context.Context, python, scriptPath, outputDir, jobID, configJSON string) error {
-	cmd := exec.CommandContext(ctx, python, scriptPath)
+	// -u disables Python's output buffering so each print() flushes immediately
+	// instead of being batched into one chunk when the process exits.
+	cmd := exec.CommandContext(ctx, python, "-u", scriptPath)
 	cmd.Dir = filepath.Dir(scriptPath)
 	cmd.Env = append(os.Environ(),
 		"OUTPUT_DIR="+outputDir,
@@ -163,15 +166,22 @@ func runCmd(ctx context.Context, name string, args ...string) error {
 
 // logWriter pipes subprocess output line-by-line to the Go logger and
 // optionally to a publish func (e.g. NATS JetStream for live log streaming).
+// Write splits on newlines so each line is a separate log entry and a
+// separate NATS message — SSE requires one logical line per data: field.
 type logWriter struct {
 	prefix  string
 	publish func([]byte)
 }
 
 func (lw *logWriter) Write(p []byte) (int, error) {
-	log.Printf("%s%s", lw.prefix, p)
-	if lw.publish != nil {
-		lw.publish(p)
+	for _, line := range bytes.Split(bytes.TrimRight(p, "\n"), []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		log.Printf("%s%s", lw.prefix, line)
+		if lw.publish != nil {
+			lw.publish(line)
+		}
 	}
 	return len(p), nil
 }
