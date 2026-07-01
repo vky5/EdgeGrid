@@ -53,7 +53,7 @@ export default function Page() {
   ])
 
   return (
-    <div className="h-screen w-screen bg-[#0c0c0c] text-[#d4d4d4] flex overflow-hidden">
+    <div className="h-full w-full bg-[#0c0c0c] text-[#d4d4d4] flex overflow-hidden">
       {/* LEFT COLUMN: Worker Nodes Panel */}
       <div className="w-60 border-r border-[#1f1f1f] flex flex-col">
         <WorkerNodes />

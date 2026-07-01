@@ -1,0 +1,84 @@
+'use client'
+
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
+
+const NAV_ITEMS = [
+  {
+    href: '/',
+    label: 'DASHBOARD',
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <rect x="1" y="1" width="6" height="6" stroke="currentColor" strokeWidth="1.2" />
+        <rect x="9" y="1" width="6" height="6" stroke="currentColor" strokeWidth="1.2" />
+        <rect x="1" y="9" width="6" height="6" stroke="currentColor" strokeWidth="1.2" />
+        <rect x="9" y="9" width="6" height="6" stroke="currentColor" strokeWidth="1.2" />
+      </svg>
+    ),
+  },
+  {
+    href: '/jobs',
+    label: 'JOBS',
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <rect x="1" y="3" width="14" height="2" stroke="currentColor" strokeWidth="1.2" />
+        <rect x="1" y="7" width="14" height="2" stroke="currentColor" strokeWidth="1.2" />
+        <rect x="1" y="11" width="14" height="2" stroke="currentColor" strokeWidth="1.2" />
+      </svg>
+    ),
+  },
+  {
+    href: '/workers',
+    label: 'WORKERS',
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <rect x="1" y="2" width="14" height="9" stroke="currentColor" strokeWidth="1.2" />
+        <path d="M5 11v3M11 11v3M3 14h10" stroke="currentColor" strokeWidth="1.2" />
+        <circle cx="8" cy="6.5" r="1.5" stroke="currentColor" strokeWidth="1.2" />
+      </svg>
+    ),
+  },
+]
+
+export function Nav() {
+  const pathname = usePathname()
+
+  const isActive = (href: string) => {
+    if (href === '/') return pathname === '/'
+    return pathname.startsWith(href)
+  }
+
+  return (
+    <nav className="w-11 flex flex-col border-r border-[#1f1f1f] bg-[#0c0c0c] shrink-0">
+      {/* Logo */}
+      <div className="h-11 flex items-center justify-center border-b border-[#1f1f1f]">
+        <span className="font-mono text-[10px] font-bold text-[#f59e0b] tracking-widest">EG</span>
+      </div>
+
+      {/* Nav items */}
+      <div className="flex flex-col items-center gap-1 pt-2">
+        {NAV_ITEMS.map((item) => (
+          <Link
+            key={item.href}
+            href={item.href}
+            title={item.label}
+            className={`group relative w-9 h-9 flex items-center justify-center transition-colors ${
+              isActive(item.href)
+                ? 'text-[#f59e0b] bg-[#1a1a1a]'
+                : 'text-[#6b7280] hover:text-[#d4d4d4] hover:bg-[#1a1a1a]'
+            }`}
+          >
+            {isActive(item.href) && (
+              <span className="absolute left-0 top-0 bottom-0 w-0.5 bg-[#f59e0b]" />
+            )}
+            {item.icon}
+            {/* Tooltip */}
+            <span className="absolute left-11 bg-[#1a1a1a] border border-[#1f1f1f] px-2 py-1 font-mono text-[10px] text-[#d4d4d4] tracking-widest whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+              {item.label}
+            </span>
+          </Link>
+        ))}
+      </div>
+    </nav>
+  )
+}
