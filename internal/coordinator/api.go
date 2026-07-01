@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 	"github.com/edgegrid/edgegrid/internal/jobstate"
 	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
+	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -85,6 +87,8 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 			handleUpload(w, r, jsBroker, jobID)
 		case "artifact":
 			handleArtifactDownload(w, r, jsBroker, jobID)
+		case "logs":
+			handleJobLogs(w, r, jsBroker, jobID)
 		default:
 			http.NotFound(w, r)
 		}
@@ -170,6 +174,84 @@ func handleSubmitJob(w http.ResponseWriter, r *http.Request, jsBroker *broker.Br
 		JobID:  jobID,
 		Status: "queued",
 	})
+}
+
+// handleJobLogs streams stdout/stderr from a running (or completed) job as
+// Server-Sent Events. Each log line arrives as "data: <line>\n\n".
+// When the job finishes, a final "event: done\ndata: <state>\n\n" is sent
+// and the stream closes. Clients that connect after the job started receive
+// all prior log lines from the beginning (JetStream DeliverAll).
+func handleJobLogs(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, jobID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	kv, err := jsBroker.GetOrCreateKV("jobs_state", 24*time.Hour)
+	if err != nil {
+		http.Error(w, "failed to get state store", http.StatusInternalServerError)
+		return
+	}
+
+	// Subscribe before committing SSE headers so we can still send a clean
+	// HTTP error if the subscription itself fails.
+	msgCh := make(chan *nats.Msg, 64)
+	sub, err := jsBroker.JS.ChanSubscribe(
+		broker.SubjectLogsPrefix+jobID,
+		msgCh,
+		nats.DeliverAll(),
+		nats.AckNone(),
+	)
+	if err != nil {
+		log.Printf("handleJobLogs: failed to subscribe for job %s: %v", jobID, err)
+		http.Error(w, "failed to subscribe to logs", http.StatusInternalServerError)
+		return
+	}
+	defer sub.Unsubscribe()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+
+		case msg := <-msgCh:
+			fmt.Fprintf(w, "data: %s\n\n", msg.Data)
+			flusher.Flush()
+
+		case <-ticker.C:
+			status, err := jobstate.GetJobStatus(kv, jobID)
+			if err != nil || status == nil {
+				return
+			}
+			if status.State == jobstate.StateCompleted || status.State == jobstate.StateFailed {
+				// Drain any log lines that arrived between the last read and now.
+				for {
+					select {
+					case msg := <-msgCh:
+						fmt.Fprintf(w, "data: %s\n\n", msg.Data)
+						flusher.Flush()
+					default:
+						fmt.Fprintf(w, "event: done\ndata: %s\n\n", status.State)
+						flusher.Flush()
+						return
+					}
+				}
+			}
+		}
+	}
 }
 
 func handleGetJobStatus(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, jobID string) {

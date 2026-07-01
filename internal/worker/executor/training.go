@@ -18,10 +18,12 @@ const venvCacheDir = "/tmp/edgegrid-venvs"
 // TrainingExecutor runs the user's Python training script inside an isolated
 // venv. Venvs are cached by SHA256(requirements.txt) so repeated jobs with
 // the same dependencies skip the install step.
-type TrainingExecutor struct{}
+type TrainingExecutor struct {
+	logPublish func(jobID, line string) // optional; publishes each stdout/stderr line to NATS
+}
 
-func NewTrainingExecutor() *TrainingExecutor {
-	return &TrainingExecutor{}
+func NewTrainingExecutor(logPublish func(jobID, line string)) *TrainingExecutor {
+	return &TrainingExecutor{logPublish: logPublish}
 }
 
 func (e *TrainingExecutor) Execute(ctx context.Context, req *workerpb.TrainingJobRequest, jobDir string) error {
@@ -107,7 +109,11 @@ func (e *TrainingExecutor) runScript(ctx context.Context, python, scriptPath, ou
 		"TRAINING_CONFIG="+configJSON,
 	)
 
-	lw := &logWriter{prefix: fmt.Sprintf("[job %s] ", jobID)}
+	var pub func([]byte)
+	if e.logPublish != nil {
+		pub = func(p []byte) { e.logPublish(jobID, string(p)) }
+	}
+	lw := &logWriter{prefix: fmt.Sprintf("[job %s] ", jobID), publish: pub}
 	cmd.Stdout = lw
 	cmd.Stderr = lw
 
@@ -155,12 +161,17 @@ func runCmd(ctx context.Context, name string, args ...string) error {
 	return cmd.Run()
 }
 
-// logWriter pipes subprocess output line-by-line to the Go logger.
+// logWriter pipes subprocess output line-by-line to the Go logger and
+// optionally to a publish func (e.g. NATS JetStream for live log streaming).
 type logWriter struct {
-	prefix string
+	prefix  string
+	publish func([]byte)
 }
 
 func (lw *logWriter) Write(p []byte) (int, error) {
 	log.Printf("%s%s", lw.prefix, p)
+	if lw.publish != nil {
+		lw.publish(p)
+	}
 	return len(p), nil
 }

@@ -17,6 +17,8 @@ const (
 	SubjectResults       = "jobs.results"
 	SubjectProgress      = "jobs.progress"
 	SubjectCancel        = "jobs.cancel"
+	SubjectLogsPrefix    = "jobs.logs."
+	SubjectLogsWildcard  = "jobs.logs.*"
 
 	// Worker lifecycle subjects
 	SubjectRegister  = "workers.register"
@@ -55,6 +57,7 @@ func (b *Broker) EnsureStream() error {
 		SubjectResults,
 		SubjectProgress,
 		SubjectCancel,
+		SubjectLogsWildcard,
 		SubjectRegister,
 		SubjectHeartbeat,
 	}

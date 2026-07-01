@@ -48,7 +48,16 @@ func NewAgent(cfg *config.Config) (*Agent, error) {
 		var execInstance executor.Executor
 		switch cfg.Client.Executor {
 		case "training":
-			execInstance = executor.NewTrainingExecutor()
+			js, err := nc.JetStream()
+			if err != nil {
+				nc.Close()
+				return nil, fmt.Errorf("failed to init JetStream for log publishing: %w", err)
+			}
+			execInstance = executor.NewTrainingExecutor(func(jobID, line string) {
+				if _, err := js.Publish("jobs.logs."+jobID, []byte(line)); err != nil {
+					log.Printf("failed to publish log line for job %s: %v", jobID, err)
+				}
+			})
 		case "mock", "":
 			execInstance = executor.NewMockExecutor()
 		default:
