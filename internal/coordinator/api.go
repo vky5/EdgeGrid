@@ -96,6 +96,10 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 			handleArtifactDownload(w, r, jsBroker, jobID)
 		case "logs":
 			handleJobLogs(w, r, jsBroker, jobID)
+		case "approve":
+			handleJobDecision(w, r, jsBroker, jobID, "approve")
+		case "reject":
+			handleJobDecision(w, r, jsBroker, jobID, "reject")
 		default:
 			http.NotFound(w, r)
 		}
@@ -278,7 +282,10 @@ func handleCancelJob(w http.ResponseWriter, r *http.Request, jsBroker *broker.Br
 		return
 	}
 
-	if status.State != jobstate.StateQueued && status.State != jobstate.StateRunning {
+	switch status.State {
+	case jobstate.StateQueued, jobstate.StateRunning, jobstate.StatePendingReview:
+		// cancellable states
+	default:
 		http.Error(w, fmt.Sprintf("job is %s, cannot cancel", status.State), http.StatusConflict)
 		return
 	}
@@ -288,11 +295,56 @@ func handleCancelJob(w http.ResponseWriter, r *http.Request, jsBroker *broker.Br
 		return
 	}
 
-	// If the job is running, signal the worker to stop it.
-	if status.State == jobstate.StateRunning {
+	switch status.State {
+	case jobstate.StateRunning:
+		// Signal the worker's job context to cancel.
 		if _, err := jsBroker.JS.Publish(broker.SubjectCancel, []byte(jobID)); err != nil {
 			log.Printf("failed to publish cancel signal for job %s: %v", jobID, err)
 		}
+	case jobstate.StatePendingReview:
+		// Unblock the worker waiting in awaitApproval by sending a decision signal.
+		subject := fmt.Sprintf(broker.SubjectWorkerDecisionFmt, status.WorkerID, jobID)
+		if err := jsBroker.Conn.Publish(subject, []byte("cancel")); err != nil {
+			log.Printf("failed to publish cancel decision for job %s: %v", jobID, err)
+		}
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// handleJobDecision relays an approve or reject decision from an external caller
+// to the worker currently holding the job in PENDING_REVIEW state.
+func handleJobDecision(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, jobID, decision string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	kv, err := jsBroker.GetOrCreateKV("jobs_state", 24*time.Hour)
+	if err != nil {
+		http.Error(w, "failed to get state store", http.StatusInternalServerError)
+		return
+	}
+
+	status, err := jobstate.GetJobStatus(kv, jobID)
+	if err != nil {
+		http.Error(w, "failed to retrieve job", http.StatusInternalServerError)
+		return
+	}
+	if status == nil {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+	if status.State != jobstate.StatePendingReview {
+		http.Error(w, fmt.Sprintf("job is %s, not pending review", status.State), http.StatusConflict)
+		return
+	}
+
+	subject := fmt.Sprintf(broker.SubjectWorkerDecisionFmt, status.WorkerID, jobID)
+	if err := jsBroker.Conn.Publish(subject, []byte(decision)); err != nil {
+		log.Printf("failed to publish %s decision for job %s: %v", decision, jobID, err)
+		http.Error(w, "failed to send decision", http.StatusInternalServerError)
+		return
 	}
 
 	w.WriteHeader(http.StatusAccepted)

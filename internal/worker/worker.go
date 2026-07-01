@@ -22,16 +22,17 @@ const (
 )
 
 type Worker struct {
-	id       string
-	broker   *broker.Broker
-	executor executor.Executor
-	hw       HardwareSpec
-	busy     atomic.Bool
-	mu       sync.Mutex
-	cancels  map[string]context.CancelFunc // jobID → cancel func for running jobs
+	id              string
+	broker          *broker.Broker
+	executor        executor.Executor
+	hw              HardwareSpec
+	busy            atomic.Bool
+	mu              sync.Mutex
+	cancels         map[string]context.CancelFunc // jobID → cancel func for running jobs
+	requireApproval bool
 }
 
-func NewWorkerWithConn(nc *nats.Conn, workerID string, exec executor.Executor, replicas int) (*Worker, error) {
+func NewWorkerWithConn(nc *nats.Conn, workerID string, exec executor.Executor, replicas int, requireApproval bool) (*Worker, error) {
 	if workerID == "" {
 		workerID = generateWorkerID()
 	}
@@ -42,10 +43,11 @@ func NewWorkerWithConn(nc *nats.Conn, workerID string, exec executor.Executor, r
 	}
 
 	return &Worker{
-		id:       workerID,
-		broker:   wb,
-		executor: exec,
-		cancels:  make(map[string]context.CancelFunc),
+		id:              workerID,
+		broker:          wb,
+		executor:        exec,
+		cancels:         make(map[string]context.CancelFunc),
+		requireApproval: requireApproval,
 	}, nil
 }
 

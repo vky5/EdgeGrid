@@ -20,9 +20,10 @@ type ServerConfig struct {
 }
 
 type ClientConfig struct {
-	Enabled  bool
-	WorkerID string
-	Executor string
+	Enabled         bool
+	WorkerID        string
+	Executor        string
+	RequireApproval bool
 }
 
 func envInt(key string, fallback int) int {
@@ -41,6 +42,7 @@ func LoadConfig() *Config {
 	apiPort := flag.String("port", "", "Coordinator HTTP API Port")
 	workerID := flag.String("worker-id", "", "Custom worker ID (worker only)")
 	executorType := flag.String("executor", "", "Executor backend (mock or training)")
+	requireApproval := flag.Bool("require-approval", false, "Worker must approve each job before running it")
 	replicas := flag.Int("replicas", 0, "NATS JetStream replication factor (0 = auto-detect from env)")
 
 	flag.Parse()
@@ -100,9 +102,10 @@ func LoadConfig() *Config {
 			Port:    finalPort,
 		},
 		Client: ClientConfig{
-			Enabled:  runClient,
-			WorkerID: finalWorkerID,
-			Executor: finalExecutor,
+			Enabled:         runClient,
+			WorkerID:        finalWorkerID,
+			Executor:        finalExecutor,
+			RequireApproval: *requireApproval,
 		},
 	}
 }

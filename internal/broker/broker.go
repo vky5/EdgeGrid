@@ -24,6 +24,10 @@ const (
 	SubjectRegister  = "workers.register"
 	SubjectHeartbeat = "workers.heartbeat"
 
+	// Worker approval subjects (NATS Core — not JetStream, ephemeral signals)
+	SubjectWorkerReject      = "workers.reject"
+	SubjectWorkerDecisionFmt = "workers.decision.%s.%s" // workerID, jobID
+
 	// Object Store bucket names
 	BucketDatasets    = "datasets"
 	BucketCheckpoints = "checkpoints"

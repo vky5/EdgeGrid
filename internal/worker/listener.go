@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -17,6 +18,13 @@ import (
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
 )
+
+const approvalTimeout = 60 * time.Second
+
+type rejectionMsg struct {
+	JobID    string `json:"job_id"`
+	WorkerID string `json:"worker_id"`
+}
 
 // RegisterWorker publishes the worker's hardware capabilities detected at startup.
 func (a *Worker) RegisterWorker() error {
@@ -118,10 +126,14 @@ func (a *Worker) StartJobListener(ctx context.Context) {
 
 // handleJob runs the full training pipeline for one job.
 func (a *Worker) handleJob(ctx context.Context, msg *nats.Msg) {
+	msgAcked := false
+
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("recovered panic in job handler: %v", r)
-			msg.Nak()
+			if !msgAcked {
+				msg.Nak()
+			}
 		}
 	}()
 
@@ -140,6 +152,19 @@ func (a *Worker) handleJob(ctx context.Context, msg *nats.Msg) {
 
 	log.Printf("received training job %s (base_model: %s, dataset: %s %s)",
 		req.JobId, req.BaseModelRef, req.DatasetType, req.DatasetRef)
+
+	// Approval gate: ACK immediately (taking ownership of the message), then
+	// wait for a human decision before proceeding. Any path that doesn't approve
+	// sends a rejection notice to the coordinator.
+	if a.requireApproval {
+		msg.Ack()
+		msgAcked = true
+
+		if !a.awaitApproval(ctx, &req) {
+			a.sendRejection(req.JobId)
+			return
+		}
+	}
 
 	// Per-job context so this job can be cancelled independently of the worker.
 	jobCtx, cancel := context.WithCancel(ctx)
@@ -182,11 +207,69 @@ func (a *Worker) handleJob(ctx context.Context, msg *nats.Msg) {
 
 	if pubErr := a.broker.PublishProto(broker.SubjectResults, resp); pubErr != nil {
 		log.Printf("failed to publish result for job %s: %v", req.JobId, pubErr)
-		msg.Nak()
+		if !msgAcked {
+			msg.Nak()
+		}
 		return
 	}
 
-	msg.Ack()
+	if !msgAcked {
+		msg.Ack()
+	}
+}
+
+// awaitApproval sets the job to PENDING_REVIEW and waits up to approvalTimeout
+// for the coordinator to relay a human decision ("approve", "reject", or "cancel").
+// Returns true only when the decision is exactly "approve".
+func (a *Worker) awaitApproval(ctx context.Context, req *workerpb.TrainingJobRequest) bool {
+	kv, err := a.broker.GetOrCreateKV("jobs_state", 24*time.Hour)
+	if err == nil {
+		_ = jobstate.UpdateJobStatus(kv, req.JobId, jobstate.StatePendingReview, a.id, "", "")
+	}
+
+	log.Printf("job %s awaiting approval (timeout: %v)", req.JobId, approvalTimeout)
+
+	subject := fmt.Sprintf(broker.SubjectWorkerDecisionFmt, a.id, req.JobId)
+	decisionCh := make(chan string, 1)
+
+	sub, err := a.broker.Conn.Subscribe(subject, func(msg *nats.Msg) {
+		select {
+		case decisionCh <- string(msg.Data):
+		default:
+		}
+	})
+	if err != nil {
+		log.Printf("job %s: failed to subscribe for approval signal: %v", req.JobId, err)
+		return false
+	}
+	defer sub.Unsubscribe()
+
+	select {
+	case decision := <-decisionCh:
+		log.Printf("job %s: decision received: %q", req.JobId, decision)
+		return decision == "approve"
+	case <-time.After(approvalTimeout):
+		log.Printf("job %s: approval timed out after %v", req.JobId, approvalTimeout)
+		return false
+	case <-ctx.Done():
+		log.Printf("job %s: context cancelled while awaiting approval", req.JobId)
+		return false
+	}
+}
+
+// sendRejection notifies the coordinator that this worker declined the job.
+// The coordinator will requeue it and try the next available worker.
+func (a *Worker) sendRejection(jobID string) {
+	data, err := json.Marshal(rejectionMsg{JobID: jobID, WorkerID: a.id})
+	if err != nil {
+		log.Printf("job %s: failed to marshal rejection: %v", jobID, err)
+		return
+	}
+	if err := a.broker.Conn.Publish(broker.SubjectWorkerReject, data); err != nil {
+		log.Printf("job %s: failed to publish rejection: %v", jobID, err)
+		return
+	}
+	log.Printf("job %s: rejection sent to coordinator", jobID)
 }
 
 // runTrainingPipeline executes all steps: disk check, dataset pull, train, checkpoint push.

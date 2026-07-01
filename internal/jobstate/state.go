@@ -11,11 +11,12 @@ import (
 type State string
 
 const (
-	StateQueued     State = "QUEUED"
-	StateRunning    State = "RUNNING"
-	StateCompleted  State = "COMPLETED"
-	StateFailed     State = "FAILED"
-	StateCancelled  State = "CANCELLED"
+	StateQueued        State = "QUEUED"
+	StatePendingReview State = "PENDING_REVIEW"
+	StateRunning       State = "RUNNING"
+	StateCompleted     State = "COMPLETED"
+	StateFailed        State = "FAILED"
+	StateCancelled     State = "CANCELLED"
 )
 
 type JobStatus struct {
@@ -26,6 +27,7 @@ type JobStatus struct {
 	CheckpointKey string    `json:"checkpoint_key,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at"`
 	RequestProto  []byte    `json:"request_proto,omitempty"`
+	RejectedBy    []string  `json:"rejected_by,omitempty"`
 }
 
 // InitJobState writes the initial QUEUED state for a new job, storing the
@@ -85,6 +87,32 @@ func RequeueJob(kv nats.KeyValue, jobID string) error {
 	status.CheckpointKey = ""
 	status.UpdatedAt = time.Now()
 	// RequestProto is preserved so the coordinator can re-dispatch.
+	bytes, err := json.Marshal(status)
+	if err != nil {
+		return fmt.Errorf("failed to marshal job %s: %w", jobID, err)
+	}
+	_, err = kv.Put(jobID, bytes)
+	return err
+}
+
+// RequeueJobAfterRejection resets a job back to QUEUED and records that
+// workerID already rejected it so TryDispatchQueued will not send it there again.
+func RequeueJobAfterRejection(kv nats.KeyValue, jobID, workerID string) error {
+	entry, err := kv.Get(jobID)
+	if err != nil {
+		return fmt.Errorf("failed to get job %s: %w", jobID, err)
+	}
+	var status JobStatus
+	if err := json.Unmarshal(entry.Value(), &status); err != nil {
+		return fmt.Errorf("failed to unmarshal job %s: %w", jobID, err)
+	}
+	status.State = StateQueued
+	status.WorkerID = ""
+	status.Error = ""
+	status.CheckpointKey = ""
+	status.UpdatedAt = time.Now()
+	status.RejectedBy = append(status.RejectedBy, workerID)
+	// RequestProto preserved so coordinator can re-dispatch.
 	bytes, err := json.Marshal(status)
 	if err != nil {
 		return fmt.Errorf("failed to marshal job %s: %w", jobID, err)

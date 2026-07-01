@@ -48,6 +48,9 @@ func (c *Coordinator) TryDispatchQueued(ctx context.Context, workerID string) {
 		if status.State != jobstate.StateQueued || len(status.RequestProto) == 0 {
 			continue
 		}
+		if workerAlreadyRejected(status.RejectedBy, workerID) {
+			continue
+		}
 		var req workerpb.TrainingJobRequest
 		if err := proto.Unmarshal(status.RequestProto, &req); err != nil {
 			continue
@@ -79,4 +82,13 @@ func (c *Coordinator) TryDispatchQueued(ctx context.Context, workerID string) {
 	}
 
 	log.Printf("dispatched queued job %s to newly available worker %s", bestStatus.JobID, workerID)
+}
+
+func workerAlreadyRejected(rejectedBy []string, workerID string) bool {
+	for _, id := range rejectedBy {
+		if id == workerID {
+			return true
+		}
+	}
+	return false
 }

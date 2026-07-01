@@ -70,6 +70,7 @@ func NewAgent(cfg *config.Config) (*Agent, error) {
 			cfg.Client.WorkerID,
 			execInstance,
 			cfg.Replicas,
+			cfg.Client.RequireApproval,
 		)
 		if err != nil {
 			nc.Close()

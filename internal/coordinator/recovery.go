@@ -48,7 +48,7 @@ func (c *Coordinator) recoverStaleJobs(ctx context.Context) {
 			continue
 		}
 
-		if status.State != jobstate.StateRunning || status.WorkerID == "" {
+		if (status.State != jobstate.StateRunning && status.State != jobstate.StatePendingReview) || status.WorkerID == "" {
 			continue
 		}
 
