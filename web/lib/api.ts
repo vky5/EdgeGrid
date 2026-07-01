@@ -50,7 +50,8 @@ export interface LiveWorker {
 }
 
 export async function submitJob(body: SubmitJobRequest): Promise<SubmitJobResponse> {
-  const res = await fetch(`${BASE}/jobs`, {
+  // Route through Next.js so the server can attach X-Submitted-By from session.
+  const res = await fetch('/api/jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

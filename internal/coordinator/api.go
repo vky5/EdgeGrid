@@ -13,6 +13,9 @@ import (
 	"github.com/edgegrid/edgegrid/internal/broker"
 	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 	"github.com/edgegrid/edgegrid/internal/jobstate"
+	"github.com/edgegrid/edgegrid/internal/joinmgr"
+	"github.com/edgegrid/edgegrid/internal/natsserver"
+	"github.com/edgegrid/edgegrid/internal/nodeident"
 	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
@@ -58,7 +61,22 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager) {
+// requireAdmin is a middleware that checks the Authorization: Bearer <adminToken> header.
+func requireAdmin(adminToken string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if adminToken == "" {
+			http.Error(w, "admin not configured", http.StatusServiceUnavailable)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+adminToken {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager, jm *joinmgr.Manager, ns *natsserver.EmbeddedServer, dataDir string, adminToken string) {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -90,7 +108,7 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 	mux.HandleFunc("/jobs", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handleListJobs(w, jsBroker)
+			handleListJobs(w, r, jsBroker)
 		case http.MethodPost:
 			handleSubmitJob(w, r, jsBroker, manager)
 		default:
@@ -139,6 +157,80 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 		}
 	})
 
+	// POST /join          — submit a join request (no auth required)
+	// GET  /join/{nodeID} — poll join status (no auth required)
+	mux.HandleFunc("/join", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		handleJoinRequest(w, r, jm)
+	})
+	mux.HandleFunc("/join/", func(w http.ResponseWriter, r *http.Request) {
+		nodeID := strings.TrimPrefix(r.URL.Path, "/join/")
+		if nodeID == "" {
+			http.Error(w, "node_id required", http.StatusBadRequest)
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		handleJoinStatus(w, nodeID, jm)
+	})
+
+	// POST /admin/join/{nodeID}/approve|reject  — admin only
+	mux.HandleFunc("/admin/join/", requireAdmin(adminToken, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		path := strings.TrimPrefix(r.URL.Path, "/admin/join/")
+		parts := strings.SplitN(path, "/", 2)
+		if len(parts) != 2 {
+			http.Error(w, "path must be /admin/join/{nodeID}/approve|reject", http.StatusBadRequest)
+			return
+		}
+		nodeID, action := parts[0], parts[1]
+		switch action {
+		case "approve":
+			handleJoinApprove(w, r, nodeID, jm, ns, jsBroker, dataDir)
+		case "reject":
+			handleJoinReject(w, nodeID, jm)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	// GET /admin/join — list all join requests (admin only)
+	mux.HandleFunc("/admin/join", requireAdmin(adminToken, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		reqs, err := jm.List()
+		if err != nil {
+			http.Error(w, "failed to list join requests", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(reqs)
+	}))
+
+	// POST /join/{nodeID}/claim — link a GitHub username to a pending join request
+	mux.HandleFunc("/join/claim/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		nodeID := strings.TrimPrefix(r.URL.Path, "/join/claim/")
+		if nodeID == "" {
+			http.Error(w, "node_id required", http.StatusBadRequest)
+			return
+		}
+		handleJoinClaim(w, r, nodeID, jm)
+	})
+
 	log.Printf("starting HTTP job API on %s", addr)
 	if err := http.ListenAndServe(addr, corsMiddleware(mux)); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("HTTP server failed: %v", err)
@@ -152,10 +244,6 @@ func handleSubmitJob(w http.ResponseWriter, r *http.Request, jsBroker *broker.Br
 		return
 	}
 
-	if body.DatasetRef == "" {
-		http.Error(w, "dataset_ref is required", http.StatusBadRequest)
-		return
-	}
 	if body.TrainingScript == "" {
 		http.Error(w, "training_script is required", http.StatusBadRequest)
 		return
@@ -192,7 +280,10 @@ func handleSubmitJob(w http.ResponseWriter, r *http.Request, jsBroker *broker.Br
 		return
 	}
 
-	if err := jobstate.InitJobState(kv, jobID, reqBytes); err != nil {
+	// X-Submitted-By is set by the Next.js API proxy from the GitHub session.
+	submittedBy := r.Header.Get("X-Submitted-By")
+
+	if err := jobstate.InitJobState(kv, jobID, reqBytes, submittedBy); err != nil {
 		log.Printf("failed to write initial job state: %v", err)
 		http.Error(w, "failed to initialize job state", http.StatusInternalServerError)
 		return
@@ -387,15 +478,20 @@ func handleJobDecision(w http.ResponseWriter, r *http.Request, jsBroker *broker.
 // jobStatusPublic is JobStatus with request_proto stripped — it's large binary
 // that the dashboard doesn't need and bloats every list response.
 type jobStatusPublic struct {
-	JobID         string          `json:"job_id"`
-	State         jobstate.State  `json:"state"`
-	WorkerID      string          `json:"worker_id,omitempty"`
-	Error         string          `json:"error,omitempty"`
-	CheckpointKey string          `json:"checkpoint_key,omitempty"`
-	UpdatedAt     time.Time       `json:"updated_at"`
+	JobID         string         `json:"job_id"`
+	State         jobstate.State `json:"state"`
+	WorkerID      string         `json:"worker_id,omitempty"`
+	Error         string         `json:"error,omitempty"`
+	CheckpointKey string         `json:"checkpoint_key,omitempty"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	SubmittedBy   string         `json:"submitted_by,omitempty"`
 }
 
-func handleListJobs(w http.ResponseWriter, jsBroker *broker.Broker) {
+func handleListJobs(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker) {
+	// ?user=github_username filters to only that user's jobs.
+	// Omit the param to get all jobs (admin use).
+	userFilter := r.URL.Query().Get("user")
+
 	kv, err := jsBroker.GetOrCreateKV("jobs_state", 24*time.Hour)
 	if err != nil {
 		http.Error(w, "failed to connect to state store", http.StatusInternalServerError)
@@ -419,6 +515,9 @@ func handleListJobs(w http.ResponseWriter, jsBroker *broker.Broker) {
 		if err != nil || status == nil {
 			continue
 		}
+		if userFilter != "" && status.SubmittedBy != userFilter {
+			continue
+		}
 		jobs = append(jobs, jobStatusPublic{
 			JobID:         status.JobID,
 			State:         status.State,
@@ -426,6 +525,7 @@ func handleListJobs(w http.ResponseWriter, jsBroker *broker.Broker) {
 			Error:         status.Error,
 			CheckpointKey: status.CheckpointKey,
 			UpdatedAt:     status.UpdatedAt,
+			SubmittedBy:   status.SubmittedBy,
 		})
 	}
 
@@ -468,4 +568,126 @@ func handleGetJobStatus(w http.ResponseWriter, r *http.Request, jsBroker *broker
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(status)
+}
+
+// handleJoinRequest accepts a join request from a worker or server node.
+func handleJoinRequest(w http.ResponseWriter, r *http.Request, jm *joinmgr.Manager) {
+	var body struct {
+		NodeID   string `json:"node_id"`
+		Role     string `json:"role"`
+		Hostname string `json:"hostname"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NodeID == "" || body.Role == "" {
+		http.Error(w, "node_id and role are required", http.StatusBadRequest)
+		return
+	}
+
+	req := joinmgr.JoinRequest{
+		NodeID:      body.NodeID,
+		Role:        body.Role,
+		Hostname:    body.Hostname,
+		Status:      joinmgr.StatusPending,
+		RequestedAt: time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	if err := jm.Submit(req); err != nil {
+		http.Error(w, "failed to store join request", http.StatusInternalServerError)
+		return
+	}
+	log.Printf("join request received: node=%s role=%s host=%s", body.NodeID, body.Role, body.Hostname)
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// handleJoinStatus returns the current status of a join request.
+// Strips secrets from pending/rejected responses; includes credentials only when approved.
+func handleJoinStatus(w http.ResponseWriter, nodeID string, jm *joinmgr.Manager) {
+	req, err := jm.Get(nodeID)
+	if err != nil {
+		http.NotFound(w, nil)
+		return
+	}
+	// Only include the token/secrets when approved so pending nodes can't fish for them.
+	if req.Status != joinmgr.StatusApproved {
+		req.Token = ""
+		req.ClusterSecret = ""
+		req.ClusterRoutes = nil
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(req)
+}
+
+// handleJoinApprove approves a pending join request, generates a unique token,
+// adds the credential to NATS, and stores it in the node_auth KV.
+func handleJoinApprove(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.Manager, ns *natsserver.EmbeddedServer, jsBroker *broker.Broker, dataDir string) {
+	req, err := jm.Get(nodeID)
+	if err != nil {
+		http.Error(w, "node not found", http.StatusNotFound)
+		return
+	}
+	if req.Status == joinmgr.StatusApproved {
+		http.Error(w, "already approved", http.StatusConflict)
+		return
+	}
+
+	// Generate a unique token for this node.
+	token, err := nodeident.RandomToken(32)
+	if err != nil {
+		http.Error(w, "failed to generate token", http.StatusInternalServerError)
+		return
+	}
+
+	// Persist the token in node_auth KV so it survives coordinator restarts.
+	kv, err := jsBroker.GetOrCreateKV("node_auth", 0)
+	if err == nil {
+		_, _ = kv.Put(nodeID, []byte(token))
+	}
+
+	// Hot-reload NATS with the new credential so the node can connect immediately.
+	var clusterSecret, coordURL string
+	var clusterRoutes []string
+	if ns != nil {
+		if addErr := ns.AddUser(natsserver.NodeCred{Username: nodeID, Password: token}); addErr != nil {
+			log.Printf("warning: NATS reload failed for node %s: %v", nodeID, addErr)
+		}
+		if req.Role == joinmgr.RoleServer {
+			clusterSecret = nodeident.LoadToken(dataDir, "cluster.secret")
+			clusterRoutes = []string{fmt.Sprintf("nats://localhost:%d", 6222)}
+			coordURL = fmt.Sprintf("nats://localhost:%d", 4222)
+		}
+	}
+
+	if err := jm.Approve(nodeID, token, clusterSecret, clusterRoutes, coordURL); err != nil {
+		http.Error(w, "failed to approve join request", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("approved join request: node=%s role=%s", nodeID, req.Role)
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleJoinClaim links a GitHub username to a pending join request.
+// Called by the Next.js server route after the user authenticates with GitHub.
+func handleJoinClaim(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.Manager) {
+	var body struct {
+		GitHubUsername string `json:"github_username"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.GitHubUsername == "" {
+		http.Error(w, "github_username is required", http.StatusBadRequest)
+		return
+	}
+	if err := jm.Claim(nodeID, body.GitHubUsername); err != nil {
+		http.Error(w, "node not found", http.StatusNotFound)
+		return
+	}
+	log.Printf("node %s claimed by github user %s", nodeID, body.GitHubUsername)
+	w.WriteHeader(http.StatusOK)
+}
+
+func handleJoinReject(w http.ResponseWriter, nodeID string, jm *joinmgr.Manager) {
+	if err := jm.Reject(nodeID); err != nil {
+		http.Error(w, "node not found", http.StatusNotFound)
+		return
+	}
+	log.Printf("rejected join request: node=%s", nodeID)
+	w.WriteHeader(http.StatusOK)
 }

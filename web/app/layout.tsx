@@ -3,6 +3,7 @@ import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { JetBrains_Mono } from 'next/font/google'
 import { Nav } from '@/components/nav'
+import { Providers } from '@/components/session-provider'
 import './globals.css'
 
 const geistSans = Geist({ variable: '--font-geist-sans', subsets: ['latin'] })
@@ -52,9 +53,11 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} ${jetbrainsMono.variable} bg-background`}>
       <body className="font-sans antialiased h-screen w-screen flex overflow-hidden">
-        <Nav />
-        <main className="flex-1 overflow-hidden">{children}</main>
-        {process.env.NODE_ENV === 'production' && <Analytics />}
+        <Providers>
+          <Nav />
+          <main className="flex-1 overflow-hidden">{children}</main>
+          {process.env.NODE_ENV === 'production' && <Analytics />}
+        </Providers>
       </body>
     </html>
   )

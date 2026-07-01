@@ -9,13 +9,16 @@ import (
 
 type Config struct {
 	NatsURL     string
-	EmbedNATS   bool   // true when coordinator should start the embedded NATS server
-	NATSPort    int    // port for embedded NATS (default 4222)
-	NATSStore   string // JetStream persistence directory for embedded NATS
-	Replicas    int    // NATS JetStream replication factor: 1=dev, 3=prod
-	ClusterName string // NATS cluster name (all nodes must match)
-	ClusterPort int    // intra-cluster gossip port (default 6222)
+	EmbedNATS   bool     // true when coordinator should start the embedded NATS server
+	NATSPort    int      // port for embedded NATS (default 4222)
+	NATSStore   string   // JetStream persistence directory for embedded NATS
+	DataDir     string   // directory for node identity and token files (default ./data)
+	Replicas    int      // NATS JetStream replication factor: 1=dev, 3=prod
+	ClusterName string   // NATS cluster name (all nodes must match)
+	ClusterPort int      // intra-cluster gossip port (default 6222)
 	Routes      []string // seed route URLs, e.g. nats://blacktree.in:6222
+	JoinURL      string   // coordinator HTTP URL to send a join request to (non-primary nodes)
+	DashboardURL string   // dashboard URL shown to the user to claim their node (optional)
 	Server      ServerConfig
 	Client      ClientConfig
 }
@@ -62,6 +65,9 @@ func LoadConfig() *Config {
 	clusterName     := flag.String("cluster-name", "", "NATS cluster name — all server nodes must use the same name (default edgegrid)")
 	clusterPort     := flag.Int("cluster-port", 0, "Intra-cluster gossip port for embedded NATS (default 6222)")
 	routes          := flag.String("routes", "", "Comma-separated seed route URLs for clustering, e.g. nats://blacktree.in:6222")
+	joinURL         := flag.String("join", "", "Coordinator HTTP URL to request cluster/worker join approval, e.g. http://blacktree.in:8080")
+	dashboardURL    := flag.String("dashboard", "", "Dashboard URL shown to the user to claim their node, e.g. https://edgegrid.vercel.app")
+	dataDir         := flag.String("data-dir", "", "Directory for node identity and credential files (default ./data)")
 
 	flag.Parse()
 
@@ -158,15 +164,33 @@ func LoadConfig() *Config {
 		}
 	}
 
+	finalDataDir := *dataDir
+	if finalDataDir == "" {
+		finalDataDir = envStr("DATA_DIR", "./data")
+	}
+
+	finalJoinURL := *joinURL
+	if finalJoinURL == "" {
+		finalJoinURL = os.Getenv("JOIN_URL")
+	}
+
+	finalDashboardURL := *dashboardURL
+	if finalDashboardURL == "" {
+		finalDashboardURL = os.Getenv("DASHBOARD_URL")
+	}
+
 	return &Config{
 		NatsURL:     finalNatsURL,
 		EmbedNATS:   embedNATS,
 		NATSPort:    finalNATSPort,
 		NATSStore:   finalNATSStore,
+		DataDir:     finalDataDir,
 		Replicas:    finalReplicas,
 		ClusterName: finalClusterName,
 		ClusterPort: finalClusterPort,
 		Routes:      finalRoutes,
+		JoinURL:      finalJoinURL,
+		DashboardURL: finalDashboardURL,
 		Server: ServerConfig{
 			Enabled: runServer,
 			Port:    finalPort,

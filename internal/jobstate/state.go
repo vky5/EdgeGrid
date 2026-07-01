@@ -28,17 +28,19 @@ type JobStatus struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 	RequestProto  []byte    `json:"request_proto,omitempty"`
 	RejectedBy    []string  `json:"rejected_by,omitempty"`
+	SubmittedBy   string    `json:"submitted_by,omitempty"` // GitHub username of the submitter
 }
 
 // InitJobState writes the initial QUEUED state for a new job, storing the
 // serialized TrainingJobRequest so the coordinator can re-dispatch it later
 // if no worker was free at submission time.
-func InitJobState(kv nats.KeyValue, jobID string, reqProto []byte) error {
+func InitJobState(kv nats.KeyValue, jobID string, reqProto []byte, submittedBy string) error {
 	status := JobStatus{
 		JobID:        jobID,
 		State:        StateQueued,
 		UpdatedAt:    time.Now(),
 		RequestProto: reqProto,
+		SubmittedBy:  submittedBy,
 	}
 	bytes, err := json.Marshal(status)
 	if err != nil {
@@ -49,20 +51,23 @@ func InitJobState(kv nats.KeyValue, jobID string, reqProto []byte) error {
 }
 
 func UpdateJobStatus(kv nats.KeyValue, jobID string, state State, workerID string, errMsg string, checkpointKey string) error {
-	status := JobStatus{
-		JobID:         jobID,
-		State:         state,
-		WorkerID:      workerID,
-		Error:         errMsg,
-		CheckpointKey: checkpointKey,
-		UpdatedAt:     time.Now(),
+	// Read existing entry to preserve immutable fields (SubmittedBy, RequestProto, RejectedBy).
+	var status JobStatus
+	if entry, err := kv.Get(jobID); err == nil {
+		_ = json.Unmarshal(entry.Value(), &status)
 	}
+
+	status.JobID = jobID
+	status.State = state
+	status.WorkerID = workerID
+	status.Error = errMsg
+	status.CheckpointKey = checkpointKey
+	status.UpdatedAt = time.Now()
 
 	bytes, err := json.Marshal(status)
 	if err != nil {
 		return fmt.Errorf("failed to marshal job status: %w", err)
 	}
-
 	_, err = kv.Put(jobID, bytes)
 	if err != nil {
 		return fmt.Errorf("failed to put job status into KV: %w", err)

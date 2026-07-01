@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
-import { listJobs, LiveJob } from '@/lib/api'
+import { listJobs, approveJob, rejectJob, LiveJob } from '@/lib/api'
 
 const FILTERS = ['ALL', 'RUNNING', 'PENDING_REVIEW', 'QUEUED', 'COMPLETED', 'FAILED', 'CANCELLED']
 
@@ -41,21 +41,30 @@ export default function JobsPage() {
   const [jobs, setJobs] = useState<LiveJob[]>([])
   const [filter, setFilter] = useState('ALL')
   const [connected, setConnected] = useState<boolean | null>(null)
+  const [acting, setActing] = useState<string | null>(null)
+
+  const poll = async (silent = false) => {
+    try {
+      const data = await listJobs()
+      setJobs(data)
+      if (!silent) setConnected(true)
+    } catch {
+      if (!silent) setConnected(false)
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
-    const poll = async () => {
-      try {
-        const data = await listJobs()
-        if (!cancelled) { setJobs(data); setConnected(true) }
-      } catch {
-        if (!cancelled) setConnected(false)
-      }
-    }
-    poll()
-    const t = setInterval(poll, 5_000)
+    const run = async () => { if (!cancelled) await poll() }
+    run()
+    const t = setInterval(() => { if (!cancelled) poll(true) }, 5_000)
     return () => { cancelled = true; clearInterval(t) }
   }, [])
+
+  const act = async (jobID: string, fn: () => Promise<void>) => {
+    setActing(jobID)
+    try { await fn(); await poll(true) } catch (e) { console.error(e) } finally { setActing(null) }
+  }
 
   const visible = filter === 'ALL' ? jobs : jobs.filter((j) => j.state === filter)
 
@@ -95,11 +104,11 @@ export default function JobsPage() {
 
       {/* Table */}
       <div className="flex-1 overflow-y-auto">
-        <div className="grid grid-cols-[1fr_140px_1fr_90px] gap-4 px-6 h-9 items-center border-b border-[#1f1f1f] sticky top-0 bg-[#0c0c0c]">
+        <div className="grid grid-cols-[1fr_150px_1fr_auto] gap-4 px-6 h-9 items-center border-b border-[#1f1f1f] sticky top-0 bg-[#0c0c0c]">
           <span className="terminal-label text-[9px]">JOB ID</span>
           <span className="terminal-label text-[9px]">STATE</span>
           <span className="terminal-label text-[9px]">WORKER</span>
-          <span className="terminal-label text-[9px]">UPDATED</span>
+          <span className="terminal-label text-[9px]">ACTION</span>
         </div>
 
         {connected === null && (
@@ -115,7 +124,7 @@ export default function JobsPage() {
         {visible.map((job) => (
           <div
             key={job.job_id}
-            className="grid grid-cols-[1fr_140px_1fr_90px] gap-4 px-6 h-10 items-center border-b border-[#1f1f1f] hover:bg-[#1a1a1a] transition-colors"
+            className="grid grid-cols-[1fr_150px_1fr_auto] gap-4 px-6 min-h-10 py-2 items-center border-b border-[#1f1f1f] hover:bg-[#1a1a1a] transition-colors"
           >
             <Link
               href={`/jobs/${job.job_id}`}
@@ -127,7 +136,28 @@ export default function JobsPage() {
             <span className="font-mono text-xs text-[#6b7280] truncate">
               {job.worker_id || '—'}
             </span>
-            <span className="font-mono text-[10px] text-[#6b7280]">{relativeTime(job.updated_at)}</span>
+            <div className="flex items-center gap-2 justify-end">
+              {job.state === 'PENDING_REVIEW' ? (
+                <>
+                  <button
+                    disabled={acting === job.job_id}
+                    onClick={() => act(job.job_id, () => approveJob(job.job_id))}
+                    className="font-mono text-[9px] tracking-widest text-[#22c55e] border border-[#22c55e] px-2 py-1 hover:bg-[#22c55e]/10 transition-colors disabled:opacity-40"
+                  >
+                    APPROVE →
+                  </button>
+                  <button
+                    disabled={acting === job.job_id}
+                    onClick={() => act(job.job_id, () => rejectJob(job.job_id))}
+                    className="font-mono text-[9px] tracking-widest text-[#ef4444] border border-[#ef4444] px-2 py-1 hover:bg-[#ef4444]/10 transition-colors disabled:opacity-40"
+                  >
+                    REJECT
+                  </button>
+                </>
+              ) : (
+                <span className="font-mono text-[10px] text-[#3f3f3f]">{relativeTime(job.updated_at)}</span>
+              )}
+            </div>
           </div>
         ))}
       </div>

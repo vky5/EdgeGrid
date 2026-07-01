@@ -1,0 +1,166 @@
+// Package joinmgr manages node join requests stored in the NATS KV bucket
+// "join_requests". A node (worker or server) submits a request, the admin
+// approves or rejects it via the dashboard, and the node polls for its status.
+package joinmgr
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"time"
+
+	"github.com/nats-io/nats.go"
+)
+
+const Bucket = "join_requests"
+
+const (
+	RoleWorker = "worker"
+	RoleServer = "server"
+
+	StatusPending  = "pending"
+	StatusApproved = "approved"
+	StatusRejected = "rejected"
+)
+
+// JoinRequest is stored in KV keyed by node ID.
+type JoinRequest struct {
+	NodeID         string    `json:"node_id"`
+	Role           string    `json:"role"`
+	Hostname       string    `json:"hostname"`
+	GitHubUsername string    `json:"github_username,omitempty"` // set when the user claims this node
+	RequestedAt    time.Time `json:"requested_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	Status         string    `json:"status"`
+
+	// Set on approval only — not visible in the pending list.
+	Token         string   `json:"token,omitempty"`          // unique NATS credential for this node
+	ClusterSecret string   `json:"cluster_secret,omitempty"` // server join: cluster route password
+	ClusterRoutes []string `json:"cluster_routes,omitempty"` // server join: existing node addresses
+	CoordURL      string   `json:"coord_url,omitempty"`      // server join: coordinator HTTP URL
+}
+
+type Manager struct {
+	kv nats.KeyValue
+}
+
+func New(js nats.JetStreamContext) (*Manager, error) {
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket: Bucket,
+		TTL:    7 * 24 * time.Hour,
+	})
+	if err != nil {
+		kv, err = js.KeyValue(Bucket)
+		if err != nil {
+			return nil, fmt.Errorf("join_requests KV: %w", err)
+		}
+	}
+	return &Manager{kv: kv}, nil
+}
+
+func (m *Manager) Submit(req JoinRequest) error {
+	// Don't overwrite an approved entry if the node restarts and re-submits.
+	if existing, err := m.Get(req.NodeID); err == nil && existing.Status == StatusApproved {
+		return nil
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	_, err = m.kv.Put(req.NodeID, data)
+	return err
+}
+
+func (m *Manager) Get(nodeID string) (*JoinRequest, error) {
+	entry, err := m.kv.Get(nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("node %s not found: %w", nodeID, err)
+	}
+	var req JoinRequest
+	if err := json.Unmarshal(entry.Value(), &req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+func (m *Manager) List() ([]*JoinRequest, error) {
+	keys, err := m.kv.Keys()
+	if err != nil {
+		if err == nats.ErrNoKeysFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var reqs []*JoinRequest
+	for _, key := range keys {
+		entry, err := m.kv.Get(key)
+		if err != nil {
+			continue
+		}
+		var req JoinRequest
+		if err := json.Unmarshal(entry.Value(), &req); err != nil {
+			continue
+		}
+		// Strip secrets from the list view.
+		req.Token = ""
+		req.ClusterSecret = ""
+		reqs = append(reqs, &req)
+	}
+	sort.Slice(reqs, func(i, j int) bool {
+		return reqs[i].RequestedAt.After(reqs[j].RequestedAt)
+	})
+	return reqs, nil
+}
+
+// Approve marks the request approved and attaches the credentials the node
+// needs to connect. token is the node's unique NATS password.
+// clusterSecret and clusterRoutes are only relevant for server-role requests.
+func (m *Manager) Approve(nodeID, token, clusterSecret string, clusterRoutes []string, coordURL string) error {
+	req, err := m.Get(nodeID)
+	if err != nil {
+		return err
+	}
+	req.Status = StatusApproved
+	req.UpdatedAt = time.Now()
+	req.Token = token
+	req.ClusterSecret = clusterSecret
+	req.ClusterRoutes = clusterRoutes
+	req.CoordURL = coordURL
+	data, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	_, err = m.kv.Put(nodeID, data)
+	return err
+}
+
+// Claim links a GitHub username to an existing join request.
+func (m *Manager) Claim(nodeID, githubUsername string) error {
+	req, err := m.Get(nodeID)
+	if err != nil {
+		return err
+	}
+	req.GitHubUsername = githubUsername
+	req.UpdatedAt = time.Now()
+	data, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	_, err = m.kv.Put(nodeID, data)
+	return err
+}
+
+func (m *Manager) Reject(nodeID string) error {
+	req, err := m.Get(nodeID)
+	if err != nil {
+		return err
+	}
+	req.Status = StatusRejected
+	req.UpdatedAt = time.Now()
+	data, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	_, err = m.kv.Put(nodeID, data)
+	return err
+}

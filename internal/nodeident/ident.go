@@ -1,0 +1,73 @@
+// Package nodeident generates and persists a stable node identity (UUID-style
+// hex ID and an optional secret token). Both are stored in the node's data
+// directory and reused across restarts.
+package nodeident
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+const identFile = "node.id"
+
+type Identity struct {
+	NodeID string `json:"node_id"`
+}
+
+// LoadOrCreate reads data/node.id, or generates and persists a new identity.
+func LoadOrCreate(dataDir string) (*Identity, error) {
+	path := filepath.Join(dataDir, identFile)
+
+	if data, err := os.ReadFile(path); err == nil {
+		var id Identity
+		if json.Unmarshal(data, &id) == nil && id.NodeID != "" {
+			return &id, nil
+		}
+	}
+
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return nil, fmt.Errorf("generate node ID: %w", err)
+	}
+	id := &Identity{NodeID: hex.EncodeToString(b)}
+
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		return nil, fmt.Errorf("create data dir: %w", err)
+	}
+	data, _ := json.Marshal(id)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return nil, fmt.Errorf("save node identity: %w", err)
+	}
+	fmt.Printf("[edgegrid] new node identity: %s\n", id.NodeID)
+	return id, nil
+}
+
+// RandomToken returns a cryptographically random hex string (n bytes → 2n hex chars).
+func RandomToken(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// LoadToken reads a saved token from dataDir/filename, or returns "".
+func LoadToken(dataDir, filename string) string {
+	data, err := os.ReadFile(filepath.Join(dataDir, filename))
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// SaveToken writes a token to dataDir/filename with 0600 permissions.
+func SaveToken(dataDir, filename, token string) error {
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dataDir, filename), []byte(token), 0600)
+}

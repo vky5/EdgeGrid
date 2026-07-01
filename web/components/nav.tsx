@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { useSession, signOut } from 'next-auth/react'
 
 const NAV_ITEMS = [
   {
@@ -38,15 +39,30 @@ const NAV_ITEMS = [
       </svg>
     ),
   },
+  {
+    href: '/nodes',
+    label: 'NODE ACCESS',
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.2" />
+        <path d="M8 5v3l2 2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+        <path d="M4 2.5L2 1M12 2.5L14 1M4 13.5L2 15M12 13.5L14 15" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      </svg>
+    ),
+  },
 ]
 
 export function Nav() {
   const pathname = usePathname()
+  const { data: session } = useSession()
+  const login = (session?.user as any)?.login as string | undefined
 
   const isActive = (href: string) => {
     if (href === '/') return pathname === '/'
     return pathname.startsWith(href)
   }
+
+  const avatarLetter = login ? login[0].toUpperCase() : '?'
 
   return (
     <nav className="w-11 flex flex-col border-r border-[#1f1f1f] bg-[#0c0c0c] shrink-0">
@@ -79,6 +95,24 @@ export function Nav() {
           </Link>
         ))}
       </div>
+
+      {/* User / logout at bottom */}
+      {session && (
+        <div className="mt-auto mb-2 flex flex-col items-center gap-1">
+          <button
+            title={`@${login} — sign out`}
+            onClick={() => signOut({ callbackUrl: '/login' })}
+            className="group relative w-9 h-9 flex items-center justify-center text-[#6b7280] hover:text-[#d4d4d4] hover:bg-[#1a1a1a] transition-colors"
+          >
+            <span className="w-5 h-5 rounded-full bg-[#1f1f1f] border border-[#3f3f3f] flex items-center justify-center font-mono text-[9px] text-[#d4d4d4]">
+              {avatarLetter}
+            </span>
+            <span className="absolute left-11 bg-[#1a1a1a] border border-[#1f1f1f] px-2 py-1 font-mono text-[10px] text-[#d4d4d4] tracking-widest whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+              @{login} · SIGN OUT
+            </span>
+          </button>
+        </div>
+      )}
     </nav>
   )
 }
