@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+
 const (
 	WorkerFree        = "free"
 	WorkerBusy        = "busy"
@@ -44,6 +45,30 @@ func NewWorkerManager(jsBroker *broker.Broker) (*WorkerManager, error) {
 	return &WorkerManager{
 		kv: kv,
 	}, nil
+}
+
+// AllWorkers returns every worker currently in the registry.
+func (wm *WorkerManager) AllWorkers() ([]*Worker, error) {
+	keys, err := wm.kv.Keys()
+	if err != nil {
+		if err == nats.ErrNoKeysFound {
+			return []*Worker{}, nil
+		}
+		return nil, err
+	}
+	var workers []*Worker
+	for _, key := range keys {
+		entry, err := wm.kv.Get(key)
+		if err != nil {
+			continue
+		}
+		var w Worker
+		if err := json.Unmarshal(entry.Value(), &w); err != nil {
+			continue
+		}
+		workers = append(workers, &w)
+	}
+	return workers, nil
 }
 
 // FreeWorkerIDs returns the IDs of all workers currently in free state.

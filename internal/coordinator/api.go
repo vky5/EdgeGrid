@@ -43,6 +43,21 @@ func generateJobID() string {
 	return hex.EncodeToString(b)
 }
 
+// corsMiddleware adds permissive CORS headers so the local dashboard
+// (Next.js on :3000) can call the coordinator (:8080) during development.
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager) {
 	mux := http.NewServeMux()
 
@@ -53,6 +68,21 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+
+	// GET /workers — list all registered workers and their current state
+	mux.HandleFunc("/workers", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		workers, err := manager.AllWorkers()
+		if err != nil {
+			http.Error(w, "failed to list workers", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(workers)
 	})
 
 	// POST /jobs — submit a training job
@@ -106,7 +136,7 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 	})
 
 	log.Printf("starting HTTP job API on %s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil && err != http.ErrServerClosed {
+	if err := http.ListenAndServe(addr, corsMiddleware(mux)); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("HTTP server failed: %v", err)
 	}
 }

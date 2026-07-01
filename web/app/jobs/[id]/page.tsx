@@ -1,8 +1,10 @@
 'use client'
 
 import Link from 'next/link'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
+import { useState } from 'react'
 import { getJob, stateColor } from '@/lib/mock-data'
+import { approveJob, rejectJob, cancelJob } from '@/lib/api'
 
 function MetaRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -15,7 +17,14 @@ function MetaRow({ label, value }: { label: string; value: React.ReactNode }) {
 
 export default function JobDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const router = useRouter()
+  const [acting, setActing] = useState(false)
   const job = getJob(id)
+
+  const act = async (fn: () => Promise<void>) => {
+    setActing(true)
+    try { await fn() } catch (e) { console.error(e) } finally { setActing(false); router.refresh() }
+  }
 
   if (!job) {
     return (
@@ -45,16 +54,28 @@ export default function JobDetailPage() {
         <div className="ml-auto flex items-center gap-2">
           {job.state === 'PENDING_REVIEW' && (
             <>
-              <button className="font-mono text-[10px] text-[#22c55e] border border-[#22c55e] px-3 py-1 hover:bg-[#22c55e]/10 transition-colors tracking-widest">
+              <button
+                disabled={acting}
+                onClick={() => act(() => approveJob(id))}
+                className="font-mono text-[10px] text-[#22c55e] border border-[#22c55e] px-3 py-1 hover:bg-[#22c55e]/10 transition-colors tracking-widest disabled:opacity-40"
+              >
                 APPROVE →
               </button>
-              <button className="font-mono text-[10px] text-[#ef4444] border border-[#ef4444] px-3 py-1 hover:bg-[#ef4444]/10 transition-colors tracking-widest">
+              <button
+                disabled={acting}
+                onClick={() => act(() => rejectJob(id))}
+                className="font-mono text-[10px] text-[#ef4444] border border-[#ef4444] px-3 py-1 hover:bg-[#ef4444]/10 transition-colors tracking-widest disabled:opacity-40"
+              >
                 REJECT
               </button>
             </>
           )}
           {(job.state === 'RUNNING' || job.state === 'QUEUED' || job.state === 'PENDING_REVIEW') && (
-            <button className="font-mono text-[10px] text-[#6b7280] border border-[#1f1f1f] px-3 py-1 hover:border-[#ef4444] hover:text-[#ef4444] transition-colors tracking-widest">
+            <button
+              disabled={acting}
+              onClick={() => act(() => cancelJob(id))}
+              className="font-mono text-[10px] text-[#6b7280] border border-[#1f1f1f] px-3 py-1 hover:border-[#ef4444] hover:text-[#ef4444] transition-colors tracking-widest disabled:opacity-40"
+            >
               CANCEL
             </button>
           )}

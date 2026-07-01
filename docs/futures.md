@@ -168,10 +168,62 @@ This is simpler than cross-machine distributed training and would unlock signifi
 
 ## 9. Web UI
 
-There is an untracked `web/` directory in the repo. A minimal dashboard would show:
-- Active workers and their hardware (GPU, RAM, state)
-- Job queue and status
-- Live log viewer (EventSource over `GET /jobs/{id}/logs`)
-- One-click job submission and cancellation
+The `web/` directory contains a Next.js 16 dashboard with 5 pages:
+- `/` — ops command center (workers, jobs, dispatch)
+- `/jobs` — filterable job history
+- `/jobs/[id]` — full log terminal, approve/reject/cancel buttons
+- `/workers` — hardware grid
+- `/workers/[id]` — per-worker detail and job history
 
-The backend API is already complete. The UI needs only standard HTTP calls.
+Dispatch and approve/reject call the real coordinator API. Worker stats poll
+`GET /workers` every 5 seconds. Log streaming via SSE (`GET /jobs/{id}/logs`)
+is not yet wired in the dashboard.
+
+---
+
+## 10. Privacy and Data Confidentiality
+
+**Current state: no privacy.** Every node that participates in a job sees:
+
+| What | Who sees it |
+|------|-------------|
+| Training script (full Python source) | Coordinator (stored in KV as RequestProto) + worker (executes it) |
+| Dataset ref / model ref | Same |
+| Training config JSON | Same |
+| Checkpoint output | Coordinator (object store) + any caller of `GET /jobs/{id}/artifact` |
+| Log lines | Coordinator (JetStream) + any caller of `GET /jobs/{id}/logs` |
+
+This is a **trusted-network model** — all participants are in a known circle.
+Suitable for invite-only testing where you know every operator. Not suitable
+for running untrusted code from strangers, or for confidential models.
+
+### What's possible without redesign
+
+**Checkpoint access control** — the artifact endpoint has no auth today.
+Adding a bearer token check (job submitter gets a signed token at submission
+time) would ensure only the submitter can download their own checkpoint.
+
+**Script/dataset privacy from workers** — not possible without client-side
+encryption. The worker must decrypt and execute the script, so it must have
+the key. If the key travels through the coordinator, the coordinator also has
+access. True script privacy requires a Trusted Execution Environment (Intel
+TDX / AMD SEV) where even the host OS cannot inspect what runs inside.
+
+**Privacy from the coordinator** — not possible in the current architecture.
+The coordinator is a trusted intermediary that stores the full RequestProto
+(including script content) in NATS KV. Making the coordinator a blind relay
+would require end-to-end encryption where the coordinator sees only ciphertext —
+a substantial redesign.
+
+### Practical mitigations for now
+
+1. **NATS token auth** — stops unknown nodes from joining the network at all
+   (see [access-control.md](access-control.md))
+2. **Coordinator allowlist** — limits which workers can receive jobs
+3. **Worker opt-in approval** — worker operator sees the script before it runs;
+   can reject suspicious jobs (see [worker-approval.md](worker-approval.md))
+4. **Sandboxed execution** — Docker/cgroups limits blast radius if a script
+   tries to exfiltrate data (see item 7 above)
+
+The combination of these four makes the network safe enough for a small,
+vetted community. Full cryptographic privacy is a long-term goal.
