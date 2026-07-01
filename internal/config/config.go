@@ -8,13 +8,16 @@ import (
 )
 
 type Config struct {
-	NatsURL    string
-	EmbedNATS  bool   // true when coordinator should start the embedded NATS server
-	NATSPort   int    // port for embedded NATS (default 4222)
-	NATSStore  string // JetStream persistence directory for embedded NATS
-	Replicas   int    // NATS JetStream replication factor: 1=dev, 3=prod
-	Server     ServerConfig
-	Client     ClientConfig
+	NatsURL     string
+	EmbedNATS   bool   // true when coordinator should start the embedded NATS server
+	NATSPort    int    // port for embedded NATS (default 4222)
+	NATSStore   string // JetStream persistence directory for embedded NATS
+	Replicas    int    // NATS JetStream replication factor: 1=dev, 3=prod
+	ClusterName string // NATS cluster name (all nodes must match)
+	ClusterPort int    // intra-cluster gossip port (default 6222)
+	Routes      []string // seed route URLs, e.g. nats://blacktree.in:6222
+	Server      ServerConfig
+	Client      ClientConfig
 }
 
 type ServerConfig struct {
@@ -46,16 +49,19 @@ func envStr(key, fallback string) string {
 }
 
 func LoadConfig() *Config {
-	roleServer    := flag.Bool("server", false, "Start the coordinator server")
-	roleClient    := flag.Bool("client", false, "Start the worker client agent")
-	natsURL       := flag.String("nats", "", "NATS server URL (omit to auto-start embedded NATS when running as coordinator)")
-	natsPort      := flag.Int("nats-port", 0, "Port for the embedded NATS server (default 4222)")
-	natsStore     := flag.String("nats-store", "", "Directory for embedded NATS JetStream persistence (default ./data/nats)")
-	apiPort       := flag.String("port", "", "Coordinator HTTP API port (default 8080)")
-	workerID      := flag.String("worker-id", "", "Custom worker ID (worker only)")
-	executorType  := flag.String("executor", "", "Executor backend: mock or training (default mock)")
+	roleServer      := flag.Bool("server", false, "Start the coordinator server")
+	roleClient      := flag.Bool("client", false, "Start the worker client agent")
+	natsURL         := flag.String("nats", "", "NATS server URL (omit to auto-start embedded NATS when running as coordinator)")
+	natsPort        := flag.Int("nats-port", 0, "Port for the embedded NATS server (default 4222)")
+	natsStore       := flag.String("nats-store", "", "Directory for embedded NATS JetStream persistence (default ./data/nats)")
+	apiPort         := flag.String("port", "", "Coordinator HTTP API port (default 8080)")
+	workerID        := flag.String("worker-id", "", "Custom worker ID (worker only)")
+	executorType    := flag.String("executor", "", "Executor backend: mock or training (default mock)")
 	requireApproval := flag.Bool("require-approval", false, "Worker must approve each job before running it")
-	replicas      := flag.Int("replicas", 0, "NATS JetStream replication factor (0 = auto-detect from env)")
+	replicas        := flag.Int("replicas", 0, "NATS JetStream replication factor (0 = auto-detect from env)")
+	clusterName     := flag.String("cluster-name", "", "NATS cluster name — all server nodes must use the same name (default edgegrid)")
+	clusterPort     := flag.Int("cluster-port", 0, "Intra-cluster gossip port for embedded NATS (default 6222)")
+	routes          := flag.String("routes", "", "Comma-separated seed route URLs for clustering, e.g. nats://blacktree.in:6222")
 
 	flag.Parse()
 
@@ -129,12 +135,38 @@ func LoadConfig() *Config {
 		finalReplicas = 1
 	}
 
+	finalClusterName := *clusterName
+	if finalClusterName == "" {
+		finalClusterName = envStr("NATS_CLUSTER_NAME", "edgegrid")
+	}
+
+	finalClusterPort := *clusterPort
+	if finalClusterPort == 0 {
+		finalClusterPort = envInt("NATS_CLUSTER_PORT", 6222)
+	}
+
+	var finalRoutes []string
+	routeStr := *routes
+	if routeStr == "" {
+		routeStr = os.Getenv("NATS_ROUTES")
+	}
+	if routeStr != "" {
+		for _, r := range strings.Split(routeStr, ",") {
+			if r = strings.TrimSpace(r); r != "" {
+				finalRoutes = append(finalRoutes, r)
+			}
+		}
+	}
+
 	return &Config{
-		NatsURL:   finalNatsURL,
-		EmbedNATS: embedNATS,
-		NATSPort:  finalNATSPort,
-		NATSStore: finalNATSStore,
-		Replicas:  finalReplicas,
+		NatsURL:     finalNatsURL,
+		EmbedNATS:   embedNATS,
+		NATSPort:    finalNATSPort,
+		NATSStore:   finalNATSStore,
+		Replicas:    finalReplicas,
+		ClusterName: finalClusterName,
+		ClusterPort: finalClusterPort,
+		Routes:      finalRoutes,
 		Server: ServerConfig{
 			Enabled: runServer,
 			Port:    finalPort,

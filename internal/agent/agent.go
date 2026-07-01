@@ -25,7 +25,11 @@ func NewAgent(cfg *config.Config) (*Agent, error) {
 	var embeddedNATS *natsserver.EmbeddedServer
 
 	if cfg.EmbedNATS {
-		ns, err := natsserver.Start(cfg.NATSPort, cfg.NATSStore)
+		ns, err := natsserver.Start(cfg.NATSPort, cfg.NATSStore, natsserver.ClusterConfig{
+			Name:   cfg.ClusterName,
+			Port:   cfg.ClusterPort,
+			Routes: cfg.Routes,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to start embedded NATS: %w", err)
 		}

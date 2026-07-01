@@ -7,10 +7,19 @@ package natsserver
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
 )
+
+// ClusterConfig holds optional intra-cluster settings. Leave Routes empty for
+// a single-node (dev) deployment; populate it for a multi-server cluster.
+type ClusterConfig struct {
+	Name   string   // must be identical on every node in the cluster
+	Port   int      // gossip port, default 6222
+	Routes []string // seed URLs, e.g. ["nats://blacktree.in:6222"]
+}
 
 type EmbeddedServer struct {
 	ns *server.Server
@@ -19,17 +28,42 @@ type EmbeddedServer struct {
 // Start launches an embedded NATS server with JetStream enabled.
 // port is the NATS client port (default 4222).
 // storeDir is where JetStream persists streams and KV data.
-// replicas controls the JetStream replication factor — must be 1 for a
-// single embedded node (clustering is not supported in embedded mode).
-func Start(port int, storeDir string) (*EmbeddedServer, error) {
+// cluster is optional; if Routes is non-empty the server joins a cluster.
+func Start(port int, storeDir string, cluster ClusterConfig) (*EmbeddedServer, error) {
 	opts := &server.Options{
 		Port:      port,
 		JetStream: true,
 		StoreDir:  storeDir,
-		// Disable the NATS HTTP monitoring port to keep the process footprint small.
 		HTTPPort:  -1,
 		NoLog:     false,
-		NoSigs:    true, // EdgeGrid handles signals, not NATS
+		NoSigs:    true,
+	}
+
+	if len(cluster.Routes) > 0 {
+		clusterPort := cluster.Port
+		if clusterPort == 0 {
+			clusterPort = 6222
+		}
+		clusterName := cluster.Name
+		if clusterName == "" {
+			clusterName = "edgegrid"
+		}
+
+		routes := make([]*url.URL, 0, len(cluster.Routes))
+		for _, r := range cluster.Routes {
+			u, err := url.Parse(r)
+			if err != nil {
+				return nil, fmt.Errorf("invalid route URL %q: %w", r, err)
+			}
+			routes = append(routes, u)
+		}
+
+		opts.Cluster = server.ClusterOpts{
+			Name: clusterName,
+			Port: clusterPort,
+		}
+		opts.Routes = routes
+		log.Printf("NATS cluster %q enabled on port %d, routes: %v", clusterName, clusterPort, cluster.Routes)
 	}
 
 	ns, err := server.NewServer(opts)
