@@ -218,12 +218,40 @@ func (a *Worker) runTrainingPipeline(ctx context.Context, req *workerpb.Training
 		}
 	}
 
-	// 4. Run training
+	// 4. Periodically snapshot output/ while training runs so progress is not
+	// lost if the worker dies before the job completes.
+	checkpointStop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-checkpointStop:
+				return
+			case <-ticker.C:
+				entries, _ := os.ReadDir(outputDir)
+				if len(entries) == 0 {
+					continue // nothing written yet
+				}
+				if err := a.pushCheckpoint(req.JobId, outputDir); err != nil {
+					log.Printf("mid-training checkpoint failed for job %s: %v", req.JobId, err)
+				} else {
+					log.Printf("mid-training checkpoint saved for job %s", req.JobId)
+				}
+			}
+		}
+	}()
+
+	// 5. Run training
 	if err := a.executor.Execute(ctx, req, jobDir); err != nil {
+		close(checkpointStop)
 		return "", err
 	}
+	close(checkpointStop)
 
-	// 5. Push checkpoint to Object Store
+	// 6. Push final checkpoint to Object Store
 	if err := a.pushCheckpoint(req.JobId, outputDir); err != nil {
 		return "", fmt.Errorf("checkpoint push failed: %w", err)
 	}
