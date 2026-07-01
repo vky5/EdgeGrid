@@ -1,0 +1,80 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: var(--font-geist-sans), 'Geist Fallback';
+  --font-mono: var(--font-jetbrains-mono), 'JetBrains Mono Fallback';
+
+  /* Colors registered as Tailwind v4 utilities */
+  --color-background:        #0c0c0c;
+  --color-foreground:        #d4d4d4;
+  --color-card:              #0c0c0c;
+  --color-card-foreground:   #d4d4d4;
+  --color-popover:           #1a1a1a;
+  --color-primary:           #f59e0b;
+  --color-primary-foreground:#0c0c0c;
+  --color-secondary:         #6b7280;
+  --color-muted:             #2d2d2d;
+  --color-muted-foreground:  #6b7280;
+  --color-accent:            #f59e0b;
+  --color-accent-foreground: #0c0c0c;
+  --color-destructive:       #ef4444;
+  --color-border:            #1f1f1f;
+  --color-input:             #1a1a1a;
+  --color-ring:              #f59e0b;
+
+  --radius-sm:  2px;
+  --radius-md:  2px;
+  --radius-lg:  2px;
+  --radius-xl:  2px;
+  --radius-2xl: 2px;
+  --radius-3xl: 2px;
+  --radius-4xl: 2px;
+}
+
+@layer base {
+  * {
+    border-color: #1f1f1f;
+  }
+  body {
+    background-color: #0c0c0c;
+    color: #d4d4d4;
+    @apply font-sans antialiased;
+  }
+}
+
+/* Terminal/ops styling */
+.terminal-panel {
+  @apply bg-black border border-[#1f1f1f] font-mono text-[#d4d4d4] text-sm;
+}
+
+.terminal-label {
+  @apply uppercase text-xs tracking-widest text-[#6b7280] font-mono;
+}
+
+.status-dot {
+  @apply inline-block w-2 h-2 rounded-full;
+}
+
+.status-dot.healthy {
+  @apply bg-[#22c55e];
+}
+
+.status-dot.busy {
+  @apply bg-[#f59e0b];
+}
+
+.status-dot.dead {
+  @apply bg-[#ef4444];
+}
+
+.hardware-bar {
+  @apply h-1 bg-[#1f1f1f] rounded-none overflow-hidden;
+}
+
+.hardware-fill {
+  @apply h-full;
+}
