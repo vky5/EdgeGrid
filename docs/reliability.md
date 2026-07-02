@@ -17,7 +17,7 @@ Two features work together to handle this: **stale job recovery** requeues the j
 
 ## What it does
 
-Every 30 seconds, the coordinator scans all jobs in `RUNNING` state and checks whether the worker assigned to each job still exists in the workers KV. If the worker entry is gone (TTL expired), the job is reset to `QUEUED` and dispatched to the next available worker.
+Every 30 seconds, the coordinator scans all jobs in `RUNNING` or `PENDING_REVIEW` state and checks whether the worker assigned to each job still exists in the workers KV. If the worker entry is gone (TTL expired), the job is reset to `QUEUED` and dispatched to the next available worker. `PENDING_REVIEW` is included because a job can be sitting there waiting on the worker-approval gate ([worker-approval.md](./worker-approval.md)) when its worker dies — without this, an approval-gated job whose worker crashed before deciding would be stuck forever, since nothing else would ever move it out of `PENDING_REVIEW`.
 
 ## Why 30 seconds
 
@@ -70,8 +70,8 @@ func (c *Coordinator) recoverStaleJobs(ctx context.Context) {
         var status jobstate.JobStatus
         json.Unmarshal(entry.Value(), &status)
 
-        if status.State != jobstate.StateRunning || status.WorkerID == "" {
-            continue  // only care about RUNNING jobs with a known worker
+        if (status.State != jobstate.StateRunning && status.State != jobstate.StatePendingReview) || status.WorkerID == "" {
+            continue  // only care about RUNNING/PENDING_REVIEW jobs with a known worker
         }
 ```
 
@@ -156,6 +156,16 @@ func (wm *WorkerManager) FreeWorkerIDs() ([]string, error) {
 
 `TryDispatchQueued` then finds the oldest QUEUED job that the worker can handle (matching GPU/RAM/disk requirements) and dispatches it via NATS with a CAS-safe worker assignment. It already existed for the job-queuing feature — recovery reuses it directly.
 
+## Known limitation — a false "worker is dead" can cause duplicate execution
+
+Staleness here is inferred entirely from KV TTL expiry — the worker's entry disappearing because it stopped heartbeating for ~60s. That's not the same thing as "the worker actually crashed." A worker that's just slow (CPU pegged by the training job itself, a temporary network partition, a GC pause) can miss enough heartbeats to get reaped from the `workers` KV while it is still very much alive and still running the job.
+
+When that happens, recovery requeues the job and dispatches it to a *different* worker. The original worker doesn't know any of this happened — it keeps training, and when it finishes, it publishes its own `JobResponse` on `workers.results` exactly as if nothing were wrong. Now two workers may genuinely both complete the same job.
+
+`SubscribeToResults` (`internal/coordinator/subscriptions.go`) only guards against one case — a result arriving for a job the coordinator already marked `CANCELLED`. It has no concept of "is this result coming from the worker I currently have assigned to this job," so whichever `JobResponse` arrives, first or last, simply overwrites `jobs_state` via `UpdateJobStatus`. If the original (falsely-declared-dead) worker's result lands after the replacement worker's, its checkpoint silently wins — with no signal to anyone that two runs happened, or which one is reflected in the final state.
+
+This hasn't caused visible problems at the scale this system runs at today (heartbeat misses this severe are rare outside of genuine crashes), but it's a real gap, not a hypothetical: fixing it would mean either fencing (the coordinator hands out a generation/epoch number with each dispatch, and `SubscribeToResults` rejects results from a stale generation) or having workers check "am I still the assigned worker for this job" against `jobs_state` before publishing a result.
+
 ---
 
 # Part 2 — Mid-Training Checkpointing
@@ -181,7 +191,7 @@ Short enough to limit re-work after a crash (at most 5 minutes of training lost)
 The goroutine is launched inside `runTrainingPipeline`, right before the blocking `executor.Execute` call:
 
 ```go
-// internal/worker/listener.go — runTrainingPipeline
+// internal/worker/pipeline.go — runTrainingPipeline
 
 checkpointStop := make(chan struct{})
 go func() {
@@ -249,7 +259,7 @@ The goroutine exits via `<-checkpointStop`. The final `pushCheckpoint` call then
 ### Step 4 — pushCheckpoint tars and uploads
 
 ```go
-// internal/worker/listener.go — pushCheckpoint
+// internal/worker/pipeline.go — pushCheckpoint
 
 func (a *Worker) pushCheckpoint(jobID, outputDir string) error {
     pr, pw := io.Pipe()
