@@ -1,4 +1,9 @@
-package worker
+// Package hardware detects the local machine's GPU, RAM, and disk capacity
+// (used once at worker registration) and live resource usage (polled at
+// every heartbeat). Platform-specific probing lives in the build-tagged
+// hardware_{linux,darwin,windows}.go files; this one holds the cross-platform
+// GPU probe shared by all three.
+package hardware
 
 import (
 	"os/exec"
@@ -6,7 +11,7 @@ import (
 	"strings"
 )
 
-type HardwareSpec struct {
+type Spec struct {
 	HasGPU     bool
 	GPUName    string
 	GPUVramGB  float32
@@ -14,11 +19,11 @@ type HardwareSpec struct {
 	DiskFreeGB float32
 }
 
-// detectHardware probes GPU (all platforms), RAM, and free disk space.
-func detectHardware() HardwareSpec {
-	spec := HardwareSpec{
+// Detect probes GPU (all platforms), RAM, and free disk space.
+func Detect() Spec {
+	spec := Spec{
 		RAMGB:      detectRAMGB(),
-		DiskFreeGB: detectDiskFreeGB(),
+		DiskFreeGB: DiskFreeGB(),
 	}
 
 	// nvidia-smi is the same command on Linux, macOS, and Windows

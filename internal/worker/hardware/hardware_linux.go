@@ -1,6 +1,6 @@
 //go:build linux
 
-package worker
+package hardware
 
 import (
 	"os"
@@ -16,7 +16,7 @@ func detectRAMGB() float32 {
 	return float32(totalBytes) / (1 << 30)
 }
 
-func detectDiskFreeGB() float32 {
+func DiskFreeGB() float32 {
 	var fs syscall.Statfs_t
 	if err := syscall.Statfs(os.TempDir(), &fs); err != nil {
 		return 0
@@ -25,7 +25,7 @@ func detectDiskFreeGB() float32 {
 	return float32(freeBytes) / (1 << 30)
 }
 
-func liveRAMUsedGB() float32 {
+func LiveRAMUsedGB() float32 {
 	var info syscall.Sysinfo_t
 	if err := syscall.Sysinfo(&info); err != nil {
 		return 0
@@ -35,7 +35,7 @@ func liveRAMUsedGB() float32 {
 	return float32(used) / (1 << 30)
 }
 
-func liveDiskUsedGB() float32 {
+func LiveDiskUsedGB() float32 {
 	var fs syscall.Statfs_t
 	if err := syscall.Statfs(os.TempDir(), &fs); err != nil {
 		return 0
@@ -45,7 +45,7 @@ func liveDiskUsedGB() float32 {
 	return float32(total-free) / (1 << 30)
 }
 
-func liveDiskTotalGB() float32 {
+func LiveDiskTotalGB() float32 {
 	var fs syscall.Statfs_t
 	if err := syscall.Statfs(os.TempDir(), &fs); err != nil {
 		return 0

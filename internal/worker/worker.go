@@ -13,6 +13,7 @@ import (
 
 	"github.com/edgegrid/edgegrid/internal/broker"
 	"github.com/edgegrid/edgegrid/internal/worker/executor"
+	"github.com/edgegrid/edgegrid/internal/worker/hardware"
 	"github.com/nats-io/nats.go"
 )
 
@@ -25,13 +26,14 @@ type Worker struct {
 	id              string
 	broker          *broker.Broker
 	executor        executor.Executor
-	hw              HardwareSpec
+	hw              hardware.Spec
 	busy            atomic.Bool
 	mu              sync.Mutex
 	cancels         map[string]context.CancelFunc // jobID → cancel func for running jobs
 	requireApproval bool
 }
 
+// Create a worker object with the connection
 func NewWorkerWithConn(nc *nats.Conn, workerID string, exec executor.Executor, replicas int, requireApproval bool) (*Worker, error) {
 	if workerID == "" {
 		workerID = generateWorkerID()
@@ -52,7 +54,7 @@ func NewWorkerWithConn(nc *nats.Conn, workerID string, exec executor.Executor, r
 }
 
 func (w *Worker) Start(ctx context.Context) error {
-	w.hw = detectHardware()
+	w.hw = hardware.Detect()
 
 	if err := w.RegisterWorker(); err != nil {
 		return fmt.Errorf("registration failed: %w", err)

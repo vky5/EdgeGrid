@@ -1,6 +1,6 @@
 //go:build windows
 
-package worker
+package hardware
 
 import (
 	"os"
@@ -33,7 +33,7 @@ func detectRAMGB() float32 {
 	return float32(ms.ullTotalPhys) / (1 << 30)
 }
 
-func detectDiskFreeGB() float32 {
+func DiskFreeGB() float32 {
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	proc := kernel32.NewProc("GetDiskFreeSpaceExW")
 
@@ -54,7 +54,7 @@ func detectDiskFreeGB() float32 {
 	return float32(freeBytesAvail) / (1 << 30)
 }
 
-func liveRAMUsedGB() float32 {
+func LiveRAMUsedGB() float32 {
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	proc := kernel32.NewProc("GlobalMemoryStatusEx")
 	var ms memoryStatusEx
@@ -67,7 +67,7 @@ func liveRAMUsedGB() float32 {
 	return float32(used) / (1 << 30)
 }
 
-func liveDiskUsedGB() float32 {
+func LiveDiskUsedGB() float32 {
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	proc := kernel32.NewProc("GetDiskFreeSpaceExW")
 	dir, err := syscall.UTF16PtrFromString(os.TempDir())
@@ -87,7 +87,7 @@ func liveDiskUsedGB() float32 {
 	return float32(totalBytes-freeBytesAvail) / (1 << 30)
 }
 
-func liveDiskTotalGB() float32 {
+func LiveDiskTotalGB() float32 {
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	proc := kernel32.NewProc("GetDiskFreeSpaceExW")
 	dir, err := syscall.UTF16PtrFromString(os.TempDir())
