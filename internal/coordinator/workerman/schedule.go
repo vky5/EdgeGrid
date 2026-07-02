@@ -12,7 +12,7 @@ import (
 // the job's hardware requirements, marks it busy, and returns its ID.
 // Uses KV revision-based update to prevent two coordinators assigning the same worker.
 func (wm *WorkerManager) FindAndAssignWorker(jobID string, req *workerpb.TrainingJobRequest) (string, error) {
-	keys, err := wm.kv.Keys()
+	keys, err := wm.kv.Keys() // details of all workers 
 	if err != nil {
 		return "", fmt.Errorf("no workers registered")
 	}

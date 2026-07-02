@@ -37,7 +37,7 @@ func (c *Coordinator) SubscribeToWorkerEvents(ctx context.Context) error {
 			log.Printf("failed to register worker: %v", err)
 			return
 		}
-		go c.TryDispatchQueued(ctx, info.Id)
+		go c.TryDispatchQueued(ctx, info.Id) // send jobs that we failed to schedule earlier
 		msg.Ack()
 	}, nats.ManualAck())
 	if err != nil {
@@ -116,7 +116,7 @@ func (c *Coordinator) SubscribeToResults(ctx context.Context) error {
 		// Mark the worker free and immediately try to dispatch any queued jobs to it
 		if resp.WorkerId != "" {
 			c.manager.SetWorkerState(resp.WorkerId, workerman.WorkerFree)
-			go c.TryDispatchQueued(ctx, resp.WorkerId)
+			go c.TryDispatchQueued(ctx, resp.WorkerId) // Dispatc any pending job to this queue
 		}
 
 		msg.Ack()

@@ -1,3 +1,6 @@
+// Package workerman manages the coordinator-side view of workers.
+// Worker state is persisted in the JetStream KV bucket named "workers"; the
+// WorkerManager keeps only a KV handle, not an in-memory source of truth.
 package workerman
 
 import (
@@ -43,6 +46,7 @@ type WorkerManager struct {
 	kv nats.KeyValue
 }
 
+// Instead of storing on a in memory struct, we are storing the worker details in the KV store named workers
 func NewWorkerManager(jsBroker *broker.Broker) (*WorkerManager, error) {
 	// Set TTL to 1 minute to auto-reap dead workers
 	kv, err := jsBroker.GetOrCreateKV("workers", 1*time.Minute)
