@@ -15,7 +15,6 @@ const (
 	SubjectTrainPrefix   = "jobs.train."
 	SubjectTrainWildcard = "jobs.train.*"
 	SubjectResults       = "jobs.results"
-	SubjectProgress      = "jobs.progress"
 	SubjectCancel        = "jobs.cancel"
 	SubjectLogsPrefix    = "jobs.logs."
 	SubjectLogsWildcard  = "jobs.logs.*"
@@ -59,11 +58,24 @@ func NewBroker(nc *nats.Conn, replicas int) (*Broker, error) {
 }
 
 // EnsureStream creates or updates the JOBS stream covering all subjects.
+// JOBS is a single event log with subject names as the addrss for each msg
+/*
+Stream: JOBS
+
+sequence  subject                 payload
+1         workers.register         worker-a info
+2         jobs.train.worker-a      train job 1
+3         jobs.logs.job-1          "downloading model..."
+4         workers.heartbeat        worker-a alive
+5         jobs.results             job 1 completed
+6         jobs.train.worker-b      train job 2
+
+jetstream is not a queue and cosumer is like a pointer for a subject on this event log
+*/
 func (b *Broker) EnsureStream() error {
 	subjects := []string{
 		SubjectTrainWildcard,
 		SubjectResults,
-		SubjectProgress,
 		SubjectCancel,
 		SubjectLogsWildcard,
 		SubjectRegister,

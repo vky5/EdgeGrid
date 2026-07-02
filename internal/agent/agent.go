@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/edgegrid/edgegrid/internal/broker"
 	"github.com/edgegrid/edgegrid/internal/config"
 	"github.com/edgegrid/edgegrid/internal/coordinator"
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
@@ -185,7 +186,7 @@ func NewAgent(cfg *config.Config) (*Agent, error) {
 				return nil, fmt.Errorf("failed to init JetStream for log publishing: %w", err)
 			}
 			execInstance = executor.NewTrainingExecutor(func(jobID, line string) {
-				if _, err := js.Publish("jobs.logs."+jobID, []byte(line)); err != nil {
+				if _, err := js.Publish(broker.SubjectLogsPrefix+jobID, []byte(line)); err != nil {
 					log.Printf("failed to publish log line for job %s: %v", jobID, err)
 				}
 			})
