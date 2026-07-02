@@ -110,7 +110,7 @@ JetStream stores every message with a sequence number, ordered per-subject. Mess
 When `GET /jobs/{id}/logs` is called:
 
 ```go
-// internal/coordinator/api.go
+// internal/coordinator/jobsapi/jobsapi.go — Logs
 
 msgCh := make(chan *nats.Msg, 64)
 sub, err := jsBroker.JS.ChanSubscribe(

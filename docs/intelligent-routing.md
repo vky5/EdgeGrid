@@ -10,7 +10,9 @@ When a training job is submitted, the coordinator does not blindly pick any free
 
 An alternative design: publish the job to a shared subject, let workers pull it, check their own capabilities, and Nak (reject) if they can't handle it. This is how some queue systems work.
 
-The problem: with many workers and many requirements mismatches, you get a storm of Naks and re-deliveries before the right worker gets the job. Every worker reads the job message before deciding it can't run it. That wastes resources and adds latency.
+- The problem: with many workers and many requirements mismatches, you get a storm of Naks and re-deliveries before the right worker gets the job. Every worker reads the job message before deciding it can't run it. That wastes resources and adds latency.
+
+- another problem: Imagine that a worker NACked the job because it failed resource constraints, the NACked job (since there is a common jobs subject) will be redelieved to the common subject and all workers will see it again, even the ones that already rejected it. This can lead to a lot of unnecessary message churn.
 
 EdgeGrid flips it: the coordinator knows every worker's capabilities (they're stored in KV at registration time) and knows the job's requirements at submission time. It does the match centrally and publishes the job **directly to the worker's personal subject** (`jobs.train.<workerID>`). No Nak churn. The right worker gets the message on the first publish, every other worker never sees it.
 
@@ -21,7 +23,7 @@ EdgeGrid flips it: the coordinator knows every worker's capabilities (they're st
 When a worker starts, it runs hardware detection and publishes a `WorkerInfo` proto to `workers.register`:
 
 ```go
-// internal/worker/listener.go — RegisterWorker
+// internal/worker/heartbeat.go — RegisterWorker
 
 info := &workerpb.WorkerInfo{
     Id:         a.id,
@@ -107,7 +109,7 @@ POST /jobs
 These fields map directly to the `TrainingJobRequest` proto:
 
 ```go
-// internal/coordinator/api.go
+// internal/coordinator/jobsapi/jobsapi.go — Submit
 
 req := &workerpb.TrainingJobRequest{
     JobId:       jobID,
@@ -183,7 +185,7 @@ func (wm *WorkerManager) FindAndAssignWorker(jobID string, req *workerpb.Trainin
 Once a matching worker is found and assigned:
 
 ```go
-// internal/coordinator/api.go
+// internal/coordinator/jobsapi/jobsapi.go — Submit
 
 subject := broker.SubjectTrainPrefix + workerID  // "jobs.train.worker-xyz"
 jsBroker.PublishProto(subject, req)

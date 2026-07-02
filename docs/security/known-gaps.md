@@ -25,13 +25,13 @@ data/node.id
 ## 2. `GET /join/{nodeID}` leaks node credentials to anyone who knows the node ID
 
 This one's structural, not a simple oversight. `isOpenPath()`
-(`internal/coordinator/api.go:98`) deliberately leaves `GET /join/{nodeID}`
+(`internal/coordinator/router.go:69`) deliberately leaves `GET /join/{nodeID}`
 unauthenticated — it has to be, since a newly-joining node has no credential
 yet and needs to poll its own approval status.
 
 The problem: once a node is **approved**, that same open endpoint returns
 its `token` and (for server nodes) `cluster_secret` and `cluster_routes` in
-plaintext (`handleJoinStatus`, `api.go:641` — only strips secrets when
+plaintext (`joinapi.Status`, `internal/coordinator/joinapi/joinapi.go:51` — only strips secrets when
 `Status != StatusApproved`). There's no expiry on this, no one-time-use
 enforcement, and no proof-of-possession check. Anyone who calls
 `GET /join/{nodeID}` for an approved node gets that node's live NATS
@@ -91,7 +91,7 @@ through" is a five-minute fix that doesn't need to wait for it.
 
 ## 5. No request size limit on job submission
 
-`handleSubmitJob` (`api.go:278`) decodes the request body with
+`jobsapi.Submit` (`internal/coordinator/jobsapi/jobsapi.go:64`) decodes the request body with
 `json.NewDecoder(r.Body).Decode(&body)` directly — no
 `http.MaxBytesReader` wrapping the body. `training_script` and
 `requirements` are arbitrary-length strings. A large enough payload (or many
@@ -103,7 +103,7 @@ decoding.
 
 ## 6. SSE log stream doesn't escape training script output
 
-`handleJobLogs` (`api.go:404-419`) writes `msg.Data` — raw stdout/stderr
+`jobsapi.Logs` (`internal/coordinator/jobsapi/jobsapi.go:192-208`) writes `msg.Data` — raw stdout/stderr
 from the user's training script — directly into an SSE frame:
 `fmt.Fprintf(w, "data: %s\n\n", msg.Data)`. If a script prints a crafted
 sequence containing `\n\n` followed by `event: done\ndata: ...`, it can

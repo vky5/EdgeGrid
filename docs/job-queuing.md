@@ -35,7 +35,7 @@ type JobStatus struct {
 At submission time, the proto is marshaled and stored once via `InitJobState`:
 
 ```go
-// internal/coordinator/api.go
+// internal/coordinator/jobsapi/jobsapi.go — Submit
 
 req := &workerpb.TrainingJobRequest{ ... }
 reqBytes, _ := proto.Marshal(req)
@@ -50,7 +50,7 @@ jobstate.InitJobState(kv, jobID, reqBytes)  // writes QUEUED + proto bytes
 ## Step 1 — Submission: fast path vs queue path
 
 ```go
-// internal/coordinator/api.go — handleSubmitJob
+// internal/coordinator/jobsapi/jobsapi.go — Submit
 
 // Try to find and assign a free worker immediately
 workerID, err := manager.FindAndAssignWorker(jobID, req)

@@ -46,12 +46,12 @@ NextAuth session cookie and talks to same-origin `/api/*` routes.
   client component). `coordFetch()` attaches
   `Authorization: Bearer ${COORDINATOR_ADMIN_TOKEN}` to every request to the
   coordinator.
-- On the coordinator side, `requireGateway()` (`internal/coordinator/api.go:76`)
+- On the coordinator side, `requireGateway()` (`internal/coordinator/router.go:47`)
   wraps the entire mux and does a constant-time comparison
   (`crypto/subtle.ConstantTimeCompare`) of that bearer token against the
   coordinator's own copy, loaded from `data/admin.token`
   (`internal/agent/agent.go:155`). Any request without a valid token gets
-  401, except a short allowlist in `isOpenPath()` (`api.go:98`) — see below.
+  401, except a short allowlist in `isOpenPath()` (`internal/coordinator/router.go:69`) — see below.
 - This token is **not tied to any GitHub user**. It's a single shared secret
   between "the Next.js backend" and "the coordinator." Anyone who has it can
   do anything the coordinator's API allows — submit jobs as anyone, read any
@@ -61,7 +61,7 @@ NextAuth session cookie and talks to same-origin `/api/*` routes.
   `submitted_by`, and checks it against the session user (admins bypass this).
   The coordinator itself has no idea who "the user" is — it just trusts
   whatever the gateway-token holder tells it (e.g. `X-Submitted-By` header on
-  job submission, `api.go:322`).
+  job submission, `internal/coordinator/jobsapi/jobsapi.go:108`).
 
 This is a deliberate BFF (backend-for-frontend) pattern: the coordinator's
 attack surface is reduced to "does this caller have the one shared secret,"
@@ -103,7 +103,7 @@ This is the one place GitHub identity and NATS identity touch.
 4. An admin (checked via `isAdmin` in the Next.js route,
    `web/app/api/admin/join/[nodeID]/[action]/route.ts`) approves the request.
    This calls the coordinator's `POST /admin/join/{nodeID}/approve`
-   (`api.go:657`, `handleJoinApprove`), which:
+   (`internal/coordinator/joinapi/joinapi.go:70`, `joinapi.Approve`), which:
    - generates a random 32-byte hex token (`nodeident.RandomToken(32)`) —
      this becomes the node's NATS password,
    - persists it in the `node_auth` KV bucket (survives coordinator
@@ -154,7 +154,7 @@ Next.js API routes (web/app/api/**)
    │  - enforces per-user / admin authorization
    │  - attaches GitHub login to outgoing requests where relevant
    ▼  Authorization: Bearer COORDINATOR_ADMIN_TOKEN
-Coordinator HTTP API (internal/coordinator/api.go)
+Coordinator HTTP API (internal/coordinator/router.go + jobsapi/joinapi/usersapi/workersapi)
    │  - trusts the gateway token blindly, no concept of GitHub identity
    │  - open paths: /health, POST /join, GET /join/{nodeID}
    ▼

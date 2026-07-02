@@ -23,7 +23,7 @@ Publish jobID as plain bytes to `jobs.cancel`. Every worker's `StartCancelListen
 ### Step 1 — Coordinator marks job CANCELLED
 
 ```go
-// internal/coordinator/api.go — handleCancelJob
+// internal/coordinator/jobsapi/jobsapi.go — Cancel
 
 status, _ := jobstate.GetJobStatus(kv, jobID)
 
@@ -55,7 +55,7 @@ For QUEUED jobs, no publish is needed. No worker has the job yet — the KV stat
 Every worker runs `StartCancelListener` as a goroutine at startup:
 
 ```go
-// internal/worker/listener.go
+// internal/worker/jobs.go
 
 func (a *Worker) StartCancelListener(ctx context.Context) {
     sub, _ := a.broker.JS.Subscribe(broker.SubjectCancel, func(msg *nats.Msg) {
@@ -81,7 +81,7 @@ func (a *Worker) StartCancelListener(ctx context.Context) {
 The `cancels` map holds a `context.CancelFunc` for each job currently running on this worker. The map is populated in `handleJob`:
 
 ```go
-// internal/worker/listener.go — handleJob
+// internal/worker/jobs.go — handleJob
 
 jobCtx, cancel := context.WithCancel(ctx)
 a.mu.Lock()
@@ -118,7 +118,7 @@ The reason for `sync.Mutex` here: the cancel listener goroutine and the job hand
 After the process is killed, `runTrainingPipeline` returns an error. The worker sends a `JobResponse` with `Success: false`:
 
 ```go
-// internal/worker/listener.go — handleJob
+// internal/worker/jobs.go — handleJob
 resp.Success = false
 resp.Error = err.Error()  // "training script exited with error: signal: killed"
 ```
