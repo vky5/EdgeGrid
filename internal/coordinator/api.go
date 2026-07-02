@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/natsserver"
 	"github.com/edgegrid/edgegrid/internal/nodeident"
 	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
+	"github.com/edgegrid/edgegrid/internal/usermgr"
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
 )
@@ -46,13 +48,15 @@ func generateJobID() string {
 	return hex.EncodeToString(b)
 }
 
-// corsMiddleware adds permissive CORS headers so the local dashboard
-// (Next.js on :3000) can call the coordinator (:8080) during development.
+// corsMiddleware adds CORS headers for preflight requests. In normal operation
+// the browser never talks to the coordinator directly — all dashboard traffic
+// is proxied through the Next.js backend — so this only smooths over any stray
+// same-machine tooling during development.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -61,22 +65,55 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// requireAdmin is a middleware that checks the Authorization: Bearer <adminToken> header.
-func requireAdmin(adminToken string, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if adminToken == "" {
-			http.Error(w, "admin not configured", http.StatusServiceUnavailable)
+// requireGateway authenticates every request against the shared backend token
+// before it reaches any handler. The token proves the request came from the
+// trusted Next.js backend, which has already authenticated the end user (GitHub
+// session) and applied per-user/admin authorization. The coordinator is not
+// meant to be reached directly by browsers or arbitrary network clients.
+//
+// A small set of bootstrap endpoints stay open because the caller has no
+// credential yet: /health, and the node join submit/poll endpoints a
+// not-yet-approved node uses before it receives its NATS token.
+func requireGateway(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions || isOpenPath(r) {
+			next.ServeHTTP(w, r)
 			return
 		}
-		if r.Header.Get("Authorization") != "Bearer "+adminToken {
+		if token == "" {
+			http.Error(w, "coordinator API token not configured", http.StatusServiceUnavailable)
+			return
+		}
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		next(w, r)
-	}
+		next.ServeHTTP(w, r)
+	})
 }
 
-func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager, jm *joinmgr.Manager, ns *natsserver.EmbeddedServer, dataDir string, adminToken string) {
+// isOpenPath reports whether a request may proceed without the backend token.
+// These are the node bootstrap endpoints (a joining node has no credential yet)
+// plus the health check.
+func isOpenPath(r *http.Request) bool {
+	p := r.URL.Path
+	if p == "/health" {
+		return true
+	}
+	// POST /join — a node submits a join request before it has any credential.
+	if p == "/join" && r.Method == http.MethodPost {
+		return true
+	}
+	// GET /join/{nodeID} — a pending node polls for its approval status.
+	// Excludes POST /join/claim/{nodeID}, which is called by the trusted backend.
+	if r.Method == http.MethodGet && strings.HasPrefix(p, "/join/") && !strings.HasPrefix(p, "/join/claim/") {
+		return true
+	}
+	return false
+}
+
+func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager, jm *joinmgr.Manager, um *usermgr.Manager, ns *natsserver.EmbeddedServer, dataDir string, adminToken string) {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -179,8 +216,10 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 		handleJoinStatus(w, nodeID, jm)
 	})
 
-	// POST /admin/join/{nodeID}/approve|reject  — admin only
-	mux.HandleFunc("/admin/join/", requireAdmin(adminToken, func(w http.ResponseWriter, r *http.Request) {
+	// POST /admin/join/{nodeID}/approve|reject
+	// Admin-ness is enforced by the Next.js backend (GitHub session + isAdmin);
+	// the backend token gate on all routes keeps this unreachable otherwise.
+	mux.HandleFunc("/admin/join/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -194,16 +233,66 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 		nodeID, action := parts[0], parts[1]
 		switch action {
 		case "approve":
-			handleJoinApprove(w, r, nodeID, jm, ns, jsBroker, dataDir)
+			handleJoinApprove(w, r, nodeID, jm, um, ns, jsBroker, dataDir)
 		case "reject":
 			handleJoinReject(w, nodeID, jm)
 		default:
 			http.NotFound(w, r)
 		}
-	}))
+	})
 
-	// GET /admin/join — list all join requests (admin only)
-	mux.HandleFunc("/admin/join", requireAdmin(adminToken, func(w http.ResponseWriter, r *http.Request) {
+	// GET  /admin/users               — list everyone with dashboard access
+	// POST /admin/users/{username}/approve — grant dashboard access directly, no node required
+	mux.HandleFunc("/admin/users", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		users, err := um.List()
+		if err != nil {
+			http.Error(w, "failed to list approved users", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(users)
+	})
+	mux.HandleFunc("/admin/users/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		path := strings.TrimPrefix(r.URL.Path, "/admin/users/")
+		parts := strings.SplitN(path, "/", 2)
+		if len(parts) != 2 || parts[1] != "approve" {
+			http.NotFound(w, r)
+			return
+		}
+		username := parts[0]
+		if err := um.Approve(username, "admin"); err != nil {
+			http.Error(w, "failed to approve user", http.StatusInternalServerError)
+			return
+		}
+		log.Printf("admin granted dashboard access to %s", username)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// GET /users/{username}/status — does this GitHub user have dashboard access?
+	mux.HandleFunc("/users/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		path := strings.TrimPrefix(r.URL.Path, "/users/")
+		parts := strings.SplitN(path, "/", 2)
+		if len(parts) != 2 || parts[1] != "status" || parts[0] == "" {
+			http.NotFound(w, r)
+			return
+		}
+		handleUserStatus(w, parts[0], um)
+	})
+
+	// GET /admin/join — list all join requests
+	mux.HandleFunc("/admin/join", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -215,7 +304,7 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(reqs)
-	}))
+	})
 
 	// POST /join/{nodeID}/claim — link a GitHub username to a pending join request
 	mux.HandleFunc("/join/claim/", func(w http.ResponseWriter, r *http.Request) {
@@ -228,11 +317,11 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 			http.Error(w, "node_id required", http.StatusBadRequest)
 			return
 		}
-		handleJoinClaim(w, r, nodeID, jm)
+		handleJoinClaim(w, r, nodeID, jm, um)
 	})
 
 	log.Printf("starting HTTP job API on %s", addr)
-	if err := http.ListenAndServe(addr, corsMiddleware(mux)); err != nil && err != http.ErrServerClosed {
+	if err := http.ListenAndServe(addr, corsMiddleware(requireGateway(adminToken, mux))); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("HTTP server failed: %v", err)
 	}
 }
@@ -618,7 +707,7 @@ func handleJoinStatus(w http.ResponseWriter, nodeID string, jm *joinmgr.Manager)
 
 // handleJoinApprove approves a pending join request, generates a unique token,
 // adds the credential to NATS, and stores it in the node_auth KV.
-func handleJoinApprove(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.Manager, ns *natsserver.EmbeddedServer, jsBroker *broker.Broker, dataDir string) {
+func handleJoinApprove(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.Manager, um *usermgr.Manager, ns *natsserver.EmbeddedServer, jsBroker *broker.Broker, dataDir string) {
 	req, err := jm.Get(nodeID)
 	if err != nil {
 		http.Error(w, "node not found", http.StatusNotFound)
@@ -661,13 +750,22 @@ func handleJoinApprove(w http.ResponseWriter, r *http.Request, nodeID string, jm
 		return
 	}
 
+	// If the node was already claimed by a GitHub user, grant that user
+	// dashboard access as a side effect — this is the "contribute a worker to
+	// earn grid access" default path (see usermgr package doc).
+	if req.GitHubUsername != "" {
+		if grantErr := um.Approve(req.GitHubUsername, "node:"+nodeID); grantErr != nil {
+			log.Printf("warning: failed to auto-grant dashboard access for %s: %v", req.GitHubUsername, grantErr)
+		}
+	}
+
 	log.Printf("approved join request: node=%s role=%s", nodeID, req.Role)
 	w.WriteHeader(http.StatusOK)
 }
 
 // handleJoinClaim links a GitHub username to a pending join request.
 // Called by the Next.js server route after the user authenticates with GitHub.
-func handleJoinClaim(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.Manager) {
+func handleJoinClaim(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.Manager, um *usermgr.Manager) {
 	var body struct {
 		GitHubUsername string `json:"github_username"`
 	}
@@ -679,8 +777,36 @@ func handleJoinClaim(w http.ResponseWriter, r *http.Request, nodeID string, jm *
 		http.Error(w, "node not found", http.StatusNotFound)
 		return
 	}
+	// Covers the out-of-order case: admin approved the node before the
+	// operator got around to claiming it. Grant immediately instead of
+	// waiting for a re-approval that will never come (Approve rejects
+	// already-approved nodes with a 409).
+	if req, err := jm.Get(nodeID); err == nil && req.Status == joinmgr.StatusApproved {
+		if grantErr := um.Approve(body.GitHubUsername, "node:"+nodeID); grantErr != nil {
+			log.Printf("warning: failed to auto-grant dashboard access for %s: %v", body.GitHubUsername, grantErr)
+		}
+	}
 	log.Printf("node %s claimed by github user %s", nodeID, body.GitHubUsername)
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleUserStatus reports whether a GitHub username has been granted
+// dashboard access (job submission), and if so, how.
+func handleUserStatus(w http.ResponseWriter, username string, um *usermgr.Manager) {
+	resp := struct {
+		GitHubUsername string `json:"github_username"`
+		Approved       bool   `json:"approved"`
+		ApprovedVia    string `json:"approved_via,omitempty"`
+		ApprovedAt     string `json:"approved_at,omitempty"`
+	}{GitHubUsername: username}
+
+	if u, ok := um.IsApproved(username); ok {
+		resp.Approved = true
+		resp.ApprovedVia = u.ApprovedVia
+		resp.ApprovedAt = u.ApprovedAt.Format(time.RFC3339)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func handleJoinReject(w http.ResponseWriter, nodeID string, jm *joinmgr.Manager) {

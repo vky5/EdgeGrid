@@ -10,13 +10,15 @@ import (
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
 	"github.com/edgegrid/edgegrid/internal/natsserver"
 	"github.com/edgegrid/edgegrid/internal/nodeident"
+	"github.com/edgegrid/edgegrid/internal/usermgr"
 	"github.com/nats-io/nats.go"
 )
 
 type Coordinator struct {
-	jsBroker   *broker.Broker
-	manager    *workerman.WorkerManager
+	jsBroker   *broker.Broker // Broker with nats.conn, jetstream and replicas
+	manager    *workerman.WorkerManager // nats KV store
 	joinMgr    *joinmgr.Manager
+	userMgr    *usermgr.Manager
 	natsServer *natsserver.EmbeddedServer // nil for non-primary coordinators
 	dataDir    string
 	adminToken string
@@ -38,10 +40,16 @@ func NewCoordinatorWithConn(nc *nats.Conn, replicas int, ns *natsserver.Embedded
 		return nil, fmt.Errorf("failed to initialize join manager: %w", err)
 	}
 
+	um, err := usermgr.New(jsBroker.JS)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize user manager: %w", err)
+	}
+
 	return &Coordinator{
 		jsBroker:   jsBroker,
 		manager:    manager,
 		joinMgr:    jm,
+		userMgr:    um,
 		natsServer: ns,
 	}, nil
 }
@@ -74,7 +82,7 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 
 	log.Println("worker manager initialized")
 
-	if err := c.SubscribeToWorkerEvents(ctx); err != nil {
+	if err := c.SubscribeToWorkerEvents(ctx); err != nil { // registration and heartbeat
 		return fmt.Errorf("failed to subscribe to worker NATS events: %w", err)
 	}
 
@@ -91,7 +99,7 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 	}
 
 	go c.StartStaleJobRecovery(ctx)
-	go StartHTTPServer(apiAddr, c.jsBroker, c.manager, c.joinMgr, c.natsServer, c.dataDir, c.adminToken)
+	go StartHTTPServer(apiAddr, c.jsBroker, c.manager, c.joinMgr, c.userMgr, c.natsServer, c.dataDir, c.adminToken)
 
 	<-ctx.Done()
 	log.Println("shutting down coordinator")
