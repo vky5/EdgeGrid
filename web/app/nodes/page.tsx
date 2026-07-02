@@ -14,10 +14,22 @@ interface JoinRequest {
   updated_at: string
 }
 
+interface ApprovedUser {
+  github_username: string
+  approved_at: string
+  approved_via: string
+}
+
 const STATUS_COLOR: Record<string, string> = {
   pending: '#f59e0b',
   approved: '#22c55e',
   rejected: '#ef4444',
+}
+
+function describeVia(via: string): string {
+  if (via === 'admin') return 'direct grant'
+  if (via.startsWith('node:')) return `via node ${via.slice(5, 13)}…`
+  return via
 }
 
 function relativeTime(iso: string): string {
@@ -34,14 +46,21 @@ export default function NodesPage() {
   const admin = isAdmin(login)
 
   const [requests, setRequests] = useState<JoinRequest[]>([])
+  const [users, setUsers] = useState<ApprovedUser[]>([])
   const [connected, setConnected] = useState<boolean | null>(null)
   const [acting, setActing] = useState<string | null>(null)
+  const [grantInput, setGrantInput] = useState('')
+  const [granting, setGranting] = useState(false)
 
   const poll = async () => {
     try {
-      const res = await fetch('/api/admin/join')
-      if (!res.ok) throw new Error()
-      setRequests((await res.json()) ?? [])
+      const [reqRes, usersRes] = await Promise.all([
+        fetch('/api/admin/join'),
+        fetch('/api/admin/users'),
+      ])
+      if (!reqRes.ok) throw new Error()
+      setRequests((await reqRes.json()) ?? [])
+      setUsers(usersRes.ok ? (await usersRes.json()) ?? [] : [])
       setConnected(true)
     } catch {
       setConnected(false)
@@ -64,6 +83,21 @@ export default function NodesPage() {
       console.error(e)
     } finally {
       setActing(null)
+    }
+  }
+
+  const grantAccess = async () => {
+    const username = grantInput.trim().replace(/^@/, '')
+    if (!username) return
+    setGranting(true)
+    try {
+      await fetch(`/api/admin/users/${encodeURIComponent(username)}/approve`, { method: 'POST' })
+      setGrantInput('')
+      await poll()
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setGranting(false)
     }
   }
 
@@ -182,6 +216,50 @@ export default function NodesPage() {
             no join requests yet
           </div>
         )}
+
+        {/* Grid access — job-submission grants, separate from node approval */}
+        <div>
+          <div className="px-6 py-3 border-b border-t border-[#1f1f1f] flex items-center gap-3">
+            <span className="font-mono text-[9px] tracking-widest text-[#6b7280]">GRID ACCESS</span>
+            <span className="font-mono text-[9px] text-[#3f3f3f]">who can submit jobs</span>
+          </div>
+
+          <div className="px-6 py-4 border-b border-[#1f1f1f] flex items-center gap-2">
+            <input
+              value={grantInput}
+              onChange={(e) => setGrantInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && grantAccess()}
+              placeholder="github username"
+              className="flex-1 bg-black border border-[#1f1f1f] px-3 py-1.5 font-mono text-xs text-[#d4d4d4] focus:outline-none focus:border-[#6b7280]"
+            />
+            <button
+              disabled={granting || !grantInput.trim()}
+              onClick={grantAccess}
+              className="font-mono text-[10px] text-[#22c55e] border border-[#22c55e] px-3 py-1.5 hover:bg-[#22c55e]/10 transition-colors tracking-widest disabled:opacity-40"
+            >
+              GRANT DIRECTLY →
+            </button>
+          </div>
+
+          {users.length === 0 ? (
+            <div className="px-6 py-6 text-[#3f3f3f] font-mono text-xs text-center">
+              no one has grid access yet
+            </div>
+          ) : (
+            users.map((u) => (
+              <div
+                key={u.github_username}
+                className="px-6 py-3 border-b border-[#1f1f1f] flex items-center gap-4"
+              >
+                <span className="font-mono text-xs text-[#d4d4d4] flex-1">@{u.github_username}</span>
+                <span className="font-mono text-[10px] text-[#6b7280]">{describeVia(u.approved_via)}</span>
+                <span className="font-mono text-[10px] text-[#3f3f3f] shrink-0">
+                  {relativeTime(u.approved_at)}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
       </div>
     </div>
   )
