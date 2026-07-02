@@ -6,6 +6,9 @@ edgegrid
 *.exe
 dist/
 data/nats/
+data/*.token
+data/*.secret
+data/node.id
 
 # Python executor artifacts
 internal/worker/executor/.venv/
