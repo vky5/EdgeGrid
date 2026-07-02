@@ -172,7 +172,7 @@ This hasn't caused visible problems at the scale this system runs at today (hear
 
 ## What it does
 
-While training runs, a background goroutine tars the job's `output/` directory every 5 minutes and uploads it to the NATS Object Store under the job's ID. If the worker dies at minute 25 of a 40-minute job, the object store has a checkpoint from minute 20 or 25. When the job is requeued and a new worker picks it up, the training script can load that checkpoint and resume from partway through instead of starting from scratch.
+While training runs, a background goroutine tars the job's `output/` directory every 5 minutes and uploads it to the NATS Object Store under the job's ID. If the worker dies at minute 25 of a 40-minute job, the object store has a checkpoint from minute 20 or 25. When the job is requeued, the new worker's `runTrainingPipeline` pulls that checkpoint down and extracts it into `output/` *before* the training script ever starts (`pullCheckpoint`, `internal/worker/pipeline.go`) — so the script sees prior output already sitting there, the same as if it had never crashed.
 
 ## Why overwrite, not versioned checkpoints
 
@@ -186,7 +186,16 @@ Short enough to limit re-work after a crash (at most 5 minutes of training lost)
 
 ## Step-by-step flow
 
-### Step 1 — Goroutine starts alongside training
+### Step 1 — Resume: pull any prior checkpoint before training starts
+
+```go
+// internal/worker/pipeline.go — pullCheckpoint, called from runTrainingPipeline
+// right after outputDir is created, before the goroutine or Execute below.
+```
+
+Extracts the checkpoint tar into `outputDir` if one exists for this job ID; returns nil (not an error) if there isn't one yet, which is the normal case for a job's first attempt.
+
+### Step 2 — Goroutine starts alongside training
 
 The goroutine is launched inside `runTrainingPipeline`, right before the blocking `executor.Execute` call:
 
@@ -220,11 +229,11 @@ go func() {
 
 The empty-directory check prevents uploading an empty tar during early training before the script has written anything to `output/`.
 
-### Step 2 — Training runs, goroutine snapshots periodically
+### Step 3 — Training runs, goroutine snapshots periodically
 
 ```
 Timeline:
-  t=0:00  executor.Execute starts, goroutine starts
+  t=0:00  pullCheckpoint finds nothing (first attempt), executor.Execute starts, goroutine starts
   t=0:00  Python script begins training
   t=5:00  goroutine tick → output/ has files → tar + upload to object store
   t=10:00 goroutine tick → tar + upload (overwrites previous)
@@ -233,10 +242,10 @@ Timeline:
   ...
   [stale job recovery kicks in at ~t=19:30]
   [new worker picks up the job]
-  [training script loads checkpoint from object store, resumes from t=15:00]
+  [pullCheckpoint extracts the t=15:00 snapshot into outputDir before training starts]
 ```
 
-### Step 3 — Training finishes, goroutine stops
+### Step 4 — Training finishes, goroutine stops
 
 When `executor.Execute` returns (success or error), `checkpointStop` is closed:
 
@@ -256,7 +265,7 @@ if err := a.pushCheckpoint(req.JobId, outputDir); err != nil {
 
 The goroutine exits via `<-checkpointStop`. The final `pushCheckpoint` call then uploads the complete, consistent output — the authoritative result for the job.
 
-### Step 4 — pushCheckpoint tars and uploads
+### Step 5 — pushCheckpoint tars and uploads
 
 ```go
 // internal/worker/pipeline.go — pushCheckpoint
@@ -294,8 +303,8 @@ Stale job recovery and mid-training checkpointing are independent features but t
 3. Recovery scan at minute 26:30 — detects RUNNING job with dead worker
 4. RequeueJob — job back to QUEUED, RequestProto preserved
 5. TryDispatchQueued — new worker assigned, job dispatched
-6. New worker starts training — training script finds checkpoint from minute 20 in object store
-7. Training resumes from minute 20, not from scratch
+6. New worker's pipeline runs `pullCheckpoint` before training starts — extracts the minute-20 snapshot into `outputDir`
+7. Training script sees that prior output already in place and resumes from minute 20, not from scratch
 
 Without mid-training checkpointing, step 6 starts from scratch. Without stale job recovery, the job never gets to step 4 and stays RUNNING forever.
 

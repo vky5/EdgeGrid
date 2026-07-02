@@ -13,6 +13,7 @@ import (
 
 	workerpb "github.com/edgegrid/edgegrid/internal/proto/worker"
 	"github.com/edgegrid/edgegrid/internal/worker/hardware"
+	"github.com/nats-io/nats.go"
 )
 
 // runTrainingPipeline executes all steps: disk check, dataset pull, train, checkpoint push.
@@ -35,6 +36,11 @@ func (a *Worker) runTrainingPipeline(ctx context.Context, req *workerpb.Training
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return "", fmt.Errorf("failed to create job dir: %w", err)
 		}
+	}
+
+	// 2b. Resume from a prior checkpoint if this job was requeued after a worker crash.
+	if err := a.pullCheckpoint(req.JobId, outputDir); err != nil {
+		return "", fmt.Errorf("checkpoint pull failed: %w", err)
 	}
 
 	// 3. Pull dataset from Object Store (HF datasets are handled by the training script)
@@ -83,6 +89,56 @@ func (a *Worker) runTrainingPipeline(ctx context.Context, req *workerpb.Training
 	}
 
 	return req.JobId, nil
+}
+
+// pullCheckpoint extracts a prior checkpoint into outputDir if one exists.
+// Returns nil, not an error, when there isn't one yet (a job's first attempt).
+func (a *Worker) pullCheckpoint(jobID, outputDir string) error {
+	result, err := a.broker.PullCheckpoint(jobID)
+	if err == nats.ErrObjectNotFound {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer result.Close()
+
+	gr, err := gzip.NewReader(result)
+	if err != nil {
+		return fmt.Errorf("failed to open checkpoint gzip stream: %w", err)
+	}
+	defer gr.Close()
+
+	tr := tar.NewReader(gr)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read checkpoint tar entry: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+
+		dest := filepath.Join(outputDir, hdr.Name)
+		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+			return fmt.Errorf("failed to create checkpoint dir: %w", err)
+		}
+		f, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
+		if err != nil {
+			return fmt.Errorf("failed to create checkpoint file %s: %w", hdr.Name, err)
+		}
+		if _, err := io.Copy(f, tr); err != nil {
+			f.Close()
+			return fmt.Errorf("failed to write checkpoint file %s: %w", hdr.Name, err)
+		}
+		f.Close()
+	}
+
+	log.Printf("resumed job %s from prior checkpoint", jobID)
+	return nil
 }
 
 // pullDataset downloads the dataset from the Object Store into inputDir/dataset.
