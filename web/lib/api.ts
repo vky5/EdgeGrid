@@ -1,5 +1,6 @@
-const BASE = (process.env.NEXT_PUBLIC_COORDINATOR_URL ?? 'http://localhost:8080').replace(/\/$/, '')
-
+// All coordinator access goes through same-origin Next.js API routes so the
+// browser is never trusted with the coordinator's backend token; those routes
+// authenticate the GitHub session and enforce ownership before forwarding.
 export interface SubmitJobRequest {
   training_script: string
   requirements: string
@@ -73,37 +74,37 @@ export interface LiveJob {
 }
 
 export async function listJobs(): Promise<LiveJob[]> {
-  const res = await fetch(`${BASE}/jobs`)
+  const res = await fetch('/api/jobs')
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const data = await res.json()
   return Array.isArray(data) ? data : []
 }
 
 export async function getJob(jobID: string): Promise<LiveJob | null> {
-  const res = await fetch(`${BASE}/jobs/${jobID}`)
+  const res = await fetch(`/api/jobs/${jobID}`)
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
 
 export async function listWorkers(): Promise<LiveWorker[]> {
-  const res = await fetch(`${BASE}/workers`)
+  const res = await fetch('/api/workers')
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const data = await res.json()
   return Array.isArray(data) ? data : []
 }
 
 export async function approveJob(jobID: string): Promise<void> {
-  const res = await fetch(`${BASE}/jobs/${jobID}/approve`, { method: 'POST' })
+  const res = await fetch(`/api/jobs/${jobID}/approve`, { method: 'POST' })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
 }
 
 export async function rejectJob(jobID: string): Promise<void> {
-  const res = await fetch(`${BASE}/jobs/${jobID}/reject`, { method: 'POST' })
+  const res = await fetch(`/api/jobs/${jobID}/reject`, { method: 'POST' })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
 }
 
 export async function cancelJob(jobID: string): Promise<void> {
-  const res = await fetch(`${BASE}/jobs/${jobID}`, { method: 'DELETE' })
+  const res = await fetch(`/api/jobs/${jobID}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
 }

@@ -5,8 +5,6 @@ import { useParams, useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import { getJob, approveJob, rejectJob, cancelJob, LiveJob } from '@/lib/api'
 
-const BASE = (process.env.NEXT_PUBLIC_COORDINATOR_URL ?? 'http://localhost:8080').replace(/\/$/, '')
-
 const STATE_COLOR: Record<string, string> = {
   RUNNING:        '#f59e0b',
   PENDING_REVIEW: '#8b5cf6',
@@ -60,7 +58,7 @@ export default function JobDetailPage() {
   // Stream logs via SSE
   useEffect(() => {
     setLogs([])
-    const es = new EventSource(`${BASE}/jobs/${id}/logs`)
+    const es = new EventSource(`/api/jobs/${id}/logs`)
     es.onmessage = (e) => {
       setLogs((prev) => [...prev, e.data])
     }
@@ -180,7 +178,7 @@ export default function JobDetailPage() {
                 {job.checkpoint_key}
               </div>
               <Link
-                href={`http://localhost:8080/jobs/${job.job_id}/artifact`}
+                href={`/api/jobs/${job.job_id}/artifact`}
                 target="_blank"
                 className="block mt-2 font-mono text-[9px] text-[#6b7280] border border-[#1f1f1f] px-3 py-2 text-center hover:border-[#22c55e] hover:text-[#22c55e] transition-colors tracking-widest"
               >
