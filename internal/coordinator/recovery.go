@@ -9,6 +9,12 @@ import (
 	"github.com/edgegrid/edgegrid/internal/jobstate"
 )
 
+// datasetUploadTimeout bounds how long a job may sit QUEUED waiting for its
+// object_store dataset upload before it's failed outright — otherwise a
+// client that submits and never calls Upload leaves an entry parked in
+// jobs_state forever, since nothing else clears AwaitingDataset.
+const datasetUploadTimeout = 10 * time.Minute
+
 // StartStaleJobRecovery periodically scans for RUNNING jobs whose worker has
 // disappeared from the KV store and requeues them so they can be re-dispatched.
 func (c *Coordinator) StartStaleJobRecovery(ctx context.Context) {
@@ -45,6 +51,16 @@ func (c *Coordinator) recoverStaleJobs(ctx context.Context) {
 		}
 		var status jobstate.JobStatus
 		if err := json.Unmarshal(entry.Value(), &status); err != nil {
+			continue
+		}
+
+		if status.State == jobstate.StateQueued && status.AwaitingDataset {
+			if time.Since(status.UpdatedAt) > datasetUploadTimeout {
+				log.Printf("stale job recovery: job %s never received its dataset upload, failing", status.JobID)
+				if err := jobstate.UpdateJobStatus(jobsKV, status.JobID, jobstate.StateFailed, "", "dataset upload timed out", ""); err != nil {
+					log.Printf("stale job recovery: failed to fail job %s: %v", status.JobID, err)
+				}
+			}
 			continue
 		}
 

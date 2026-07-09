@@ -48,6 +48,9 @@ func (c *Coordinator) TryDispatchQueued(ctx context.Context, workerID string) {
 		if status.State != jobstate.StateQueued || len(status.RequestProto) == 0 {
 			continue
 		}
+		if status.AwaitingDataset {
+			continue // dataset upload hasn't completed yet; Upload will dispatch it
+		}
 		if workerAlreadyRejected(status.RejectedBy, workerID) {
 			continue
 		}

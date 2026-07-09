@@ -149,7 +149,7 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 
 		switch parts[1] {
 		case "upload":
-			jobsapi.Upload(w, r, jsBroker, jobID)
+			jobsapi.Upload(w, r, jsBroker, manager, jobID)
 		case "artifact":
 			jobsapi.Download(w, r, jsBroker, jobID)
 		case "logs":

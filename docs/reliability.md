@@ -156,6 +156,28 @@ func (wm *WorkerManager) FreeWorkerIDs() ([]string, error) {
 
 `TryDispatchQueued` then finds the oldest QUEUED job that the worker can handle (matching GPU/RAM/disk requirements) and dispatches it via NATS with a CAS-safe worker assignment. It already existed for the job-queuing feature — recovery reuses it directly.
 
+## Same scan, second job — failing abandoned dataset uploads
+
+`recoverStaleJobs` also does one unrelated bit of housekeeping in the same pass: object_store jobs left waiting on `POST /jobs/{id}/upload` (see [job-queuing.md](./job-queuing.md), "The dataset upload race") that never got it. `Submit` marks these `QUEUED` with `AwaitingDataset: true` and deliberately never dispatches them — nothing else in the system clears that flag except a successful `Upload` call. A client that submits and then walks away (crashes, forgets, never calls `Upload`) would otherwise leave that entry parked in `jobs_state` indefinitely.
+
+```go
+// internal/coordinator/recovery.go
+
+const datasetUploadTimeout = 10 * time.Minute
+
+if status.State == jobstate.StateQueued && status.AwaitingDataset {
+    if time.Since(status.UpdatedAt) > datasetUploadTimeout {
+        log.Printf("stale job recovery: job %s never received its dataset upload, failing", status.JobID)
+        jobstate.UpdateJobStatus(jobsKV, status.JobID, jobstate.StateFailed, "", "dataset upload timed out", "")
+    }
+    continue
+}
+```
+
+This branch runs before the dead-worker check below it, since these jobs have no `WorkerID` yet — there's nothing to check them against. Past 10 minutes with no upload, the job is moved straight to `FAILED` rather than staying `QUEUED` forever with no path to ever leaving that state.
+
+---
+
 ## Known limitation — a false "worker is dead" can cause duplicate execution
 
 Staleness here is inferred entirely from KV TTL expiry — the worker's entry disappearing because it stopped heartbeating for ~60s. That's not the same thing as "the worker actually crashed." A worker that's just slow (CPU pegged by the training job itself, a temporary network partition, a GC pause) can miss enough heartbeats to get reaped from the `workers` KV while it is still very much alive and still running the job.

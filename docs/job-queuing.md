@@ -22,13 +22,14 @@ The `JobStatus` struct in KV has a `RequestProto []byte` field:
 // internal/jobstate/state.go
 
 type JobStatus struct {
-    JobID         string    `json:"job_id"`
-    State         State     `json:"state"`
-    WorkerID      string    `json:"worker_id,omitempty"`
-    Error         string    `json:"error,omitempty"`
-    CheckpointKey string    `json:"checkpoint_key,omitempty"`
-    UpdatedAt     time.Time `json:"updated_at"`
-    RequestProto  []byte    `json:"request_proto,omitempty"`  // serialized TrainingJobRequest
+    JobID           string    `json:"job_id"`
+    State           State     `json:"state"`
+    WorkerID        string    `json:"worker_id,omitempty"`
+    Error           string    `json:"error,omitempty"`
+    CheckpointKey   string    `json:"checkpoint_key,omitempty"`
+    UpdatedAt       time.Time `json:"updated_at"`
+    RequestProto    []byte    `json:"request_proto,omitempty"`  // serialized TrainingJobRequest
+    AwaitingDataset bool      `json:"awaiting_dataset,omitempty"` // see "The dataset upload race" below
 }
 ```
 
@@ -40,7 +41,8 @@ At submission time, the proto is marshaled and stored once via `InitJobState`:
 req := &workerpb.TrainingJobRequest{ ... }
 reqBytes, _ := proto.Marshal(req)
 
-jobstate.InitJobState(kv, jobID, reqBytes)  // writes QUEUED + proto bytes
+awaitingDataset := body.DatasetType == "object_store"
+jobstate.InitJobState(kv, jobID, reqBytes, submittedBy, awaitingDataset)  // writes QUEUED + proto bytes
 ```
 
 `InitJobState` is separate from `UpdateJobStatus` — subsequent state updates (`RUNNING`, `COMPLETED`, `FAILED`) use `UpdateJobStatus` which does not touch `RequestProto`. The bytes are written once and preserved for the lifetime of the job.
@@ -52,16 +54,17 @@ jobstate.InitJobState(kv, jobID, reqBytes)  // writes QUEUED + proto bytes
 ```go
 // internal/coordinator/jobsapi/jobsapi.go — Submit
 
-// Try to find and assign a free worker immediately
-workerID, err := manager.FindAndAssignWorker(jobID, req)
-if err != nil {
-    // No free worker — job stays QUEUED, will be dispatched later
-    log.Printf("no free worker for job %s, leaving queued: %v", jobID, err)
-} else {
-    // Free worker found — dispatch now
-    subject := broker.SubjectTrainPrefix + workerID
-    jsBroker.PublishProto(subject, req)
-    log.Printf("job %s dispatched to worker %s", jobID, workerID)
+// object_store jobs need a follow-up POST /jobs/{id}/upload before there's
+// any data to train on — dispatch has to wait for that, not for a free worker.
+awaitingDataset := body.DatasetType == "object_store"
+jobstate.InitJobState(kv, jobID, reqBytes, submittedBy, awaitingDataset)
+
+if awaitingDataset {
+    // Leave it QUEUED — Upload() is the one that dispatches this job.
+    log.Printf("job %s awaiting dataset upload before dispatch", jobID)
+} else if err := tryDispatch(jsBroker, manager, jobID, req); err != nil {
+    http.Error(w, "failed to dispatch job", http.StatusInternalServerError)
+    return
 }
 
 // Always return 202 — client never sees a difference
@@ -69,7 +72,46 @@ w.WriteHeader(http.StatusAccepted)
 json.NewEncoder(w).Encode(SubmitJobResponse{JobID: jobID, Status: "queued"})
 ```
 
-The HTTP response is always `202 Accepted` with `status: queued`. The client does not need to know whether the job was dispatched immediately or is waiting for capacity. It polls `GET /jobs/{id}` to watch state transitions.
+`tryDispatch` is a small shared helper (also used by `Upload`, see below) wrapping `FindAndAssignWorker` + `PublishProto`:
+
+```go
+// internal/coordinator/jobsapi/jobsapi.go
+
+func tryDispatch(jsBroker *broker.Broker, manager *workerman.WorkerManager, jobID string, req *workerpb.TrainingJobRequest) error {
+    workerID, err := manager.FindAndAssignWorker(jobID, req)
+    if err != nil {
+        log.Printf("no free worker for job %s, leaving queued: %v", jobID, err)
+        return nil  // no free worker — job stays QUEUED, dispatched later
+    }
+    subject := broker.SubjectTrainPrefix + workerID
+    if pubErr := jsBroker.PublishProto(subject, req); pubErr != nil {
+        manager.SetWorkerState(workerID, workerman.WorkerFree)
+        return pubErr
+    }
+    log.Printf("job %s dispatched to worker %s", jobID, workerID)
+    return nil
+}
+```
+
+The HTTP response is always `202 Accepted` with `status: queued`. The client does not need to know whether the job was dispatched immediately, is waiting for capacity, or is waiting on its own dataset upload. It polls `GET /jobs/{id}` to watch state transitions.
+
+---
+
+## Step 1b — The dataset upload race, and why object_store jobs get a third path
+
+`dataset_ref`/`dataset_type: "object_store"` jobs don't carry their data in the submit request — the client uploads it separately, afterward, via `POST /jobs/{id}/upload`, because the object store key is the job ID and the job ID doesn't exist until `Submit` generates it.
+
+That gap between "job created" and "dataset uploaded" collides with the fast path above: if a worker happens to be free at submit time, `tryDispatch` would fire immediately and the worker could call `pullDataset` (`internal/worker/pipeline.go`) before the upload request even arrives. Unlike `pullCheckpoint`, `pullDataset` treats "not found" as a hard failure, not "first attempt, nothing there yet" — so the job would fail with `dataset pull failed: nats: object not found`, deterministically, any time a worker is sitting idle when the job is submitted.
+
+`AwaitingDataset` closes this gap by making dispatch wait on the right event instead of racing it:
+
+- `Submit` sets `AwaitingDataset = true` for `object_store` jobs and skips `tryDispatch` entirely — no worker is ever assigned, nothing is ever published to `jobs.train.*` for this job yet.
+- `TryDispatchQueued`'s scan (`internal/coordinator/dispatch.go`) also skips any `AwaitingDataset` job, so no *other* trigger (a different worker registering, another job finishing) can dispatch it early either.
+- `Upload` (`internal/coordinator/jobsapi/jobsapi.go`), once `PushDataset` succeeds, reads the job's `RequestProto` back out of `jobs_state`, clears the flag via `jobstate.MarkDatasetReady`, and calls the same `tryDispatch` helper `Submit` uses. This is the first and only point at which the job can be dispatched.
+
+The result is an invariant on the worker side: if a worker ever receives a `TrainingJobRequest` with `dataset_type == "object_store"`, the dataset is guaranteed to already be sitting in the Object Store. `pullDataset` needed no changes — it stays a hard error, no polling or retry logic added to the worker at all.
+
+**Failure mode this doesn't fix**: a client that calls `Submit` and never calls `Upload`. That job would sit `AwaitingDataset` in the KV forever. See [reliability.md](./reliability.md) for the TTL sweep that fails it after 10 minutes.
 
 ---
 

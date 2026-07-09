@@ -60,6 +60,29 @@ func generateJobID() string {
 	return hex.EncodeToString(b)
 }
 
+// tryDispatch attempts to assign a free worker to req and publish it to that
+// worker's private subject. If no worker is available, it returns nil and
+// the job is left QUEUED for a later dispatch trigger (worker registration,
+// job completion, stale recovery, or — for object_store jobs — the dataset
+// upload finally landing).
+func tryDispatch(jsBroker *broker.Broker, manager *workerman.WorkerManager, jobID string, req *workerpb.TrainingJobRequest) error {
+	workerID, err := manager.FindAndAssignWorker(jobID, req)
+	if err != nil {
+		log.Printf("no free worker for job %s, leaving queued: %v", jobID, err)
+		return nil
+	}
+
+	subject := broker.SubjectTrainPrefix + workerID
+	if pubErr := jsBroker.PublishProto(subject, req); pubErr != nil {
+		log.Printf("failed to dispatch job %s to worker %s: %v", jobID, workerID, pubErr)
+		manager.SetWorkerState(workerID, workerman.WorkerFree)
+		return pubErr
+	}
+
+	log.Printf("job %s dispatched to worker %s", jobID, workerID)
+	return nil
+}
+
 // Submit handles POST /jobs.
 func Submit(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, manager *workerman.WorkerManager) {
 	var body SubmitJobRequest
@@ -107,26 +130,23 @@ func Submit(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, man
 	// X-Submitted-By is set by the Next.js API proxy from the GitHub session.
 	submittedBy := r.Header.Get("X-Submitted-By")
 
-	if err := jobstate.InitJobState(kv, jobID, reqBytes, submittedBy); err != nil {
+	// object_store jobs need their dataset uploaded via a separate request
+	// after this one returns the job_id, so dispatch must wait — otherwise an
+	// idle worker can pull the job and fail trying to fetch a dataset that
+	// hasn't been uploaded yet. Upload() clears this and dispatches instead.
+	awaitingDataset := body.DatasetType == "object_store"
+
+	if err := jobstate.InitJobState(kv, jobID, reqBytes, submittedBy, awaitingDataset); err != nil {
 		log.Printf("failed to write initial job state: %v", err)
 		http.Error(w, "failed to initialize job state", http.StatusInternalServerError)
 		return
 	}
 
-	workerID, err := manager.FindAndAssignWorker(jobID, req)
-	if err != nil {
-		// No free worker right now — job stays QUEUED and will be dispatched
-		// when a capable worker becomes available.
-		log.Printf("no free worker for job %s, leaving queued: %v", jobID, err)
-	} else {
-		subject := broker.SubjectTrainPrefix + workerID
-		if pubErr := jsBroker.PublishProto(subject, req); pubErr != nil {
-			log.Printf("failed to dispatch job %s to worker %s: %v", jobID, workerID, pubErr)
-			manager.SetWorkerState(workerID, workerman.WorkerFree)
-			http.Error(w, "failed to dispatch job", http.StatusInternalServerError)
-			return
-		}
-		log.Printf("job %s dispatched to worker %s", jobID, workerID)
+	if awaitingDataset {
+		log.Printf("job %s awaiting dataset upload before dispatch", jobID)
+	} else if err := tryDispatch(jsBroker, manager, jobID, req); err != nil {
+		http.Error(w, "failed to dispatch job", http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -385,9 +405,11 @@ func Status(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, job
 	_ = json.NewEncoder(w).Encode(status)
 }
 
-// Upload streams the request body directly into NATS Object Store.
-// No buffering to disk — the coordinator is a pure pipe between HTTP and NATS.
-func Upload(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, jobID string) {
+// Upload streams the request body directly into NATS Object Store, then — if
+// this job was left QUEUED waiting on exactly this upload (see Submit) —
+// clears that gate and attempts dispatch immediately, the same way Submit
+// does for jobs that didn't need one.
+func Upload(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, manager *workerman.WorkerManager, jobID string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -399,8 +421,36 @@ func Upload(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, job
 		http.Error(w, "failed to store dataset", http.StatusInternalServerError)
 		return
 	}
-
 	log.Printf("dataset stored for job %s", jobID)
+
+	kv, err := jsBroker.GetOrCreateKV("jobs_state", 24*time.Hour)
+	if err != nil {
+		log.Printf("upload: failed to get jobs_state KV for job %s: %v", jobID, err)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	status, err := jobstate.GetJobStatus(kv, jobID)
+	if err != nil || status == nil || !status.AwaitingDataset {
+		// Not a gated job — either it doesn't exist, or dispatch already
+		// happened at submit time (e.g. a re-upload). Nothing more to do.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	var req workerpb.TrainingJobRequest
+	if err := proto.Unmarshal(status.RequestProto, &req); err != nil {
+		log.Printf("upload: failed to unmarshal request for job %s: %v", jobID, err)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if err := jobstate.MarkDatasetReady(kv, jobID); err != nil {
+		log.Printf("upload: failed to mark job %s dataset ready: %v", jobID, err)
+	}
+
+	_ = tryDispatch(jsBroker, manager, jobID, &req)
+
 	w.WriteHeader(http.StatusNoContent)
 }
 

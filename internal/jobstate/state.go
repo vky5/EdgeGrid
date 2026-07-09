@@ -20,31 +20,56 @@ const (
 )
 
 type JobStatus struct {
-	JobID         string    `json:"job_id"`
-	State         State     `json:"state"`
-	WorkerID      string    `json:"worker_id,omitempty"`
-	Error         string    `json:"error,omitempty"`
-	CheckpointKey string    `json:"checkpoint_key,omitempty"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	RequestProto  []byte    `json:"request_proto,omitempty"`
-	RejectedBy    []string  `json:"rejected_by,omitempty"`
-	SubmittedBy   string    `json:"submitted_by,omitempty"` // GitHub username of the submitter
+	JobID           string    `json:"job_id"`
+	State           State     `json:"state"`
+	WorkerID        string    `json:"worker_id,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	CheckpointKey   string    `json:"checkpoint_key,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	RequestProto    []byte    `json:"request_proto,omitempty"`
+	RejectedBy      []string  `json:"rejected_by,omitempty"`
+	SubmittedBy     string    `json:"submitted_by,omitempty"` // GitHub username of the submitter
+	AwaitingDataset bool      `json:"awaiting_dataset,omitempty"`
 }
 
 // InitJobState writes the initial QUEUED state for a new job, storing the
 // serialized TrainingJobRequest so the coordinator can re-dispatch it later
-// if no worker was free at submission time.
-func InitJobState(kv nats.KeyValue, jobID string, reqProto []byte, submittedBy string) error {
+// if no worker was free at submission time. awaitingDataset should be true
+// for object_store-backed jobs so the job is not dispatched to a worker
+// before its dataset has actually been uploaded (see MarkDatasetReady).
+func InitJobState(kv nats.KeyValue, jobID string, reqProto []byte, submittedBy string, awaitingDataset bool) error {
 	status := JobStatus{
-		JobID:        jobID,
-		State:        StateQueued,
-		UpdatedAt:    time.Now(),
-		RequestProto: reqProto,
-		SubmittedBy:  submittedBy,
+		JobID:           jobID,
+		State:           StateQueued,
+		UpdatedAt:       time.Now(),
+		RequestProto:    reqProto,
+		SubmittedBy:     submittedBy,
+		AwaitingDataset: awaitingDataset,
 	}
 	bytes, err := json.Marshal(status)
 	if err != nil {
 		return fmt.Errorf("failed to marshal job status: %w", err)
+	}
+	_, err = kv.Put(jobID, bytes)
+	return err
+}
+
+// MarkDatasetReady clears the AwaitingDataset flag once the dataset upload
+// for this job has completed, making it eligible for dispatch.
+func MarkDatasetReady(kv nats.KeyValue, jobID string) error {
+	entry, err := kv.Get(jobID)
+	if err != nil {
+		return fmt.Errorf("failed to get job %s: %w", jobID, err)
+	}
+	var status JobStatus
+	if err := json.Unmarshal(entry.Value(), &status); err != nil {
+		return fmt.Errorf("failed to unmarshal job %s: %w", jobID, err)
+	}
+	status.AwaitingDataset = false
+	status.UpdatedAt = time.Now()
+	bytes, err := json.Marshal(status)
+	if err != nil {
+		return fmt.Errorf("failed to marshal job %s: %w", jobID, err)
 	}
 	_, err = kv.Put(jobID, bytes)
 	return err
