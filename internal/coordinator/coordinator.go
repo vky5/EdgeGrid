@@ -19,7 +19,7 @@ type Coordinator struct {
 	manager    *workerman.WorkerManager // nats KV store
 	joinMgr    *joinmgr.Manager
 	userMgr    *usermgr.Manager
-	natsServer *natsserver.EmbeddedServer // nil for non-primary coordinators
+	natsServer *natsserver.EmbeddedServer
 	dataDir    string
 	adminToken string
 }

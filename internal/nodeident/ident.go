@@ -20,26 +20,21 @@ type Identity struct {
 
 // LoadOrCreate reads data/node.id, or generates and persists a new identity.
 func LoadOrCreate(dataDir string) (*Identity, error) {
-	path := filepath.Join(dataDir, identFile)
-
-	if data, err := os.ReadFile(path); err == nil {
+	if raw := LoadToken(dataDir, identFile); raw != "" {
 		var id Identity
-		if json.Unmarshal(data, &id) == nil && id.NodeID != "" {
+		if json.Unmarshal([]byte(raw), &id) == nil && id.NodeID != "" {
 			return &id, nil
 		}
 	}
 
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
+	nodeID, err := RandomToken(16)
+	if err != nil {
 		return nil, fmt.Errorf("generate node ID: %w", err)
 	}
-	id := &Identity{NodeID: hex.EncodeToString(b)}
+	id := &Identity{NodeID: nodeID}
 
-	if err := os.MkdirAll(dataDir, 0700); err != nil {
-		return nil, fmt.Errorf("create data dir: %w", err)
-	}
 	data, _ := json.Marshal(id)
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := SaveToken(dataDir, identFile, string(data)); err != nil {
 		return nil, fmt.Errorf("save node identity: %w", err)
 	}
 	fmt.Printf("[edgegrid] new node identity: %s\n", id.NodeID)
