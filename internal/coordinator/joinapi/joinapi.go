@@ -1,7 +1,5 @@
-// Package joinapi holds the HTTP handlers for the node join/approval flow:
-// a node submits a request, polls its status, an admin approves/rejects it,
-// and (separately) a GitHub user claims it. See docs/access-control.md and
-// docs/grid-access.md for the full flow this sits inside of.
+// Package joinapi: HTTP handlers for join/approval — submit, poll, approve/reject, claim.
+// See docs/access-control.md and docs/grid-access.md for the full flow.
 package joinapi
 
 import (
@@ -46,8 +44,8 @@ func Submit(w http.ResponseWriter, r *http.Request, jm *joinmgr.Manager) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// Status returns the current status of a join request (GET /join/{nodeID}).
-// Strips secrets from pending/rejected responses; includes credentials only when approved.
+// Return status of a node
+// TODO currently there is no check, any node can query the status of any other node. 
 func Status(w http.ResponseWriter, nodeID string, jm *joinmgr.Manager) {
 	req, err := jm.Get(nodeID)
 	if err != nil {
@@ -64,10 +62,17 @@ func Status(w http.ResponseWriter, nodeID string, jm *joinmgr.Manager) {
 	_ = json.NewEncoder(w).Encode(req)
 }
 
-// Approve approves a pending join request, generates a unique token, adds the
-// credential to NATS, and stores it in the node_auth KV
-// (POST /admin/join/{nodeID}/approve).
-func Approve(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.Manager, um *usermgr.Manager, ns *natsserver.EmbeddedServer, jsBroker *broker.Broker, dataDir string) {
+// Approve mints a token, adds it to NATS, and stores it in node_auth.
+// TODO only admin check and if it leaks then anyone can autoapprove a node
+func Approve(
+	w http.ResponseWriter, 
+	r *http.Request, nodeID string, 
+	jm *joinmgr.Manager, 
+	um *usermgr.Manager, 
+	ns *natsserver.EmbeddedServer, 
+	jsBroker *broker.Broker, 
+	dataDir string,
+) {
 	req, err := jm.Get(nodeID)
 	if err != nil {
 		http.Error(w, "node not found", http.StatusNotFound)
@@ -98,21 +103,21 @@ func Approve(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.
 		if addErr := ns.AddUser(natsserver.NodeCred{Username: nodeID, Password: token}); addErr != nil {
 			log.Printf("warning: NATS reload failed for node %s: %v", nodeID, addErr)
 		}
+		// coordURL: the client address, needed by any approved node (worker or server) to connect.
+		coordURL = fmt.Sprintf("nats://localhost:%d", 4222) // ? this is for client connections and uses the Pub/Sub protocol
+		// clusterSecret/Routes: the route-peer address, only needed by a non-primary coordinator.
 		if req.Role == joinmgr.RoleServer {
 			clusterSecret = nodeident.LoadToken(dataDir, "cluster.secret")
-			clusterRoutes = []string{fmt.Sprintf("nats://localhost:%d", 6222)}
-			coordURL = fmt.Sprintf("nats://localhost:%d", 4222)
+			clusterRoutes = []string{fmt.Sprintf("nats://localhost:%d", 6222)} // ? this is for server to server communication and uses some other kinda protocol
 		}
 	}
 
-	if err := jm.Approve(nodeID, token, clusterSecret, clusterRoutes, coordURL); err != nil {
+	if err := jm.Approve(nodeID, token, clusterSecret, coordURL, clusterRoutes); err != nil {
 		http.Error(w, "failed to approve join request", http.StatusInternalServerError)
 		return
 	}
 
-	// If the node was already claimed by a GitHub user, grant that user
-	// dashboard access as a side effect — this is the "contribute a worker to
-	// earn grid access" default path (see docs/grid-access.md).
+	// already claimed? auto-grant dashboard access (docs/grid-access.md).
 	if req.GitHubUsername != "" {
 		if grantErr := um.Approve(req.GitHubUsername, "node:"+nodeID); grantErr != nil {
 			log.Printf("warning: failed to auto-grant dashboard access for %s: %v", req.GitHubUsername, grantErr)
@@ -123,9 +128,7 @@ func Approve(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.
 	w.WriteHeader(http.StatusOK)
 }
 
-// Claim links a GitHub username to a pending join request
-// (POST /join/claim/{nodeID}). Called by the Next.js server route after the
-// user authenticates with GitHub.
+// Claim links a GitHub username to a join request (POST /join/claim/{nodeID}).
 func Claim(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.Manager, um *usermgr.Manager) {
 	var body struct {
 		GitHubUsername string `json:"github_username"`
@@ -138,10 +141,7 @@ func Claim(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.Ma
 		http.Error(w, "node not found", http.StatusNotFound)
 		return
 	}
-	// Covers the out-of-order case: admin approved the node before the
-	// operator got around to claiming it. Grant immediately instead of
-	// waiting for a re-approval that will never come (Approve rejects
-	// already-approved nodes with a 409).
+	// out-of-order case: already approved before claim — grant now, no re-approval will come.
 	if req, err := jm.Get(nodeID); err == nil && req.Status == joinmgr.StatusApproved {
 		if grantErr := um.Approve(body.GitHubUsername, "node:"+nodeID); grantErr != nil {
 			log.Printf("warning: failed to auto-grant dashboard access for %s: %v", body.GitHubUsername, grantErr)
@@ -161,8 +161,7 @@ func Reject(w http.ResponseWriter, nodeID string, jm *joinmgr.Manager) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// List returns all join requests (GET /admin/join — admin view, secrets
-// already stripped by joinmgr.Manager.List).
+// List returns all join requests, secrets stripped (GET /admin/join).
 func List(w http.ResponseWriter, r *http.Request, jm *joinmgr.Manager) {
 	reqs, err := jm.List()
 	if err != nil {

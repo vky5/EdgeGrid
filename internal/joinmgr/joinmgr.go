@@ -9,10 +9,9 @@ import (
 	"sort"
 	"time"
 
+	"github.com/edgegrid/edgegrid/internal/broker"
 	"github.com/nats-io/nats.go"
 )
-
-const Bucket = "join_requests"
 
 const (
 	RoleWorker = "worker"
@@ -44,16 +43,10 @@ type Manager struct {
 	kv nats.KeyValue
 }
 
-func New(js nats.JetStreamContext) (*Manager, error) {
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
-		Bucket: Bucket,
-		TTL:    7 * 24 * time.Hour,
-	})
+func New(b *broker.Broker) (*Manager, error) {
+	kv, err := b.GetOrCreateKV("join_requests", 7*24*time.Hour)
 	if err != nil {
-		kv, err = js.KeyValue(Bucket)
-		if err != nil {
-			return nil, fmt.Errorf("join_requests KV: %w", err)
-		}
+		return nil, fmt.Errorf("join_requests KV: %w", err)
 	}
 	return &Manager{kv: kv}, nil
 }
@@ -93,18 +86,14 @@ func (m *Manager) List() ([]*JoinRequest, error) {
 	}
 	var reqs []*JoinRequest
 	for _, key := range keys {
-		entry, err := m.kv.Get(key)
+		req, err := m.Get(key)
 		if err != nil {
-			continue
-		}
-		var req JoinRequest
-		if err := json.Unmarshal(entry.Value(), &req); err != nil {
 			continue
 		}
 		// Strip secrets from the list view.
 		req.Token = ""
 		req.ClusterSecret = ""
-		reqs = append(reqs, &req)
+		reqs = append(reqs, req)
 	}
 	sort.Slice(reqs, func(i, j int) bool {
 		return reqs[i].RequestedAt.After(reqs[j].RequestedAt)
@@ -115,7 +104,7 @@ func (m *Manager) List() ([]*JoinRequest, error) {
 // Approve marks the request approved and attaches the credentials the node
 // needs to connect. token is the node's unique NATS password.
 // clusterSecret and clusterRoutes are only relevant for server-role requests.
-func (m *Manager) Approve(nodeID, token, clusterSecret string, clusterRoutes []string, coordURL string) error {
+func (m *Manager) Approve(nodeID, token, clusterSecret, coordURL string, clusterRoutes []string,) error {
 	req, err := m.Get(nodeID)
 	if err != nil {
 		return err

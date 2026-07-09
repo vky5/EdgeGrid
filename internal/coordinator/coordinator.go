@@ -35,12 +35,12 @@ func NewCoordinatorWithConn(nc *nats.Conn, replicas int, ns *natsserver.Embedded
 		return nil, fmt.Errorf("failed to initialize worker manager: %w", err)
 	}
 
-	jm, err := joinmgr.New(jsBroker.JS)
+	jm, err := joinmgr.New(jsBroker)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize join manager: %w", err)
 	}
 
-	um, err := usermgr.New(jsBroker.JS)
+	um, err := usermgr.New(jsBroker)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize user manager: %w", err)
 	}

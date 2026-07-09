@@ -18,7 +18,7 @@ type Identity struct {
 	NodeID string `json:"node_id"`
 }
 
-// LoadOrCreate reads data/node.id, or generates and persists a new identity.
+// LoadOrCreate reads data/node.id, or generates and persists node ID (same for coordinator + worker)
 func LoadOrCreate(dataDir string) (*Identity, error) {
 	if raw := LoadToken(dataDir, identFile); raw != "" {
 		var id Identity
