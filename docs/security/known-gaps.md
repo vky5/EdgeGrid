@@ -1,26 +1,18 @@
 # Known gaps
 
-Things flagged in the original security pass that are still open. Ordered
-roughly by how much I'd worry about each. None of these are fixed yet — this
-is a punch list, not a changelog.
+Things flagged in the original security pass. Ordered roughly by how much I'd
+worry about each. This is a punch list, not a changelog — items get marked
+FIXED in place rather than removed, since other docs cross-reference them by
+number.
 
-## 1. `data/` secrets aren't gitignored
+## 1. `data/` secrets aren't gitignored — FIXED
 
-Confirmed live right now: `git status --porcelain data/` shows `?? data/` —
-untracked, which means a stray `git add -A` or `git add .` would stage
-`data/admin.token`, `data/coord.secret`, `data/cluster.secret`,
-`data/node.token`, and `data/node.id` straight into the repo. `.gitignore`
-currently only excludes `data/nats/` (the JetStream storage directory), not
-the token files sitting next to it.
-
-**Fix:** add to `.gitignore`:
-```
-data/*.token
-data/*.secret
-data/node.id
-```
-(or just ignore `data/` wholesale and rely on `nodeident.SaveToken`'s
-`MkdirAll` to recreate it — nothing in `data/` needs to be committed.)
+Was live: `data/admin.token`, `data/coord.secret`, `data/cluster.secret`,
+`data/node.token`, and `data/node.id` were untracked and would've been staged
+by a stray `git add -A`. `.gitignore` now has `data/*.token`, `data/*.secret`,
+and `data/node.id` alongside the existing `data/nats/` entry — `git status
+--porcelain data/` comes back empty. Left this entry in place (rather than
+deleting it) since `token-inventory.md` cross-references it by number.
 
 ## 2. `GET /join/{nodeID}` leaks node credentials to anyone who knows the node ID
 
@@ -119,5 +111,5 @@ viewing.
 
 ---
 
-None of these are fixed. This file exists so the punch list doesn't live
-only in a chat transcript.
+Items 2 through 6 are still open. This file exists so the punch list doesn't
+live only in a chat transcript.

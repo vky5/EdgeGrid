@@ -31,8 +31,8 @@ data/
   nats/            # JetStream storage — gitignored today
 ```
 
-**Only `data/nats/` is gitignored right now.** The five files above are not
-— see `known-gaps.md` #1, this is a live gap, not a hypothetical.
+All five files above are gitignored (`data/*.token`, `data/*.secret`,
+`data/node.id`, alongside `data/nats/`) — see `known-gaps.md` #1.
 
 ## Rotation story
 

@@ -31,7 +31,7 @@ func (a *Worker) awaitApproval(ctx context.Context, req *workerpb.TrainingJobReq
 
 	log.Printf("job %s awaiting approval (timeout: %v)", req.JobId, approvalTimeout)
 
-	subject := fmt.Sprintf(broker.SubjectWorkerDecisionFmt, a.id, req.JobId)
+	subject := fmt.Sprintf(broker.SubjectWorkerDecisionFmt, a.id, req.JobId) // "workers.decision.workerID.jobID"
 	decisionCh := make(chan string, 1)
 
 	// Approval decisions are short-lived direct signals, so use NATS Core

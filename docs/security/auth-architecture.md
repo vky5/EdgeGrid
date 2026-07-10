@@ -6,7 +6,8 @@ approval), and it's easy to conflate them, so this doc keeps them apart.
 
 **System 1 — human identity (GitHub OAuth, via Next.js/NextAuth)**
 Used for: who's allowed into the dashboard, who owns which job, who can
-approve/reject nodes.
+approve/reject nodes, and (via the grid-access allowlist, §4) who's allowed
+to submit jobs at all.
 
 **System 2 — machine identity (NATS username/password)**
 Used for: which processes (coordinator, workers, server peers) are allowed to
@@ -126,7 +127,15 @@ bookkeeping in `join_requests`/`node_auth`. If you ever need to prove
 security-critical, that link is administrative record, not a verifiable
 credential.
 
-## 4. Machine identity: NATS username/password
+## 4. Grid access: a third, separate gate on top of both systems
+
+Everything above answers "who is this" (GitHub OAuth) and "is this machine trusted" (NATS credentials). Neither answers "is this GitHub user allowed to submit jobs" — that used to just be "yes, if they're signed in," which meant any GitHub account could dispatch work to the grid without ever contributing a worker.
+
+`internal/usermgr` adds an `approved_users` KV bucket, checked by `POST /api/jobs` (`isApprovedUser()`, `web/lib/coordinator.ts`) before a submission is forwarded to the coordinator. Admins always pass; everyone else needs a grant — either automatic (approving a claimed node also grants its owner access) or direct (an admin grants a username, no node required). Full flow in [grid-access.md](../grid-access.md).
+
+This is deliberately a separate KV from `join_requests`/`node_auth`, not a derived check against node status — losing or reformatting a node doesn't silently revoke the owner's submission rights, because that was never how they were granted in the first place.
+
+## 5. Machine identity: NATS username/password
 
 - The coordinator's embedded NATS server (`internal/natsserver/embedded.go`)
   is configured with a static user list at boot (`buildOpts`,
@@ -152,6 +161,7 @@ Browser (GitHub session cookie only)
 Next.js API routes (web/app/api/**)
    │  - checks NextAuth session
    │  - enforces per-user / admin authorization
+   │  - job submission also checks grid access (usersapi) — admin or granted, or 403
    │  - attaches GitHub login to outgoing requests where relevant
    ▼  Authorization: Bearer COORDINATOR_ADMIN_TOKEN
 Coordinator HTTP API (internal/coordinator/router.go + jobsapi/joinapi/usersapi/workersapi)

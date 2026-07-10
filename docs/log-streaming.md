@@ -58,7 +58,7 @@ When the worker agent starts with `--executor training`, the agent creates a Jet
 
 js, _ := nc.JetStream()
 execInstance = executor.NewTrainingExecutor(func(jobID, line string) {
-    js.Publish("jobs.logs."+jobID, []byte(line))
+    js.Publish(broker.SubjectLogsPrefix+jobID, []byte(line))
 })
 ```
 

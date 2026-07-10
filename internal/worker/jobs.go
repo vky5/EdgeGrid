@@ -86,7 +86,7 @@ func (a *Worker) handleJob(ctx context.Context, msg *nats.Msg) {
 		}
 	}()
 
-	if !a.busy.CompareAndSwap(false, true) {
+	if !a.busy.CompareAndSwap(false, true) { // check if itnst already running something
 		msg.NakWithDelay(10 * time.Second)
 		return
 	}
@@ -102,7 +102,7 @@ func (a *Worker) handleJob(ctx context.Context, msg *nats.Msg) {
 	log.Printf("received training job %s (base_model: %s, dataset: %s %s)",
 		req.JobId, req.BaseModelRef, req.DatasetType, req.DatasetRef)
 
-	// Approval gate: ACK immediately (taking ownership of the message), then
+	// Approval gate: ACK immediately (taking ownership of the message so after rejection it doesnt requeue)
 	// wait for a human decision before proceeding. Any path that doesn't approve
 	// sends a rejection notice to the coordinator.
 	if a.requireApproval {

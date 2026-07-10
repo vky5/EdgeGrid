@@ -1,133 +1,133 @@
-# EdgeGrid Execution Lifecycle & IPC
+# Python Execution Lifecycle
 
-This document describes the execution lifecycle of a job in EdgeGrid, tracing it from NATS JetStream ingestion to local Unix Domain Socket (UDS) Protobuf IPC execution inside the Python sidecar runner.
-
----
-
-## Architecture Overview
-
-EdgeGrid splits orchestration and execution into dedicated, isolated boundaries:
+How a training job actually runs, from coordinator dispatch to Python process
+exit. There is no sidecar process, no local IPC, and no persistent model
+server — each job is a fresh `os/exec` invocation of the user's own script.
 
 ```text
-┌─────────────────┐             ┌─────────────────┐             ┌───────────────────┐
-│                 │             │                 │             │                   │
-│   Coordinator   │ ── NATS ──> │    Go Worker    │ ── UDS ───> │   Python Runner   │
-│   (Scheduler)   │             │   (Controller)  │  (Protobuf) │   (Model Server)  │
-│                 │             │                 │             │                   │
-└─────────────────┘             └─────────────────┘             └───────────────────┘
+┌─────────────┐  jobs.train.<workerID>   ┌─────────────┐   os/exec   ┌───────────────┐
+│ Coordinator │ ───────────────────────> │  Go Worker  │ ──────────> │ python train.py │
+│ (dispatch)  │                          │ (Worker)    │             │  (user script) │
+└─────────────┘                          └─────────────┘             └───────────────┘
 ```
 
-1. **Coordinator**: Publishes jobs to model-specific NATS JetStream subjects.
-2. **Go Worker**: Orchestrates NATS pull subscriptions, tracks model runners, manages heartbeats, and dispatches tasks.
-3. **Python Runner (Sidecar)**: Dedicated subprocess running local machine learning inference via Hugging Face/SentenceTransformers.
-
 ---
 
-## 1. Bootstrapping & Handshake
+## 1. Dispatch — coordinator picks a specific worker
 
-When a Worker is started (`worker.Start`):
+Unlike a fan-out queue, the coordinator addresses a job to one worker
+directly. `TryDispatchQueued` (`internal/coordinator/dispatch.go:19`) runs
+whenever a worker becomes free (new registration or job completion):
 
-```text
-Go Worker                                                Python Subprocess
-    │                                                            │
-    │── 1. Create socket file path ─────────────────────────────>│
-    │── 2. exec.CommandContext("python3", runner.py, ...) ──────>│
-    │                                                            │ (Initialize Model)
-    │                                                            │ (Create socket & bind)
-    │<── 3. Dial UDS socket periodically (Poll until ready) ─────│ (Start listening)
-    │                                                            │
-```
+1. Scans the `jobs_state` KV for every job still in `QUEUED`.
+2. Skips any job this worker already rejected (`RejectedBy`, set when a human
+   declines the approval prompt — see §3).
+3. Filters by hardware requirements (`workerman.MeetsRequirements`: GPU,
+   VRAM, RAM, disk).
+4. Picks the oldest matching job, assigns the worker
+   (`manager.TryAssignWorker`), and publishes the `TrainingJobRequest`
+   protobuf directly to that worker's private subject:
+   `jobs.train.<workerID>` (`broker.SubjectTrainPrefix + workerID`).
 
-1. **Socket Allocation**: Go generates a unique local Unix domain socket path: `internal/worker/executor/runner-<model_name>.sock`. Any pre-existing stale socket file at this location is deleted to prevent binding conflicts.
-2. **Environment Autoprovisioning**: The Go executor checks if a Python virtual environment exists at `internal/worker/executor/.venv`. If it does not exist, Go automatically:
-   * Creates the virtual environment via `python3 -m venv .venv`.
-   * Installs required dependencies via `<venv>/bin/pip install protobuf sentence-transformers`.
-3. **Launch Subprocess**: Go spawns the Python sidecar process using the virtual environment's python interpreter:
-   ```bash
-   ./.venv/bin/python3 runner.py <model_name> <socket_path>
-   ```
-4. **Model Initialization**: The Python process starts inside the hermetic virtual environment. It loads the model weights from the local `hf_cache` (downloading them from Hugging Face Hub if missing), and binds to the UDS socket.
-5. **UDS Dial Poll**: Go dials the UDS socket file every `500ms` for up to `3 minutes`. Once the Dial succeeds, the model is fully loaded in memory and ready for queries.
-6. **NATS Capability Advertisement**: The Go worker registers its active models in the NATS Coordinator registry and starts its 10-second heartbeat loop.
+If publishing fails, the worker is put back to `WorkerFree` so the next
+dispatch attempt can retry.
 
----
+## 2. Ingestion — worker pulls its own jobs
 
-## 2. Ingestion & Job Pulling
+`StartJobListener` (`internal/worker/jobs.go:40`) opens a durable pull
+subscription scoped to this worker alone:
 
-```text
-NATS JetStream (JOBS Stream)
-            │
-            │  (Queue distribution across workers)
-            ▼
-    Go Worker Listener (sub.Fetch(1))
-            │
-            ▼
-       handleJob()
-```
+- Subject: `jobs.train.<workerID>`
+- Durable consumer name: `training-consumer-<workerID>`
+- `sub.Fetch(1, nats.MaxWait(5*time.Second))` in a loop — no message ever
+  goes to a worker it wasn't addressed to.
 
-1. **Durable Pull Consumers**: The worker listener opens a subscription on NATS JetStream under the subject `jobs.build.<model_name>` with a durable pull consumer named `consumer-<model_name>`.
-2. **First-In-First-Out (FIFO) Delivery**: The worker calls `sub.Fetch(1)` to request exactly one job message. NATS distributes tasks one-by-one to whichever worker is free first.
-3. **Receipt**: Once fetched, the message payload is unmarshaled into a Go `workerpb.JobRequest` protobuf structure.
+`handleJob` (`internal/worker/jobs.go:77`) then:
+1. CAS's `a.busy` — a worker only ever runs one job at a time; if already
+   busy, `msg.NakWithDelay(10s)` so JetStream retries later instead of
+   dropping the job.
+2. Unmarshals the NATS payload into a `workerpb.TrainingJobRequest`
+   (`internal/proto/worker/worker.proto:25`) — job ID, raw training script
+   bytes, inlined `requirements.txt`, dataset/base-model refs, a JSON
+   hyperparameter blob, and hardware minimums.
 
----
+## 3. Optional human approval gate
 
-## 3. Local IPC (Go Worker ➔ Python Runner)
+If the worker was started with `--require-approval`, `handleJob` ACKs the
+message immediately (taking ownership so it won't be redelivered elsewhere),
+sets job state to `PENDING_REVIEW`, and calls `awaitApproval`
+(`internal/worker/approval.go:26`):
 
-Data is exchanged between the two processes over the Unix Domain Socket using **binary framing and Protobuf serialization**:
+- Subscribes on `workers.decision.<workerID>.<jobID>` (plain NATS core, not
+  JetStream — this is a short-lived signal, not durable state).
+- Waits up to 60s for a human decision relayed by the coordinator.
+- `"approve"` → proceeds to §4. Anything else (reject, timeout, cancelled
+  context) → publishes to `workers.reject` and returns; the coordinator
+  requeues the job (marking this worker in `RejectedBy`) and
+  `TryDispatchQueued` tries the next candidate.
 
-```text
-Go Worker                                                Python Runner
-    │                                                            │
-    │── 1. Connects to socket path ─────────────────────────────>│
-    │── 2. Writes: [4-byte length header] + [JobRequest bytes] ─>│
-    │                                                            │ (Runs Model Inference)
-    │<─ 3. Reads: [4-byte length header] + [JobResponse bytes] ──│
-    │── 4. Closes socket connection ────────────────────────────>│
-```
+## 4. Training pipeline (`runTrainingPipeline`, `internal/worker/pipeline.go:20`)
 
-### The Message Frame Protocol
-To read stream data reliably without partial-read issues or delimiters, messages use a length-prefix:
-1. **Length Header**: A `4-byte` big-endian unsigned integer (uint32) indicating the length of the protobuf message payload.
-2. **Payload**: The serialized raw bytes of the protobuf message.
+1. **Disk pre-check** — if `min_disk_gb` is set, verifies free space via
+   `hardware.DiskFreeGB()` before doing any work.
+2. **Isolated job directory**: `$TMPDIR/edgegrid-jobs/<jobID>/{input,output}`,
+   `defer os.RemoveAll(jobDir)` so it's always cleaned up on return.
+3. **Checkpoint resume**: `pullCheckpoint` fetches a prior checkpoint tarball
+   from the NATS Object Store (keyed by job ID) and extracts it into
+   `output/` — this is what lets a job continue after a crash-requeue rather
+   than restart from scratch. `nats.ErrObjectNotFound` is the expected,
+   non-error case for a job's first attempt.
+4. **Dataset pull** — only for `dataset_type == "object_store"`; HF-hosted
+   datasets are downloaded by the training script itself, not by the worker.
+5. **Background checkpoint snapshots**: a goroutine ticks every 5 minutes
+   and tars `output/` to the Object Store while training runs, so a crash
+   mid-job loses at most 5 minutes of progress, not the whole run. Stopped
+   via a `checkpointStop` channel once training finishes.
+6. **Execute** — hands off to the `Executor` interface (§5).
+7. **Final checkpoint push** — one more snapshot after the script exits
+   successfully, so the last few minutes of work aren't left stranded in the
+   5-minute gap.
 
-### Execution Steps
-1. **Serialize Request**: Go marshals the `JobRequest` protobuf (ID, model, input text) into binary bytes.
-2. **Write**: Go sends the 4-byte length header followed by the payload bytes to the Unix Domain Socket.
-3. **Inference**: Python reads the header, fetches the payload, deserializes it, feeds it to the loaded Hugging Face model, and formats the floating-point vector into a `JobResponse` protobuf.
-4. **Serialize Response**: Python serializes `JobResponse` (ID, success flag, float32 embedding slice, error details) to binary bytes and writes it back to Go with a 4-byte length prefix.
-5. **Release Socket**: Go reads the response, unmarshals the vector, and closes the connection.
+## 5. Script execution (`TrainingExecutor.Execute`, `internal/worker/executor/training.go:30`)
 
----
+1. Writes `req.TrainingScript` to `input/train.py`.
+2. **Venv resolution** (`resolveVenv`): if `requirements` is non-empty, keys
+   a venv by `SHA256(requirements.txt)` under `/tmp/edgegrid-venvs/<hash>/`.
+   A `.ready` sentinel file marks a completed install, so two jobs with
+   identical dependencies skip `pip install` entirely on the second run. If
+   `requirements` is empty, falls back to the system `python3`/`python`.
+3. **Runs the script** directly on the worker host — `exec.CommandContext(ctx,
+   python, "-u", scriptPath)`, no container or restricted user (`-u` disables
+   Python's stdout buffering so log lines stream immediately instead of
+   batching). Env is `os.Environ()` plus `OUTPUT_DIR`, `JOB_ID`,
+   `TRAINING_CONFIG` — the script reads hyperparameters from
+   `TRAINING_CONFIG` and is expected to write its output to `$OUTPUT_DIR`.
+4. `cmd.Stdout`/`cmd.Stderr` are wired to a `logWriter` that splits on
+   newlines, logs locally, and (if a `logPublish` func was supplied) forwards
+   each line to NATS JetStream for the SSE log stream — see
+   [log-streaming.md](log-streaming.md).
+5. Blocks on `cmd.Run()` until the script exits. A non-zero exit becomes a Go
+   error, which propagates back up as job `FAILED`.
 
-## 4. Dispatch & Acknowledgment
+There is no sandboxing here and the subprocess inherits the worker's full
+environment — see `docs/security/known-gaps.md` #3/#4 for the implications.
 
-Once execution finishes:
+## 6. Result & acknowledgment (back in `handleJob`)
 
-1. **Publish Results**: Go publishes the `JobResponse` payload back to the NATS subject `jobs.results`.
-2. **Acknowledge Task**: Go calls `msg.Ack()` on the original NATS JetStream message. This tells JetStream the job is successfully processed and can be removed from the message buffer.
-3. **Fault Tolerance**: If the worker crashed during execution, `msg.Ack()` is never called. JetStream will redeliver the job to another healthy worker.
+- Success: `JobResponse{Success: true, CheckpointKey: jobID}` published to
+  `jobs.results`; job state set to `COMPLETED`.
+- Failure: `JobResponse{Success: false, Error: err.Error()}`; job state set
+  to `FAILED`.
+- The original NATS message is `Ack()`'d only after the result is
+  successfully published. If the worker crashes anywhere in §4/§5, the
+  message is never acked — JetStream redelivers it to another worker, which
+  resumes from whatever checkpoint made it to the Object Store (§4 step 3).
 
----
+## 7. Cancellation
 
-## 5. Job State Lifecycle Tracking
-
-EdgeGrid tracks the exact state of every submitted job in a distributed NATS KeyValue bucket named `jobs_state`. This allows clients to inspect where a job is at any moment.
-
-### The Job States
-* `QUEUED`: The job was accepted by the Coordinator's HTTP API and written to the JetStream message queue.
-* `RUNNING`: A worker has pulled the job from JetStream and started execution on its local runner.
-* `COMPLETED`: The job completed successfully, and the result was received.
-* `FAILED`: The job execution failed (either due to a Python runner exception or a Go broker error).
-
-### Observability API
-Clients can track status using standard HTTP routes:
-* **Submit Job**: `POST /jobs` (returns `job_id` and initial status `"queued"`).
-* **Get Job Status**: `GET /jobs/<job_id>` (returns the full JSON state: status, model, execution worker, error messages, the final embedding vector if completed, and updated timestamp).
-
----
-
-## 6. Teardown & Cleanup
-
-Upon worker agent exit or cancellation:
-1. **Process Termination**: The Go worker sends a `Kill()` signal to all active subprocesses.
-2. **Filesystem Cleanup**: Go deletes the local `runner-<model_name>.sock` files from the filesystem.
+`StartCancelListener` (`internal/worker/jobs.go:19`) subscribes to the
+broadcast subject `jobs.cancel`; every worker gets every cancel message, but
+only the one holding that job ID in its local `cancels` map (registered for
+the duration of `runTrainingPipeline`) actually calls the per-job
+`context.CancelFunc`, which propagates through `exec.CommandContext` to kill
+the running Python process.
