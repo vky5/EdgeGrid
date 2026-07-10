@@ -1,0 +1,15 @@
+- [X] Heartbeat and registration
+- [X] saving jobs from API and how they decide which worker to receive
+- [X] looking into approval by the worker side
+- [X] how does worker process it
+- [X] periodic checkpointing and how it is reused on reassignment
+- [X] stale job requeue
+- [X] top-level composition (agent.go, config.go) - how coordinator/worker/NATS all get wired into one process, read this first for the map
+- [X] node identity + join/approval flow (agent.go, joinmgr, nodeident) - how a node gets its NodeID and proves who it is
+- [X] embedded NATS bootstrap and clustering (natsserver/embedded.go) - accounts, ports, cluster routes/secret
+- [X] admin token + auth model for the HTTP endpoints (nodeident tokens, coord.secret, cluster.secret)
+- [X] worker manager internals (workerman: manager.go, registerWorker.go, checkHealth.go, schedule.go) - the piece dispatch.go/recovery.go actually call into
+- [X] result ingestion on the coordinator side (subscriptions.go) - the reverse of dispatch, how jobs.results updates jobstate
+- [X] jobstate KV model on its own (jobstate/state.go) - state enum, UpdateJobStatus, RequeueJob
+- [X] users/workers HTTP APIs (usersapi, workersapi, usermgr) - human-facing account/worker surface
+- [ ] log streaming (log-streaming.md, SubjectLogsPrefix) - how live logs reach the SSE endpoint
