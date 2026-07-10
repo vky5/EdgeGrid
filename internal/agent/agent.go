@@ -53,7 +53,7 @@ func NewAgent(cfg *config.Config) (*Agent, error) {
 		connectOpts = append(connectOpts, nats.UserInfo(natsCred.Username, natsCred.Password))
 	}
 
-	nc, err := nats.Connect(cfg.NatsURL, connectOpts...)
+	nc, err := nats.Connect(cfg.NatsURL, connectOpts...) // for worker, this is the PUB conn to coordinator
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to NATS: %w", err)
 	}

@@ -1,5 +1,5 @@
-// Package natsserver starts an embedded NATS server inside the coordinator
-// process so operators don't need to install or manage a separate NATS binary.
+// Package natsserver starts an embedded NATS server inside the coordinator process
+// so operators don't need to install or manage a separate NATS binary.
 // JetStream is enabled and state is persisted to a configurable directory so
 // that stream and KV data survive coordinator restarts.
 package natsserver
@@ -115,7 +115,13 @@ func (e *EmbeddedServer) ClientURL() string {
 	return e.ns.ClientURL()
 }
 
-func buildOpts(port int, storeDir string, coordCred NodeCred, cluster ClusterConfig, extraUsers []*server.User) *server.Options {
+func buildOpts(
+	port int, 
+	storeDir string, 
+	coordCred NodeCred, 
+	cluster ClusterConfig, 
+	extraUsers []*server.User,
+) *server.Options {
 	users := credsToUsers(coordCred, nil)
 	if len(extraUsers) > 0 {
 		users = append(users, extraUsers...)
@@ -131,7 +137,7 @@ func buildOpts(port int, storeDir string, coordCred NodeCred, cluster ClusterCon
 	}
 
 	if len(cluster.Routes) > 0 {
-		clusterPort := cluster.Port
+		clusterPort := cluster.Port // Server to server port
 		if clusterPort == 0 {
 			clusterPort = 6222
 		}
@@ -162,6 +168,7 @@ func buildOpts(port int, storeDir string, coordCred NodeCred, cluster ClusterCon
 	return opts
 }
 
+// NodeCred -> Server.user(nats type)
 func credsToUsers(coordCred NodeCred, nodeCreds []NodeCred) []*server.User {
 	users := []*server.User{
 		{Username: coordCred.Username, Password: coordCred.Password},
