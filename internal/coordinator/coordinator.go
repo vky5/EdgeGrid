@@ -9,7 +9,6 @@ import (
 	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
 	"github.com/edgegrid/edgegrid/internal/natsserver"
-	"github.com/edgegrid/edgegrid/internal/nodeident"
 	"github.com/edgegrid/edgegrid/internal/usermgr"
 	"github.com/nats-io/nats.go"
 )
@@ -73,10 +72,10 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 		return fmt.Errorf("failed to verify/ensure NATS Stream: %w", err)
 	}
 
-	// Restore previously approved node credentials into embedded NATS.
+	// Watch approved node credentials and live-apply them to embedded NATS.
 	if c.natsServer != nil {
-		if err := c.restoreApprovedNodes(); err != nil {
-			log.Printf("warning: could not restore approved nodes into NATS: %v", err)
+		if err := c.watchApprovedNodes(ctx); err != nil {
+			log.Printf("warning: could not start node_auth watch: %v", err)
 		}
 	}
 
@@ -99,45 +98,51 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 	}
 
 	go c.StartStaleJobRecovery(ctx)
-	go StartHTTPServer(apiAddr, c.jsBroker, c.manager, c.joinMgr, c.userMgr, c.natsServer, c.dataDir, c.adminToken)
+	go StartHTTPServer(apiAddr, c.jsBroker, c.manager, c.joinMgr, c.userMgr, c.dataDir, c.adminToken)
 
 	<-ctx.Done()
 	log.Println("shutting down coordinator")
 	return nil
 }
 
-// restoreApprovedNodes reads the node_auth KV and loads all previously approved
-// node credentials back into the embedded NATS server so workers can reconnect
-// after a coordinator restart without needing re-approval.
-func (c *Coordinator) restoreApprovedNodes() error {
+// watchApprovedNodes applies every node_auth entry — past and future — to
+// this coordinator's embedded NATS, so approvals from sibling coordinators
+// propagate live instead of only at restart.
+func (c *Coordinator) watchApprovedNodes(ctx context.Context) error {
 	kv, err := c.jsBroker.GetOrCreateKV("node_auth", 0) // no TTL — permanent
 	if err != nil {
 		return err
 	}
 
-	keys, err := kv.Keys()
+	watcher, err := kv.WatchAll()
 	if err != nil {
-		return nil // empty KV is fine
+		return fmt.Errorf("watch node_auth: %w", err)
 	}
 
-	coordSecret := nodeident.LoadToken(c.dataDir, "coord.secret")
-	coordCred := natsserver.NodeCred{Username: "__coord__", Password: coordSecret}
-
-	var nodeCreds []natsserver.NodeCred
-	for _, key := range keys {
-		entry, err := kv.Get(key)
-		if err != nil {
-			continue
+	go func() {
+		defer watcher.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case entry, ok := <-watcher.Updates():
+				if !ok {
+					return
+				}
+				if entry == nil {
+					continue // marks end of initial replay, nothing to apply
+				}
+				if entry.Operation() != nats.KeyValuePut {
+					continue // deletion/purge: no revoke support yet
+				}
+				cred := natsserver.NodeCred{Username: entry.Key(), Password: string(entry.Value())}
+				if err := c.natsServer.AddUser(cred); err != nil {
+					log.Printf("warning: could not apply approved credential for %s: %v", entry.Key(), err)
+				}
+			}
 		}
-		nodeCreds = append(nodeCreds, natsserver.NodeCred{
-			Username: key,
-			Password: string(entry.Value()),
-		})
-	}
+	}()
 
-	if err := c.natsServer.SetUsers(coordCred, nodeCreds); err != nil {
-		return err
-	}
-	log.Printf("restored %d approved node credential(s) into NATS", len(nodeCreds))
+	log.Println("watching node_auth for approved node credentials")
 	return nil
 }

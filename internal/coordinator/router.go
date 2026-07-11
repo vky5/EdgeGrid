@@ -17,7 +17,6 @@ import (
 	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 	"github.com/edgegrid/edgegrid/internal/coordinator/workersapi"
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
-	"github.com/edgegrid/edgegrid/internal/natsserver"
 	"github.com/edgegrid/edgegrid/internal/usermgr"
 )
 
@@ -95,7 +94,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager, jm *joinmgr.Manager, um *usermgr.Manager, ns *natsserver.EmbeddedServer, dataDir string, adminToken string) {
+func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager, jm *joinmgr.Manager, um *usermgr.Manager, dataDir string, adminToken string) {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", handleHealth)
@@ -202,7 +201,7 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 		nodeID, action := parts[0], parts[1]
 		switch action {
 		case "approve":
-			joinapi.Approve(w, r, nodeID, jm, um, ns, jsBroker, dataDir)
+			joinapi.Approve(w, r, nodeID, jm, um, jsBroker, dataDir)
 		case "reject":
 			joinapi.Reject(w, nodeID, jm)
 		default:

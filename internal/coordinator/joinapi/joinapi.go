@@ -11,7 +11,6 @@ import (
 
 	"github.com/edgegrid/edgegrid/internal/broker"
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
-	"github.com/edgegrid/edgegrid/internal/natsserver"
 	"github.com/edgegrid/edgegrid/internal/nodeident"
 	"github.com/edgegrid/edgegrid/internal/usermgr"
 )
@@ -67,10 +66,9 @@ func Status(w http.ResponseWriter, nodeID string, jm *joinmgr.Manager) {
 func Approve(
 	w http.ResponseWriter, 
 	r *http.Request, nodeID string, 
-	jm *joinmgr.Manager, 
-	um *usermgr.Manager, 
-	ns *natsserver.EmbeddedServer, 
-	jsBroker *broker.Broker, 
+	jm *joinmgr.Manager,
+	um *usermgr.Manager,
+	jsBroker *broker.Broker,
 	dataDir string,
 ) {
 	req, err := jm.Get(nodeID)
@@ -96,20 +94,19 @@ func Approve(
 		_, _ = kv.Put(nodeID, []byte(token))
 	}
 
-	// Hot-reload NATS with the new credential so the node can connect immediately.
-	var clusterSecret, coordURL string
+	// NATS credential propagation happens via each coordinator's own node_auth
+	// watcher (coordinator.go: watchApprovedNodes), reacting to the kv.Put
+	// above — not a direct AddUser call here — so it applies uniformly across
+	// every embedding coordinator in the cluster, not just this one ofc including this one as well (if running embedded server)
+	// coordURL: the client address, needed by any approved node (worker or server) to connect.
+	coordURL := fmt.Sprintf("nats://localhost:%d", 4222) // ? this is for client connections and uses the Pub/Sub protocol
+
+	// clusterSecret/Routes: the route-peer address, only needed by a non-primary coordinator.
+	var clusterSecret string
 	var clusterRoutes []string
-	if ns != nil {
-		if addErr := ns.AddUser(natsserver.NodeCred{Username: nodeID, Password: token}); addErr != nil {
-			log.Printf("warning: NATS reload failed for node %s: %v", nodeID, addErr)
-		}
-		// coordURL: the client address, needed by any approved node (worker or server) to connect.
-		coordURL = fmt.Sprintf("nats://localhost:%d", 4222) // ? this is for client connections and uses the Pub/Sub protocol
-		// clusterSecret/Routes: the route-peer address, only needed by a non-primary coordinator.
-		if req.Role == joinmgr.RoleServer {
-			clusterSecret = nodeident.LoadToken(dataDir, "cluster.secret")
-			clusterRoutes = []string{fmt.Sprintf("nats://localhost:%d", 6222)} // ? this is for server to server communication and uses some other kinda protocol
-		}
+	if req.Role == joinmgr.RoleServer {
+		clusterSecret = nodeident.LoadToken(dataDir, "cluster.secret")
+		clusterRoutes = []string{fmt.Sprintf("nats://localhost:%d", 6222)} // ? this is for server to server communication and uses some other kinda protocol
 	}
 
 	if err := jm.Approve(nodeID, token, clusterSecret, coordURL, clusterRoutes); err != nil {
