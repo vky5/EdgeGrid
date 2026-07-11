@@ -99,7 +99,8 @@ func startEmbeddedNATS(cfg *config.Config, natsCred natsserver.NodeCred, cluster
 			Port:   cfg.ClusterPort,
 			Secret: clusterSecret, // shared across all peers
 			Routes: clusterRoutes, // seed peer(s) for cluster routing
-		})
+		},
+		cfg.AdvertiseHost)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start embedded NATS: %w", err)
 	}

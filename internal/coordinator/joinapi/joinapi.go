@@ -11,6 +11,7 @@ import (
 
 	"github.com/edgegrid/edgegrid/internal/broker"
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
+	"github.com/edgegrid/edgegrid/internal/natsserver"
 	"github.com/edgegrid/edgegrid/internal/nodeident"
 	"github.com/edgegrid/edgegrid/internal/usermgr"
 )
@@ -44,7 +45,7 @@ func Submit(w http.ResponseWriter, r *http.Request, jm *joinmgr.Manager) {
 }
 
 // Return status of a node
-// TODO currently there is no check, any node can query the status of any other node. 
+// TODO currently there is no check, any node can query the status of any other node.
 func Status(w http.ResponseWriter, nodeID string, jm *joinmgr.Manager) {
 	req, err := jm.Get(nodeID)
 	if err != nil {
@@ -64,10 +65,11 @@ func Status(w http.ResponseWriter, nodeID string, jm *joinmgr.Manager) {
 // Approve mints a token, adds it to NATS, and stores it in node_auth.
 // TODO only admin check and if it leaks then anyone can autoapprove a node
 func Approve(
-	w http.ResponseWriter, 
-	r *http.Request, nodeID string, 
+	w http.ResponseWriter,
+	r *http.Request, nodeID string,
 	jm *joinmgr.Manager,
 	um *usermgr.Manager,
+	ns *natsserver.EmbeddedServer,
 	jsBroker *broker.Broker,
 	dataDir string,
 ) {
@@ -99,14 +101,26 @@ func Approve(
 	// above — not a direct AddUser call here — so it applies uniformly across
 	// every embedding coordinator in the cluster, not just this one ofc including this one as well (if running embedded server)
 	// coordURL: the client address, needed by any approved node (worker or server) to connect.
-	coordURL := fmt.Sprintf("nats://localhost:%d", 4222) // ? this is for client connections and uses the Pub/Sub protocol
+	// host is read back from the embedded server itself (single source of
+	// truth — see EmbeddedServer.AdvertiseHost) so this can never drift from
+	// what the server actually advertises in its own INFO messages. Falls
+	// back to localhost if unconfigured, or if this coordinator has no
+	// embedded server at all (external NATS — known gap, see
+	// docs/security/known-gaps.md).
+	host := "localhost"
+	if ns != nil {
+		if h := ns.AdvertiseHost(); h != "" {
+			host = h
+		}
+	}
+	coordURL := fmt.Sprintf("nats://%s:%d", host, 4222) // ? this is for client connections and uses the Pub/Sub protocol
 
 	// clusterSecret/Routes: the route-peer address, only needed by a non-primary coordinator.
 	var clusterSecret string
 	var clusterRoutes []string
 	if req.Role == joinmgr.RoleServer {
 		clusterSecret = nodeident.LoadToken(dataDir, "cluster.secret")
-		clusterRoutes = []string{fmt.Sprintf("nats://localhost:%d", 6222)} // ? this is for server to server communication and uses some other kinda protocol
+		clusterRoutes = []string{fmt.Sprintf("nats://%s:%d", host, 6222)} // ? this is for server to server communication and uses some other kinda protocol
 	}
 
 	if err := jm.Approve(nodeID, token, clusterSecret, coordURL, clusterRoutes); err != nil {

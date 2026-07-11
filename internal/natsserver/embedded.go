@@ -16,8 +16,8 @@ import (
 
 // ClusterConfig holds optional intra-cluster settings.
 type ClusterConfig struct {
-	Name   string
-	Port   int
+	Name   string // must match the cluster name of other nodes
+	Port   int // coordinator own port to connect to
 	Secret string   // shared password for cluster route connections
 	Routes []string // seed URLs, e.g. ["nats://blacktree.in:6222"]
 }
@@ -29,16 +29,19 @@ type NodeCred struct {
 }
 
 type EmbeddedServer struct {
-	mu      sync.Mutex
-	ns      *server.Server
-	baseOpts *server.Options // base options kept for reload
+	mu            sync.Mutex
+	ns            *server.Server
+	baseOpts      *server.Options // base options kept for reload
+	advertiseHost string          // externally-reachable host, if configured; raw, no port
 }
 
 // Start launches an embedded NATS server with JetStream enabled.
 // coordCred is the coordinator's own NATS credential (always allowed).
 // cluster is optional; if Routes is non-empty the server joins a cluster.
-func Start(port int, storeDir string, coordCred NodeCred, cluster ClusterConfig) (*EmbeddedServer, error) {
-	opts := buildOpts(port, storeDir, coordCred, cluster, nil)
+// advertiseHost, if set, is what this server tells clients/peers to use
+// instead of its own bind address — see AdvertiseHost.
+func Start(port int, storeDir string, coordCred NodeCred, cluster ClusterConfig, advertiseHost string) (*EmbeddedServer, error) {
+	opts := buildOpts(port, storeDir, coordCred, cluster, advertiseHost, nil)
 
 	ns, err := server.NewServer(opts)
 	if err != nil {
@@ -57,7 +60,17 @@ func Start(port int, storeDir string, coordCred NodeCred, cluster ClusterConfig)
 		log.Printf("NATS cluster %q joining routes: %v", cluster.Name, cluster.Routes)
 	}
 
-	return &EmbeddedServer{ns: ns, baseOpts: opts}, nil
+	return &EmbeddedServer{ns: ns, baseOpts: opts, advertiseHost: advertiseHost}, nil
+}
+
+// AdvertiseHost returns the externally-reachable host configured for this
+// server (empty if none was set) — the single source of truth for what
+// address to hand out to joining nodes, so callers don't keep their own
+// separate copy of the same value.
+func (e *EmbeddedServer) AdvertiseHost() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.advertiseHost
 }
 
 // AddUser adds a new approved node credential and hot-reloads the NATS server.
@@ -116,10 +129,11 @@ func (e *EmbeddedServer) ClientURL() string {
 }
 
 func buildOpts(
-	port int, 
-	storeDir string, 
-	coordCred NodeCred, 
-	cluster ClusterConfig, 
+	port int,
+	storeDir string,
+	coordCred NodeCred,
+	cluster ClusterConfig,
+	advertiseHost string,
 	extraUsers []*server.User,
 ) *server.Options {
 	users := credsToUsers(coordCred, nil)
@@ -134,6 +148,9 @@ func buildOpts(
 		HTTPPort:  -1,
 		NoSigs:    true,
 		Users:     users,
+	}
+	if advertiseHost != "" { // when set, tells workers (connect to this address)
+		opts.ClientAdvertise = advertiseHost // applies even without clustering
 	}
 
 	if len(cluster.Routes) > 0 {
@@ -155,6 +172,7 @@ func buildOpts(
 			}
 			routes = append(routes, u)
 		}
+		opts.Routes = routes // initial seed routes for cluster discovery
 
 		opts.Cluster = server.ClusterOpts{
 			Name:     clusterName,
@@ -162,7 +180,9 @@ func buildOpts(
 			Username: "cluster",
 			Password: cluster.Secret,
 		}
-		opts.Routes = routes
+		if advertiseHost != "" {
+			opts.Cluster.Advertise = advertiseHost // what other coordinators should connect to on exchange of INFO
+		}
 	}
 
 	return opts

@@ -14,7 +14,7 @@ import (
 )
 
 type Coordinator struct {
-	jsBroker   *broker.Broker // Broker with nats.conn, jetstream and replicas
+	jsBroker   *broker.Broker           // Broker with nats.conn, jetstream and replicas
 	manager    *workerman.WorkerManager // nats KV store
 	joinMgr    *joinmgr.Manager
 	userMgr    *usermgr.Manager
@@ -98,7 +98,7 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 	}
 
 	go c.StartStaleJobRecovery(ctx)
-	go StartHTTPServer(apiAddr, c.jsBroker, c.manager, c.joinMgr, c.userMgr, c.dataDir, c.adminToken)
+	go StartHTTPServer(apiAddr, c.jsBroker, c.manager, c.joinMgr, c.userMgr, c.natsServer, c.dataDir, c.adminToken)
 
 	<-ctx.Done()
 	log.Println("shutting down coordinator")

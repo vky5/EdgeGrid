@@ -36,7 +36,7 @@ type JoinRequest struct {
 	Token         string   `json:"token,omitempty"`          // unique NATS credential for this node
 	ClusterSecret string   `json:"cluster_secret,omitempty"` // server join: cluster route password
 	ClusterRoutes []string `json:"cluster_routes,omitempty"` // server join: existing node addresses
-	CoordURL      string   `json:"coord_url,omitempty"`      // server join: coordinator HTTP URL
+	CoordURL      string   `json:"coord_url,omitempty"`      // worker join: coordinator's NATS client URL
 }
 
 type Manager struct {
