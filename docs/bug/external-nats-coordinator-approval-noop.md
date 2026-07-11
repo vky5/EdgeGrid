@@ -1,6 +1,6 @@
 # Bug: Non-Embedding Coordinator Silently No-Ops on Join Approval
 
-**Status:** Partially fixed. Registration and empty-address gaps are closed; the returned address is still wrong for real multi-host deployments (see "What's Still Open").
+**Status:** Partially fixed. Registration and empty-address gaps are closed. The wrong-value gap is now fixed for embedding coordinators (`--advertise-host`); still open for non-embedding (external-NATS) coordinators specifically — see [known-gaps.md #7](../security/known-gaps.md) and "What's Still Open" below.
 
 **Subsystem:** [node-auth-propagation.md](../node-auth-propagation.md)
 
@@ -53,9 +53,10 @@ Incorrect guard scope — a nil-check written to protect one specific operation 
 - The direct `ns.AddUser(...)` call was removed from `Approve` entirely, in favor of every embedding coordinator's own `node_auth` watcher applying it locally (see [node-auth-propagation.md](../node-auth-propagation.md) and [the sibling stale-credentials bug](node-auth-stale-until-restart.md)) — this means registration now happens on whichever embedding coordinator(s) actually exist in the cluster, not gated on the *approving* coordinator specifically.
 - The `if ns != nil` guard around `coordURL`/`clusterRoutes` was deleted; those values are now always computed, regardless of whether the approving coordinator embeds NATS.
 - The now-dead `ns *natsserver.EmbeddedServer` parameter was removed from `Approve`, and the pass-through cascaded out of `router.StartHTTPServer` and its call site in `coordinator.go`.
+- **Follow-up:** `ns` was later reintroduced to `Approve` — narrowly, just to call the new `EmbeddedServer.AdvertiseHost()` accessor. A `--advertise-host` config value now threads through `config.go` → `startEmbeddedNATS` → `natsserver.buildOpts` (setting `Options.ClientAdvertise`/`Cluster.Advertise` on the real server) and is read back by `Approve` via `ns.AdvertiseHost()` — one source of truth instead of two independently-threaded copies. `coordURL`/`clusterRoutes` now use that host, falling back to `"localhost"` only when unconfigured or when `ns == nil`.
 
-Files touched: `internal/coordinator/joinapi/joinapi.go`, `internal/coordinator/router.go`, `internal/coordinator/coordinator.go`.
+Files touched: `internal/coordinator/joinapi/joinapi.go`, `internal/coordinator/router.go`, `internal/coordinator/coordinator.go`, `internal/config/config.go`, `internal/natsserver/embedded.go`, `internal/agent/credentials.go`.
 
 ## What's Still Open
 
-The address returned is still the literal `fmt.Sprintf("nats://localhost:%d", 4222)` / `6222` — no longer empty, but still wrong for any real multi-host deployment, and still meaningless on a coordinator that has no NATS running on this host at all. This needs a real advertised-address concept (what address can other machines actually reach this coordinator's NATS at) rather than a hardcoded loopback placeholder. Tracked as a separate, larger fix, not addressed here.
+Fixed for embedding coordinators (the common case) via `--advertise-host`. **Still open specifically for a coordinator with no embedded NATS at all** (`ns == nil`, external `--nats-url` mode) — it still falls back to `"localhost"`, since there's no `EmbeddedServer` to query and no equivalent mechanism yet for stating the reachable address of a NATS server this coordinator doesn't itself run. Tracked as [known-gaps.md #7](../security/known-gaps.md), deliberately not pursued further — this mode is a rarely-used escape hatch for this project's actual deployment shape, not worth the design investment without a concrete need.

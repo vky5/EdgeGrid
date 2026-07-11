@@ -109,7 +109,58 @@ line so embedded `\n\n` can't create new SSE frames) if this stream is ever
 exposed more broadly — e.g. shared logs, public job pages, or multi-tenant
 viewing.
 
+## 7. `coordURL`/`clusterRoutes` are wrong for a coordinator with no embedded NATS
+
+Fixed for the common case: an embedding coordinator's join response now
+builds `coordURL`/`clusterRoutes` from `--advertise-host`
+(`joinapi.Approve` → `EmbeddedServer.AdvertiseHost()`) instead of a
+hardcoded `"localhost"` — see [node-auth-propagation.md](../node-auth-propagation.md)
+and [bug/external-nats-coordinator-approval-noop.md](../bug/external-nats-coordinator-approval-noop.md).
+
+**Deliberately left open:** a coordinator started with `--nats-url`
+pointing at an external, non-embedded NATS server (`ns == nil`) still gets
+the hardcoded `"localhost"` fallback — there's no `EmbeddedServer` for it to
+query, and no equivalent `--advertise-host`-style answer exists for "what's
+the reachable address of a NATS server this coordinator doesn't itself
+run." Fixing this properly would need the operator to separately state the
+external NATS's own reachable address (distinct from `cfg.NatsURL`, which is
+just how *this* coordinator reaches it, and isn't guaranteed to be reachable
+from anywhere else — see the Docker Compose walkthrough this gap came from).
+
+Not fixed because the external-NATS-coordinator mode itself is a rarely-used
+escape hatch for this project's actual deployment shape (every coordinator
+normally embeds its own NATS) — not worth the design investment unless
+there's a concrete deployment that needs it.
+
+## 8. A joining node only ever gets one seed route, sourced from whichever coordinator approved it
+
+`joinapi.Approve` builds `clusterRoutes` as a single-element list — the
+approving coordinator's own address. There's no mechanism for it to also
+include a couple of *other* already-known coordinators as backup seeds,
+because nothing exposes the embedded NATS server's live, gossip-discovered
+peer list (`s.routes` internally) back out through `EmbeddedServer` for
+`joinapi` to read. So while `node_auth` data itself is fully distributed
+(replicated to every embedding coordinator, applied live via the
+`watchApprovedNodes` watcher), the *discovery path for a brand-new node*
+is not — it depends entirely on the one coordinator that happened to
+answer this specific approval.
+
+**Why this is narrower than it first sounds:** a joining node must
+successfully reach that same coordinator's HTTP join API *before* it ever
+gets a seed address at all, and the HTTP API and the embedded NATS server
+live in the same process. So if the HTTP request succeeded, the NATS
+server it's about to hand out as a seed is, in all but a narrow partial-failure
+window, also up. The real exposure is that one specific coordinator process
+dying in the gap between "approval sent" and "new node's connection
+attempt" (or shortly after, before the new node's own gossip has picked up
+other peers) — not a general "is the seed reliable" problem.
+
+**Not fixed:** acceptable for now — closing it properly means exposing
+live peer info out of the embedded NATS server and threading multiple
+seeds through the join response, real plumbing for a narrow timing-window
+risk. Revisit if this stops being an early-stage project.
+
 ---
 
-Items 2 through 6 are still open. This file exists so the punch list doesn't
-live only in a chat transcript.
+Items 2 through 8 are still open (7 partially — see above). This file
+exists so the punch list doesn't live only in a chat transcript.
