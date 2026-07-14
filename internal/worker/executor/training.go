@@ -106,7 +106,13 @@ func (e *TrainingExecutor) runScript(ctx context.Context, python, scriptPath, ou
 	// instead of being batched into one chunk when the process exits.
 	cmd := exec.CommandContext(ctx, python, "-u", scriptPath)
 	cmd.Dir = filepath.Dir(scriptPath)
-	cmd.Env = append(os.Environ(),
+	// PATH here isn't for finding `python` above (we already have its full
+	// path) — it's so the script itself can shell out to console-scripts
+	// pip installed into this venv's bin/, e.g. `subprocess.run(["gdown"])`.
+	// Those wrapper scripts have a shebang pointing back at this same
+	// python, so once found via PATH, they resolve their own package
+	// imports through this interpreter's venv-scoped site-packages.
+	cmd.Env = append(allowlistedEnv(python),
 		"OUTPUT_DIR="+outputDir,
 		"JOB_ID="+jobID,
 		"TRAINING_CONFIG="+configJSON,
@@ -129,6 +135,22 @@ func (e *TrainingExecutor) runScript(ctx context.Context, python, scriptPath, ou
 }
 
 func (e *TrainingExecutor) Close() error { return nil }
+
+// allowlistedEnv passes only PATH/HOME instead of the full os.Environ(),
+// so worker secrets don't leak to arbitrary training scripts. python's
+// bin/ is prepended to PATH — the one thing `source venv/bin/activate` does.
+func allowlistedEnv(python string) []string {
+	var env []string
+	path := filepath.Dir(python)
+	if sysPath := os.Getenv("PATH"); sysPath != "" {
+		path += string(os.PathListSeparator) + sysPath
+	}
+	env = append(env, "PATH="+path)
+	if home := os.Getenv("HOME"); home != "" {
+		env = append(env, "HOME="+home)
+	}
+	return env
+}
 
 // findSystemPython returns the path to python3 or python on PATH.
 func findSystemPython() (string, error) {

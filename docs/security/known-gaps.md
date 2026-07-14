@@ -62,24 +62,26 @@ worker host — no container, no VM, no restricted user. This is arbitrary
 code execution by design (that's the product), which makes the blast radius
 of the next point worse than it'd otherwise be.
 
-## 4. The training subprocess inherits the full worker process environment
+## 4. The training subprocess inherits the full worker process environment — FIXED
 
-`cmd.Env = append(os.Environ(), "OUTPUT_DIR=...", "JOB_ID=...",
+Was: `cmd.Env = append(os.Environ(), "OUTPUT_DIR=...", "JOB_ID=...",
 "TRAINING_CONFIG=...")` (`training.go:109`) — note the `os.Environ()` base.
 Whatever's in the environment of whoever started the worker process (cloud
 credentials, other apps' API keys, SSH agent socket, shell profile exports)
-is visible to arbitrary user-submitted training code. Combined with #3,
-this means: submit a job whose "training script" is actually
+was visible to arbitrary user-submitted training code. Combined with #3,
+this meant: submit a job whose "training script" is actually
 `import os; print(os.environ)`, and you've exfiltrated the operator's shell
 environment.
 
-**Fix:** build an explicit allowlist env for the subprocess instead of
-inheriting the parent's — this was already discussed as tied to the broader
-sandboxing decision (rootless Podman was the leaning candidate: GPU
-passthrough works via `nvidia-container-toolkit`, gVisor's GPU support is
-immature, Firecracker/microVMs don't do GPU passthrough at all, WASM has no
-CUDA path). Whatever sandboxing approach lands, "don't pass `os.Environ()`
-through" is a five-minute fix that doesn't need to wait for it.
+Fixed by replacing `os.Environ()` with `allowlistedEnv()`
+(`internal/worker/executor/training.go`) — only `PATH` and `HOME` are passed
+through, with `OUTPUT_DIR`/`JOB_ID`/`TRAINING_CONFIG` appended on top. This
+was already discussed as tied to the broader sandboxing decision (rootless
+Podman was the leaning candidate: GPU passthrough works via
+`nvidia-container-toolkit`, gVisor's GPU support is immature,
+Firecracker/microVMs don't do GPU passthrough at all, WASM has no CUDA
+path) — sandboxing itself (#3) is still open, this closes only the
+environment-leak half.
 
 ## 5. No request size limit on job submission
 
