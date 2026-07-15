@@ -18,10 +18,15 @@ import (
 // requestAndWaitForApproval submits a join request and polls until approved/rejected. Blocks.
 func requestAndWaitForApproval(cfg *config.Config, ident *nodeident.Identity, role string) (*joinmgr.JoinRequest, error) { //nolint:unparam
 	hostname, _ := os.Hostname()
+	nonce, err := nodeident.EnsurePollNonce(cfg.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("prepare poll nonce: %w", err)
+	}
 	reqBody, _ := json.Marshal(map[string]string{
 		"node_id":  ident.NodeID,
 		"role":     role,
 		"hostname": hostname,
+		"nonce":    nonce,
 	})
 
 	joinURL := cfg.JoinURL
@@ -51,7 +56,13 @@ func requestAndWaitForApproval(cfg *config.Config, ident *nodeident.Identity, ro
 	for {
 		time.Sleep(5 * time.Second)
 
-		r, err := http.Get(pollURL)
+		pollReq, err := http.NewRequest(http.MethodGet, pollURL, nil)
+		if err != nil {
+			log.Printf("building poll request: %v (retrying...)", err)
+			continue
+		}
+		pollReq.Header.Set("X-Node-Nonce", nonce)
+		r, err := http.DefaultClient.Do(pollReq)
 		if err != nil {
 			log.Printf("polling join status: %v (retrying...)", err)
 			continue

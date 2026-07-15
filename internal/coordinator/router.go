@@ -182,7 +182,7 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		joinapi.Status(w, nodeID, jm)
+		joinapi.Status(w, r, nodeID, jm)
 	})
 
 	// POST /admin/join/{nodeID}/approve|reject

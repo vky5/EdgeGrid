@@ -50,6 +50,22 @@ func RandomToken(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// EnsurePollNonce returns this node's join-poll nonce, generating and
+// persisting one on first call — proof to the coordinator of node identity, not just node ID knowledge.
+func EnsurePollNonce(dataDir string) (string, error) {
+	if n := LoadToken(dataDir, "node.nonce"); n != "" {
+		return n, nil
+	}
+	nonce, err := RandomToken(32)
+	if err != nil {
+		return "", fmt.Errorf("generate poll nonce: %w", err)
+	}
+	if err := SaveToken(dataDir, "node.nonce", nonce); err != nil {
+		return "", fmt.Errorf("save poll nonce: %w", err)
+	}
+	return nonce, nil
+}
+
 // LoadToken reads a saved token from dataDir/filename, or returns "".
 func LoadToken(dataDir, filename string) string {
 	data, err := os.ReadFile(filepath.Join(dataDir, filename))

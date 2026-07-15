@@ -14,45 +14,44 @@ and `data/node.id` alongside the existing `data/nats/` entry — `git status
 --porcelain data/` comes back empty. Left this entry in place (rather than
 deleting it) since `token-inventory.md` cross-references it by number.
 
-## 2. `GET /join/{nodeID}` leaks node credentials to anyone who knows the node ID
+## 2. `GET /join/{nodeID}` leaks node credentials to anyone who knows the node ID — FIXED
 
-This one's structural, not a simple oversight. `isOpenPath()`
-(`internal/coordinator/router.go:69`) deliberately leaves `GET /join/{nodeID}`
-unauthenticated — it has to be, since a newly-joining node has no credential
-yet and needs to poll its own approval status.
+Was: `isOpenPath()` (`internal/coordinator/router.go:69`) deliberately leaves
+`GET /join/{nodeID}` unauthenticated — it has to be, since a newly-joining
+node has no credential yet and needs to poll its own approval status. The
+problem was that once a node was **approved**, that same open endpoint
+returned its `token` and (for server nodes) `cluster_secret` and
+`cluster_routes` in plaintext, with no expiry, no one-time-use enforcement,
+and no proof-of-possession check — anyone who called `GET /join/{nodeID}`
+for an approved node got that node's live NATS credentials, indefinitely,
+as many times as they wanted, just by knowing (or otherwise obtaining) its
+`node_id` — which isn't treated as secret anywhere else (shows up in the
+`/claim/{nodeID}` browser URL, coordinator stdout logs, and the admin
+join-request UI).
 
-The problem: once a node is **approved**, that same open endpoint returns
-its `token` and (for server nodes) `cluster_secret` and `cluster_routes` in
-plaintext (`joinapi.Status`, `internal/coordinator/joinapi/joinapi.go:51` — only strips secrets when
-`Status != StatusApproved`). There's no expiry on this, no one-time-use
-enforcement, and no proof-of-possession check. Anyone who calls
-`GET /join/{nodeID}` for an approved node gets that node's live NATS
-credentials, indefinitely, as many times as they want.
+Fixed by adding a per-node **poll nonce** (`joinmgr.JoinRequest.PollNonce`):
+the joining node generates it locally (`nodeident.EnsurePollNonce`, same
+`crypto/rand` path as `node.id`, persisted to `data/node.nonce` before the
+first `POST /join`), sends it in the join request body, and must present it
+back as an `X-Node-Nonce` header on every `GET /join/{nodeID}` poll
+(`joinapi.Status`, constant-time compared via `crypto/subtle`). A missing or
+wrong nonce gets the same `404` as an unknown node ID — no oracle for
+"does this node exist." `joinmgr.Manager.Submit` was also made idempotent
+for any live (pending/approved) request, so a later caller who's merely
+learned the node ID can't resubmit `POST /join` to rotate the nonce out from
+under the node that originally claimed it; a rejected request stays
+resubmittable, since it's terminal.
 
-The mitigating factor: `node_id` is a random 128-bit value
-(`nodeident.LoadOrCreate`, `ident.go:32`), so it's not guessable by brute
-force. But it's not treated as secret anywhere else in the system — it
-appears in the `/claim/{nodeID}` URL a node operator visits in their browser
-(shareable, logged in browser history, visible in referrer headers), in
-coordinator stdout logs (`"approved join request: node=%s..."`), and
-presumably in whatever join-request listing UI exists for admins. Any of
-those are plausible leak vectors for something that then grants standing
-access to a node's NATS credential.
-
-This also matters more once the coordinator's HTTP port is reachable
-directly from the internet (as opposed to only through the Next.js
-gateway-token proxy) — which is exactly the direction the hosting decision
-is headed (raw TCP exposure for NATS implies the HTTP port is likely
-reachable too, depending on how it's fronted).
-
-**Fix ideas (not yet decided on one):**
-- Require the node to present a client-generated nonce (chosen at `POST
-  /join` time) back on the polling `GET`, and only serve credentials to
-  whoever has that nonce — turns "knows the node ID" into "possesses the
-  nonce," which never gets displayed in a browser URL.
-- Or: serve the credential exactly once (first successful poll after
-  approval), then require the gateway token for any subsequent read —
-  closes the door after the node has had its one chance to fetch it.
+This closes the case above outright — an already-approved node's
+credentials can no longer be fetched by someone who only learned its
+`node_id` after the fact. What's left is narrower: during the pending
+window, between a node's first `POST /join` and its approval, if *both*
+`node_id` and the nonce were somehow observed by a third party, that party
+could still win the race. Since the nonce only ever travels in a POST body
+and a GET header (never a URL, and there's no request-body/header logging
+middleware in the coordinator), this requires a leak channel that doesn't
+exist yet — not a reuse of the vectors above. Not worth solving further
+absent a concrete threat, same reasoning as gap #8.
 
 ## 3. Training script execution has no sandboxing
 
@@ -164,5 +163,5 @@ risk. Revisit if this stops being an early-stage project.
 
 ---
 
-Items 2 through 8 are still open (7 partially — see above). This file
+Items 3, 5, 6, and 8 are still open (7 partially — see above). This file
 exists so the punch list doesn't live only in a chat transcript.

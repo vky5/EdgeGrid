@@ -3,6 +3,7 @@
 package joinapi
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -22,9 +23,10 @@ func Submit(w http.ResponseWriter, r *http.Request, jm *joinmgr.Manager) {
 		NodeID   string `json:"node_id"`
 		Role     string `json:"role"`
 		Hostname string `json:"hostname"`
+		Nonce    string `json:"nonce"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NodeID == "" || body.Role == "" {
-		http.Error(w, "node_id and role are required", http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NodeID == "" || body.Role == "" || body.Nonce == "" {
+		http.Error(w, "node_id, role, and nonce are required", http.StatusBadRequest)
 		return
 	}
 
@@ -32,6 +34,7 @@ func Submit(w http.ResponseWriter, r *http.Request, jm *joinmgr.Manager) {
 		NodeID:      body.NodeID,
 		Role:        body.Role,
 		Hostname:    body.Hostname,
+		PollNonce:   body.Nonce,
 		Status:      joinmgr.StatusPending,
 		RequestedAt: time.Now(),
 		UpdatedAt:   time.Now(),
@@ -44,14 +47,19 @@ func Submit(w http.ResponseWriter, r *http.Request, jm *joinmgr.Manager) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// Return status of a node
-// TODO currently there is no check, any node can query the status of any other node.
-func Status(w http.ResponseWriter, nodeID string, jm *joinmgr.Manager) {
+// Return status of a node. 
+func Status(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.Manager) {
 	req, err := jm.Get(nodeID)
 	if err != nil {
 		http.NotFound(w, nil)
 		return
 	}
+	nonce := r.Header.Get("X-Node-Nonce")
+	if req.PollNonce == "" || subtle.ConstantTimeCompare([]byte(nonce), []byte(req.PollNonce)) != 1 {
+		http.NotFound(w, nil) // same response as an unknown node — no oracle for "does this ID exist"
+		return
+	}
+	req.PollNonce = ""
 	// Only include the token/secrets when approved so pending nodes can't fish for them.
 	if req.Status != joinmgr.StatusApproved {
 		req.Token = ""
