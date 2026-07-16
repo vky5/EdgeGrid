@@ -95,21 +95,47 @@ Fixed by wrapping `r.Body` in `http.MaxBytesReader(w, r.Body,
 maxSubmitBodyBytes)` (2 MiB) before decoding; a body over the cap now gets a
 `413` instead of being buffered in full.
 
-## 6. SSE log stream doesn't escape training script output
+## 6. SSE log stream doesn't escape training script output — FIXED
 
-`jobsapi.Logs` (`internal/coordinator/jobsapi/jobsapi.go:192-208`) writes `msg.Data` — raw stdout/stderr
-from the user's training script — directly into an SSE frame:
-`fmt.Fprintf(w, "data: %s\n\n", msg.Data)`. If a script prints a crafted
-sequence containing `\n\n` followed by `event: done\ndata: ...`, it can
-inject a fake SSE event into the stream (e.g. spoof a premature "done" event
-to the frontend, or otherwise mess with client-side event parsing).
+Log lines travel worker → NATS subject → coordinator → browser SSE, not a
+direct pipe: `logWriter.Write` (`internal/worker/executor/training.go`),
+wired as the training subprocess's stdout/stderr, splits whatever bytes the
+OS pipe hands it on `\n`, drops blank lines, and publishes each line as one
+JetStream message on `jobs.logs.<jobID>` (`internal/agent/build.go:70`,
+`broker.SubjectLogsPrefix`). The coordinator's `jobsapi.Logs`
+(`internal/coordinator/jobsapi/jobsapi.go:192-208`) subscribes to that
+subject and forwards each message straight into an SSE frame:
+`fmt.Fprintf(w, "data: %s\n\n", msg.Data)`.
 
-Low severity today since only the job's owner or an admin can view the
-stream (gated by `authorizeJob` in the Next.js route), so this is
-self-inflicted at worst right now. Worth a quick fix (escape/prefix each
-line so embedded `\n\n` can't create new SSE frames) if this stream is ever
-exposed more broadly — e.g. shared logs, public job pages, or multi-tenant
-viewing.
+Because `logWriter` already splits on `\n` before publishing, no single
+`msg.Data` can ever contain an embedded `\n` — so the originally-assumed
+vector ("script prints `\n\n` + a fake `event:` line") doesn't actually
+work. The real vector is **`\r`**, which `logWriter` does *not* split on.
+The SSE parsing spec treats `\r`, `\n`, and `\r\n` all as line terminators
+on the *client* side, so a script that writes a bare `\r` (e.g. any
+`tqdm`-style progress bar, or deliberately:
+`print("x\revent: done\ndata: fake", end="")`) gets published as one
+"line" containing an embedded `\r`, which the browser's `EventSource` then
+re-splits into multiple SSE lines — letting it inject a fake `event: done`
+with fabricated data. The mismatch is between what the coordinator
+sanitizes (nothing) and what the client-side parser treats as a line
+boundary (`\r` *and* `\n`), not the field separator (`\n\n`) as originally
+assumed.
+
+Low severity even before the fix, since only the job's owner or an admin
+can view the stream (gated by `authorizeJob` in the Next.js route) — this
+was self-inflicted at worst. Fixed by stripping `\r` out of each log line
+right before it's written into the SSE frame (`stripCR`,
+`internal/coordinator/jobsapi/jobsapi.go`), applied at both call sites that
+write a `data:` frame from `msg.Data`. Deliberately fixed at this layer
+(immediately before the SSE write) rather than at the source
+(`logWriter.Write` in `internal/worker/executor/training.go`, which only
+splits on `\n`) — leaves whatever gets published to the `jobs.logs.<jobID>`
+JetStream subject untouched for any other consumer, and avoids changing
+log volume/behavior for legitimate `\r`-based progress-bar output (each
+`\r` update no longer risks forging a fake SSE field, but multiple updates
+on one published line still collapse into one log entry instead of
+fragmenting into many).
 
 ## 7. `coordURL`/`clusterRoutes` are wrong for a coordinator with no embedded NATS
 
@@ -164,5 +190,5 @@ risk. Revisit if this stops being an early-stage project.
 
 ---
 
-Items 3, 6, and 8 are still open (7 partially — see above). This file
+Items 3 and 8 are still open (7 partially — see above). This file
 exists so the punch list doesn't live only in a chat transcript.

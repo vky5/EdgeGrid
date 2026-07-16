@@ -6,6 +6,7 @@
 package jobsapi
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -169,6 +170,12 @@ func Submit(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, man
 	})
 }
 
+// stripCR removes \r before a log line hits an SSE data field — EventSource
+// treats \r as a line terminator too, letting a raw \r forge extra SSE fields.
+func stripCR(data []byte) []byte {
+	return bytes.ReplaceAll(data, []byte("\r"), nil)
+}
+
 // Logs streams stdout/stderr from a running (or completed) job as
 // Server-Sent Events. Each log line arrives as "data: <line>\n\n".
 // When the job finishes, a final "event: done\ndata: <state>\n\n" is sent
@@ -221,7 +228,7 @@ func Logs(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, jobID
 			return
 
 		case msg := <-msgCh:
-			fmt.Fprintf(w, "data: %s\n\n", msg.Data)
+			fmt.Fprintf(w, "data: %s\n\n", stripCR(msg.Data))
 			flusher.Flush()
 
 		case <-ticker.C:
@@ -234,7 +241,7 @@ func Logs(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, jobID
 				for {
 					select {
 					case msg := <-msgCh:
-						fmt.Fprintf(w, "data: %s\n\n", msg.Data)
+						fmt.Fprintf(w, "data: %s\n\n", stripCR(msg.Data))
 						flusher.Flush()
 					default:
 						fmt.Fprintf(w, "event: done\ndata: %s\n\n", status.State)
