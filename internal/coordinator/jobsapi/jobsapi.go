@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,10 @@ import (
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
 )
+
+// maxSubmitBodyBytes bounds POST /jobs request bodies (training_script +
+// requirements are plain text, not model weights or datasets).
+const maxSubmitBodyBytes = 2 << 20 // 2 MiB
 
 type SubmitJobRequest struct {
 	TrainingScript     string  `json:"training_script"`      // Python script content (plain text)
@@ -85,8 +90,15 @@ func tryDispatch(jsBroker *broker.Broker, manager *workerman.WorkerManager, jobI
 
 // Submit handles POST /jobs.
 func Submit(w http.ResponseWriter, r *http.Request, jsBroker *broker.Broker, manager *workerman.WorkerManager) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxSubmitBodyBytes)
+
 	var body SubmitJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}

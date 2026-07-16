@@ -82,17 +82,18 @@ Firecracker/microVMs don't do GPU passthrough at all, WASM has no CUDA
 path) — sandboxing itself (#3) is still open, this closes only the
 environment-leak half.
 
-## 5. No request size limit on job submission
+## 5. No request size limit on job submission — FIXED
 
-`jobsapi.Submit` (`internal/coordinator/jobsapi/jobsapi.go:64`) decodes the request body with
+Was: `jobsapi.Submit` decoded the request body with
 `json.NewDecoder(r.Body).Decode(&body)` directly — no
 `http.MaxBytesReader` wrapping the body. `training_script` and
 `requirements` are arbitrary-length strings. A large enough payload (or many
-concurrent ones) can pressure coordinator memory since the whole body gets
+concurrent ones) could pressure coordinator memory since the whole body got
 buffered and then re-marshaled into a protobuf and written to JetStream.
 
-**Fix:** wrap `r.Body` in `http.MaxBytesReader(w, r.Body, someLimit)` before
-decoding.
+Fixed by wrapping `r.Body` in `http.MaxBytesReader(w, r.Body,
+maxSubmitBodyBytes)` (2 MiB) before decoding; a body over the cap now gets a
+`413` instead of being buffered in full.
 
 ## 6. SSE log stream doesn't escape training script output
 
@@ -163,5 +164,5 @@ risk. Revisit if this stops being an early-stage project.
 
 ---
 
-Items 3, 5, 6, and 8 are still open (7 partially — see above). This file
+Items 3, 6, and 8 are still open (7 partially — see above). This file
 exists so the punch list doesn't live only in a chat transcript.
