@@ -44,7 +44,7 @@ func NewAgent(ctx context.Context, cfg *config.Config) (*Agent, error) {
 		return nil, fmt.Errorf("node identity: %w", err)
 	}
 
-	natsCred, clusterSecret, clusterRoutes, err := resolveNATSCredential(cfg, ident)
+	natsCred, clusterSecret, clusterRoutes, err := resolveNATSCredential(ts, cfg, ident)
 	if err != nil {
 		return nil, err
 	}

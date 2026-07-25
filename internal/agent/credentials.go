@@ -8,13 +8,14 @@ import (
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
 	"github.com/edgegrid/edgegrid/internal/natsserver"
 	"github.com/edgegrid/edgegrid/internal/nodeident"
+	"tailscale.com/tsnet"
 )
 
 // resolveNATSCredential resolves this node's NATS username/password: primary
 // (self-generated), non-primary (--join, approved), or worker (--join,
 // approved) — exactly one applies. clusterSecret/Routes are coordinator-only;
 // a worker never joins as a route peer.
-func resolveNATSCredential(cfg *config.Config, ident *nodeident.Identity) (natsserver.NodeCred, string, []string, error) {
+func resolveNATSCredential(ts *tsnet.Server, cfg *config.Config, ident *nodeident.Identity) (natsserver.NodeCred, string, []string, error) {
 	// set by exactly one branch below.
 	var natsCred natsserver.NodeCred
 	var clusterSecret string
@@ -25,7 +26,7 @@ func resolveNATSCredential(cfg *config.Config, ident *nodeident.Identity) (natss
 	if cfg.EmbedNATS {
 		if cfg.JoinURL != "" {
 			// non-primary: join, wait for approval. (for secondary coorddinator or secondary coordiantor + worker)
-			joinResult, err := requestAndWaitForApproval(cfg, ident, joinmgr.RoleServer)
+			joinResult, err := requestAndWaitForApproval(ts, cfg, ident, joinmgr.RoleServer)
 			if err != nil {
 				return natsserver.NodeCred{}, "", nil, err
 			}
@@ -34,6 +35,9 @@ func resolveNATSCredential(cfg *config.Config, ident *nodeident.Identity) (natss
 			// save token as coord cred.
 			if err := nodeident.SaveToken(cfg.DataDir, "node.token", joinResult.Token); err != nil {
 				log.Printf("warning: could not save node token: %v", err)
+			}
+			if err := nodeident.SaveToken(cfg.DataDir, "cluster.secret", joinResult.ClusterSecret); err != nil {
+				log.Printf("warning: could not save cluster secret: %v", err)
 			}
 			natsCred = natsserver.NodeCred{Username: ident.NodeID, Password: joinResult.Token} // nodeID as username, received token as password
 		} else {
@@ -68,7 +72,7 @@ func resolveNATSCredential(cfg *config.Config, ident *nodeident.Identity) (natss
 		if cfg.JoinURL != "" {
 			token := nodeident.LoadToken(cfg.DataDir, "node.token")
 			if token == "" {
-				joinResult, err := requestAndWaitForApproval(cfg, ident, joinmgr.RoleWorker)
+				joinResult, err := requestAndWaitForApproval(ts, cfg, ident, joinmgr.RoleWorker)
 				if err != nil {
 					return natsserver.NodeCred{}, "", nil, err
 				}

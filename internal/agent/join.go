@@ -13,10 +13,12 @@ import (
 	"github.com/edgegrid/edgegrid/internal/config"
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
 	"github.com/edgegrid/edgegrid/internal/nodeident"
+	"tailscale.com/tsnet"
 )
 
 // requestAndWaitForApproval submits a join request and polls until approved/rejected. Blocks.
-func requestAndWaitForApproval(cfg *config.Config, ident *nodeident.Identity, role string) (*joinmgr.JoinRequest, error) { //nolint:unparam
+func requestAndWaitForApproval(ts *tsnet.Server, cfg *config.Config, ident *nodeident.Identity, role string) (*joinmgr.JoinRequest, error) { //nolint:unparam
+	client := ts.HTTPClient()
 	hostname, _ := os.Hostname()
 	nonce, err := nodeident.EnsurePollNonce(cfg.DataDir)
 	if err != nil {
@@ -34,7 +36,7 @@ func requestAndWaitForApproval(cfg *config.Config, ident *nodeident.Identity, ro
 	pollURL := fmt.Sprintf("%s/join/%s", joinURL, ident.NodeID)
 
 	// submit join request
-	resp, err := http.Post(submitURL, "application/json", bytes.NewReader(reqBody))
+	resp, err := client.Post(submitURL, "application/json", bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("join request to %s failed: %w", submitURL, err)
 	}
@@ -62,7 +64,7 @@ func requestAndWaitForApproval(cfg *config.Config, ident *nodeident.Identity, ro
 			continue
 		}
 		pollReq.Header.Set("X-Node-Nonce", nonce)
-		r, err := http.DefaultClient.Do(pollReq)
+		r, err := client.Do(pollReq)
 		if err != nil {
 			log.Printf("polling join status: %v (retrying...)", err)
 			continue
