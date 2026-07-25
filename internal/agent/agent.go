@@ -37,6 +37,9 @@ func NewAgent(ctx context.Context, cfg *config.Config) (*Agent, error) {
 	}
 	ip4, ip6 := ts.TailscaleIPs()
 	log.Printf("tsnet up: hostname=%s ip4=%s ip6=%s backend=%s", cfg.TailscaleHostname, ip4, ip6, status.BackendState)
+	if cfg.AdvertiseHost == "" && ip4.IsValid() {
+		cfg.AdvertiseHost = ip4.String()
+	}
 
 	// Load or generate persistent node identity.
 	ident, err := nodeident.LoadOrCreate(cfg.DataDir)
@@ -72,6 +75,7 @@ func NewAgent(ctx context.Context, cfg *config.Config) (*Agent, error) {
 		nats.RetryOnFailedConnect(true),
 		nats.MaxReconnects(-1),
 		nats.ReconnectWait(2 * nats.DefaultReconnectWait),
+		nats.SetCustomDialer(tsnetDialer{ts}),
 	}
 	if natsCred.Username != "" {
 		connectOpts = append(connectOpts, nats.UserInfo(natsCred.Username, natsCred.Password))
