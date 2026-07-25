@@ -20,8 +20,12 @@ type Config struct {
 	JoinURL       string   // coordinator HTTP URL to send a join request to (non-primary nodes)
 	DashboardURL  string   // dashboard URL shown to the user to claim their node (optional)
 	AdvertiseHost string   // externally-reachable host for this coordinator's embedded NATS (optional)
-	Server        ServerConfig
-	Client        ClientConfig
+
+	TailscaleAuthKey  string // tsnet auth key for joining the tailnet (optional; falls back to interactive login)
+	TailscaleHostname string // hostname this node presents on the tailnet (default: os.Hostname())
+
+	Server ServerConfig
+	Client ClientConfig
 }
 
 type ServerConfig struct {
@@ -70,6 +74,8 @@ func LoadConfig() *Config {
 	dashboardURL := flag.String("dashboard", "", "Dashboard URL shown to the user to claim their node, e.g. https://edgegrid.vercel.app")
 	dataDir := flag.String("data-dir", "", "Directory for node identity and credential files (default ./data)")
 	advertiseHost := flag.String("advertise-host", "", "Externally-reachable host for this coordinator's embedded NATS, e.g. blacktree.in (default: none — join responses fall back to localhost)")
+	tsAuthKey := flag.String("ts-authkey", "", "tsnet auth key for joining the tailnet (default: interactive login, or TS_AUTHKEY env)")
+	tsHostname := flag.String("ts-hostname", "", "hostname to present on the tailnet (default: os.Hostname())")
 
 	flag.Parse()
 
@@ -186,6 +192,19 @@ func LoadConfig() *Config {
 		finalAdvertiseHost = os.Getenv("ADVERTISE_HOST")
 	}
 
+	finalTailscaleAuthKey := *tsAuthKey
+	if finalTailscaleAuthKey == "" {
+		finalTailscaleAuthKey = os.Getenv("TS_AUTHKEY")
+	}
+
+	finalTailscaleHostname := *tsHostname
+	if finalTailscaleHostname == "" {
+		finalTailscaleHostname = os.Getenv("TS_HOSTNAME")
+	}
+	if finalTailscaleHostname == "" {
+		finalTailscaleHostname, _ = os.Hostname()
+	}
+
 	return &Config{
 		NatsURL:       finalNatsURL,
 		EmbedNATS:     embedNATS,
@@ -199,6 +218,10 @@ func LoadConfig() *Config {
 		JoinURL:       finalJoinURL,
 		DashboardURL:  finalDashboardURL,
 		AdvertiseHost: finalAdvertiseHost,
+
+		TailscaleAuthKey:  finalTailscaleAuthKey,
+		TailscaleHostname: finalTailscaleHostname,
+
 		Server: ServerConfig{
 			Enabled: runServer,
 			Port:    finalPort,

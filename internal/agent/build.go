@@ -12,10 +12,11 @@ import (
 	"github.com/edgegrid/edgegrid/internal/worker"
 	"github.com/edgegrid/edgegrid/internal/worker/executor"
 	"github.com/nats-io/nats.go"
+	"tailscale.com/tsnet"
 )
 
 // buildCoordinator constructs (not starts) the Coordinator if server role is enabled; else no-op.
-func buildCoordinator(cfg *config.Config, nc *nats.Conn, embeddedNATS *natsserver.EmbeddedServer) (*coordinator.Coordinator, error) {
+func buildCoordinator(cfg *config.Config, nc *nats.Conn, embeddedNATS *natsserver.EmbeddedServer, ts *tsnet.Server) (*coordinator.Coordinator, error) {
 	if !cfg.Server.Enabled {
 		return nil, nil
 	}
@@ -26,6 +27,7 @@ func buildCoordinator(cfg *config.Config, nc *nats.Conn, embeddedNATS *natsserve
 		return nil, fmt.Errorf("failed to initialize coordinator: %w", err)
 	}
 	coord.SetDataDir(cfg.DataDir)
+	coord.SetTsnetServer(ts)
 
 	// load/generate admin token (guards admin HTTP endpoints)
 	adminToken := nodeident.LoadToken(cfg.DataDir, "admin.token")

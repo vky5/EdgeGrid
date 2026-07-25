@@ -19,6 +19,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
 	"github.com/edgegrid/edgegrid/internal/natsserver"
 	"github.com/edgegrid/edgegrid/internal/usermgr"
+	"tailscale.com/tsnet"
 )
 
 // corsMiddleware adds CORS headers for preflight requests. In normal operation
@@ -95,7 +96,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager, jm *joinmgr.Manager, um *usermgr.Manager, ns *natsserver.EmbeddedServer, dataDir string, adminToken string) {
+func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager, jm *joinmgr.Manager, um *usermgr.Manager, ns *natsserver.EmbeddedServer, ts *tsnet.Server, dataDir string, adminToken string) {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", handleHealth)
@@ -271,8 +272,29 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 		joinapi.Claim(w, r, nodeID, jm, um)
 	})
 
+	handler := corsMiddleware(requireGateway(adminToken, mux))
+
+	// FIXME(router-reshape): same mux, two listeners — public one below for the
+	// Next.js backend (untouched), plus this tsnet one so joining
+	// nodes/coordinators can reach /join over the tailnet instead of needing a
+	// public/LAN address. Worth splitting into a join-only mux once this file
+	// gets reshaped, so tailnet peers aren't handed every admin route too.
+	if ts != nil {
+		go func() {
+			ln, err := ts.Listen("tcp", addr)
+			if err != nil {
+				log.Printf("tsnet listen on %s failed: %v", addr, err)
+				return
+			}
+			log.Printf("starting HTTP job API on tsnet %s", addr)
+			if err := http.Serve(ln, handler); err != nil && err != http.ErrServerClosed {
+				log.Printf("tsnet HTTP server failed: %v", err)
+			}
+		}()
+	}
+
 	log.Printf("starting HTTP job API on %s", addr)
-	if err := http.ListenAndServe(addr, corsMiddleware(requireGateway(adminToken, mux))); err != nil && err != http.ErrServerClosed {
+	if err := http.ListenAndServe(addr, handler); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("HTTP server failed: %v", err)
 	}
 }

@@ -22,7 +22,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	nodeAgent, err := agent.NewAgent(cfg)
+	nodeAgent, err := agent.NewAgent(ctx, cfg)
 	if err != nil {
 		log.Fatalf("failed to initialize EdgeGrid agent: %v", err)
 	}
