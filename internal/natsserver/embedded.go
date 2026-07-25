@@ -16,8 +16,8 @@ import (
 
 // ClusterConfig holds optional intra-cluster settings.
 type ClusterConfig struct {
-	Name   string // must match the cluster name of other nodes
-	Port   int // coordinator own port to connect to
+	Name   string   // must match the cluster name of other nodes
+	Port   int      // coordinator own port to connect to
 	Secret string   // shared password for cluster route connections
 	Routes []string // seed URLs, e.g. ["nats://blacktree.in:6222"]
 }
@@ -56,6 +56,7 @@ func Start(port int, storeDir string, coordCred NodeCred, cluster ClusterConfig,
 	}
 
 	log.Printf("embedded NATS server started on port %d (store: %s)", port, storeDir)
+	log.Printf("NATS cluster %q listening on port %d for inbound routes", opts.Cluster.Name, opts.Cluster.Port)
 	if len(cluster.Routes) > 0 {
 		log.Printf("NATS cluster %q joining routes: %v", cluster.Name, cluster.Routes)
 	}
@@ -153,16 +154,25 @@ func buildOpts(
 		opts.ClientAdvertise = advertiseHost // applies even without clustering
 	}
 
-	if len(cluster.Routes) > 0 {
-		clusterPort := cluster.Port // Server to server port
-		if clusterPort == 0 {
-			clusterPort = 6222
-		}
-		clusterName := cluster.Name
-		if clusterName == "" {
-			clusterName = "edgegrid"
-		}
+	clusterPort := cluster.Port
+	if clusterPort == 0 {
+		clusterPort = 6222
+	}
+	clusterName := cluster.Name
+	if clusterName == "" {
+		clusterName = "edgegrid"
+	}
+	opts.Cluster = server.ClusterOpts{
+		Name:     clusterName,
+		Port:     clusterPort,
+		Username: "cluster",
+		Password: cluster.Secret,
+	}
+	if advertiseHost != "" {
+		opts.Cluster.Advertise = advertiseHost // what other coordinators should connect to on exchange of INFO
+	}
 
+	if len(cluster.Routes) > 0 {
 		routes := make([]*url.URL, 0, len(cluster.Routes))
 		for _, r := range cluster.Routes {
 			u, err := url.Parse(r)
@@ -173,16 +183,6 @@ func buildOpts(
 			routes = append(routes, u)
 		}
 		opts.Routes = routes // initial seed routes for cluster discovery
-
-		opts.Cluster = server.ClusterOpts{
-			Name:     clusterName,
-			Port:     clusterPort,
-			Username: "cluster",
-			Password: cluster.Secret,
-		}
-		if advertiseHost != "" {
-			opts.Cluster.Advertise = advertiseHost // what other coordinators should connect to on exchange of INFO
-		}
 	}
 
 	return opts
