@@ -12,37 +12,33 @@ import (
 	"tailscale.com/tsnet"
 )
 
-// nats-server's own cluster route dialer has no way to route through tsnet's
-// in-process userspace network stack (confirmed: server.ClusterOpts exposes
-// no custom-dialer hook) — it only ever does plain OS-level TCP. These two
-// functions bridge that gap ourselves, entirely inside our own process, so
-// nats-server never needs to know tsnet exists.
+// nats-server only does plain OS-level TCP — tsnet peers can't reach it
+// directly. These functions bridge that gap in our own process.
 
-// bridgeInboundCluster accepts connections arriving on this node's tsnet
-// interface at clusterPort and relays them to the embedded NATS server's
-// real cluster listener on localhost. Lets another coordinator's outbound
-// route (via bridgeOutboundRoutes) actually reach this one over the tailnet.
-func bridgeInboundCluster(ts *tsnet.Server, clusterPort int) {
-	addr := fmt.Sprintf(":%d", clusterPort)
+// bridgeInboundPort relays tsnet-arriving connections at port to the
+// embedded NATS server's real localhost listener on that port. Used for
+// both the client port and the cluster route port.
+func bridgeInboundPort(ts *tsnet.Server, port int) {
+	addr := fmt.Sprintf(":%d", port)
 	ln, err := ts.Listen("tcp", addr)
 	if err != nil {
-		log.Printf("cluster bridge: tsnet listen on %s failed: %v", addr, err)
+		log.Printf("port bridge: tsnet listen on %s failed: %v", addr, err)
 		return
 	}
-	localAddr := fmt.Sprintf("127.0.0.1:%d", clusterPort)
-	log.Printf("cluster bridge: relaying tsnet%s -> %s", addr, localAddr)
+	localAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	log.Printf("port bridge: relaying tsnet%s -> %s", addr, localAddr)
 
 	go func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
-				log.Printf("cluster bridge: accept on tsnet%s failed: %v", addr, err)
+				log.Printf("port bridge: accept on tsnet%s failed: %v", addr, err)
 				return
 			}
 			go func() {
 				local, err := net.Dial("tcp", localAddr)
 				if err != nil {
-					log.Printf("cluster bridge: dial local NATS cluster port failed: %v", err)
+					log.Printf("port bridge: dial local NATS port failed: %v", err)
 					conn.Close()
 					return
 				}
