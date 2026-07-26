@@ -97,12 +97,19 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager, jm *joinmgr.Manager, um *usermgr.Manager, ns *natsserver.EmbeddedServer, ts *tsnet.Server, dataDir string, adminToken string) {
-	mux := http.NewServeMux()
+	backendMux := http.NewServeMux()
+	// tailnetMux carries only the bootstrap routes a joining node needs
+	// (health check + join submit/poll) and is what the tsnet listener
+	// serves — the tailnet is for nodes joining the cluster, not for
+	// reaching the dashboard/admin API, which only the Next.js backend
+	// should ever call.
+	tailnetMux := http.NewServeMux()
 
-	mux.HandleFunc("/health", handleHealth)
+	backendMux.HandleFunc("/health", handleHealth)
+	tailnetMux.HandleFunc("/health", handleHealth)
 
 	// GET /workers — list all registered workers and their current state
-	mux.HandleFunc("/workers", func(w http.ResponseWriter, r *http.Request) {
+	backendMux.HandleFunc("/workers", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -112,7 +119,7 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 
 	// GET /jobs  — list all jobs (strips request_proto from response, too large)
 	// POST /jobs — submit a training job
-	mux.HandleFunc("/jobs", func(w http.ResponseWriter, r *http.Request) {
+	backendMux.HandleFunc("/jobs", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			jobsapi.List(w, r, jsBroker)
@@ -126,7 +133,7 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 	// /jobs/{id}           → GET job status
 	// /jobs/{id}/upload    → POST dataset upload
 	// /jobs/{id}/artifact  → GET checkpoint download
-	mux.HandleFunc("/jobs/", func(w http.ResponseWriter, r *http.Request) {
+	backendMux.HandleFunc("/jobs/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/jobs/")
 		parts := strings.SplitN(path, "/", 2)
 
@@ -166,14 +173,18 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 
 	// POST /join          — submit a join request (no auth required)
 	// GET  /join/{nodeID} — poll join status (no auth required)
-	mux.HandleFunc("/join", func(w http.ResponseWriter, r *http.Request) {
+	// Registered on both muxes: reachable from the backend listener (a
+	// brand-new node with no tailnet membership yet) and from the tsnet
+	// listener (a node already on the tailnet reaching a coordinator whose
+	// backend listener it can't otherwise reach).
+	joinSubmit := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		joinapi.Submit(w, r, jm)
-	})
-	mux.HandleFunc("/join/", func(w http.ResponseWriter, r *http.Request) {
+	}
+	joinStatus := func(w http.ResponseWriter, r *http.Request) {
 		nodeID := strings.TrimPrefix(r.URL.Path, "/join/")
 		if nodeID == "" {
 			http.Error(w, "node_id required", http.StatusBadRequest)
@@ -184,12 +195,16 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 			return
 		}
 		joinapi.Status(w, r, nodeID, jm)
-	})
+	}
+	backendMux.HandleFunc("/join", joinSubmit)
+	backendMux.HandleFunc("/join/", joinStatus)
+	tailnetMux.HandleFunc("/join", joinSubmit)
+	tailnetMux.HandleFunc("/join/", joinStatus)
 
 	// POST /admin/join/{nodeID}/approve|reject
 	// Admin-ness is enforced by the Next.js backend (GitHub session + isAdmin);
 	// the backend token gate on all routes keeps this unreachable otherwise.
-	mux.HandleFunc("/admin/join/", func(w http.ResponseWriter, r *http.Request) {
+	backendMux.HandleFunc("/admin/join/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -213,14 +228,14 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 
 	// GET  /admin/users               — list everyone with dashboard access
 	// POST /admin/users/{username}/approve — grant dashboard access directly, no node required
-	mux.HandleFunc("/admin/users", func(w http.ResponseWriter, r *http.Request) {
+	backendMux.HandleFunc("/admin/users", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		usersapi.List(w, r, um)
 	})
-	mux.HandleFunc("/admin/users/", func(w http.ResponseWriter, r *http.Request) {
+	backendMux.HandleFunc("/admin/users/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -235,7 +250,7 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 	})
 
 	// GET /users/{username}/status — does this GitHub user have dashboard access?
-	mux.HandleFunc("/users/", func(w http.ResponseWriter, r *http.Request) {
+	backendMux.HandleFunc("/users/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -250,7 +265,7 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 	})
 
 	// GET /admin/join — list all join requests
-	mux.HandleFunc("/admin/join", func(w http.ResponseWriter, r *http.Request) {
+	backendMux.HandleFunc("/admin/join", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -259,7 +274,7 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 	})
 
 	// POST /join/{nodeID}/claim — link a GitHub username to a pending join request
-	mux.HandleFunc("/join/claim/", func(w http.ResponseWriter, r *http.Request) {
+	backendMux.HandleFunc("/join/claim/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -272,13 +287,14 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 		joinapi.Claim(w, r, nodeID, jm, um)
 	})
 
-	handler := corsMiddleware(requireGateway(adminToken, mux))
+	backendHandler := corsMiddleware(requireGateway(adminToken, backendMux))
+	tailnetHandler := corsMiddleware(requireGateway(adminToken, tailnetMux))
 
-	// FIXME(router-reshape): same mux, two listeners — public one below for the
-	// Next.js backend (untouched), plus this tsnet one so joining
-	// nodes/coordinators can reach /join over the tailnet instead of needing a
-	// public/LAN address. Worth splitting into a join-only mux once this file
-	// gets reshaped, so tailnet peers aren't handed every admin route too.
+	// Two listeners, two different route tables: the one below carries the
+	// full API, for the Next.js backend only; this tsnet one only ever
+	// needs to let a joining node reach /join over the tailnet when this
+	// coordinator has no address the backend's listener is reachable at —
+	// so it only gets tailnetMux, not the dashboard/admin routes.
 	if ts != nil {
 		go func() {
 			ln, err := ts.Listen("tcp", addr)
@@ -286,15 +302,15 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 				log.Printf("tsnet listen on %s failed: %v", addr, err)
 				return
 			}
-			log.Printf("starting HTTP job API on tsnet %s", addr)
-			if err := http.Serve(ln, handler); err != nil && err != http.ErrServerClosed {
+			log.Printf("starting join API on tsnet %s", addr)
+			if err := http.Serve(ln, tailnetHandler); err != nil && err != http.ErrServerClosed {
 				log.Printf("tsnet HTTP server failed: %v", err)
 			}
 		}()
 	}
 
 	log.Printf("starting HTTP job API on %s", addr)
-	if err := http.ListenAndServe(addr, handler); err != nil && err != http.ErrServerClosed {
+	if err := http.ListenAndServe(addr, backendHandler); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("HTTP server failed: %v", err)
 	}
 }
