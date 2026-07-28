@@ -8,6 +8,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
 	"github.com/edgegrid/edgegrid/internal/natsserver"
 	"github.com/edgegrid/edgegrid/internal/nodeident"
+	"github.com/edgegrid/edgegrid/internal/nodelog"
 	"tailscale.com/tsnet"
 )
 
@@ -104,7 +105,9 @@ func startEmbeddedNATS(cfg *config.Config, natsCred natsserver.NodeCred, cluster
 			Secret: clusterSecret, // shared across all peers
 			Routes: clusterRoutes, // seed peer(s) for cluster routing
 		},
-		cfg.AdvertiseHost)
+		cfg.AdvertiseHost,
+		cfg.TailscaleHostname, // must be unique across the cluster; JetStream requires it once Cluster is set
+		nodelog.Path(cfg.DataDir))
 	if err != nil {
 		return nil, fmt.Errorf("failed to start embedded NATS: %w", err)
 	}

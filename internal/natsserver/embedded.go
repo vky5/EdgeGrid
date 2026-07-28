@@ -7,12 +7,18 @@ package natsserver
 import (
 	"fmt"
 	"log"
+	"net"
 	"net/url"
 	"sync"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
 )
+
+// ClusterUsername is the fixed username every cluster route connection
+// authenticates as — shared with agent.go's self-route default so both
+// agree on it rather than each hardcoding the same literal.
+const ClusterUsername = "cluster"
 
 // ClusterConfig holds optional intra-cluster settings.
 type ClusterConfig struct {
@@ -39,9 +45,20 @@ type EmbeddedServer struct {
 // coordCred is the coordinator's own NATS credential (always allowed).
 // cluster is optional; if Routes is non-empty the server joins a cluster.
 // advertiseHost, if set, is what this server tells clients/peers to use
-// instead of its own bind address — see AdvertiseHost.
-func Start(port int, storeDir string, coordCred NodeCred, cluster ClusterConfig, advertiseHost string) (*EmbeddedServer, error) {
-	opts := buildOpts(port, storeDir, coordCred, cluster, advertiseHost, nil)
+// instead of its own bind address — see AdvertiseHost. serverName must be
+// unique across the cluster — JetStream requires it once clustering is
+// configured at all (opts.Cluster is always set now that the cluster
+// listener always binds, even for a lone node with no routes yet). logFile,
+// if set, is where nats-server's own internal logger writes — it has its
+// own logging system entirely separate from Go's log package, so without
+// this it writes straight to stdout regardless of nodelog.Setup, which
+// both loses it from `edgegrid logs`/`/logs` and corrupts a bubbletea
+// alt-screen TUI's rendering (two things fighting to control the terminal).
+func Start(port int, storeDir string, coordCred NodeCred, cluster ClusterConfig, advertiseHost, serverName, logFile string) (*EmbeddedServer, error) {
+	opts := buildOpts(port, storeDir, coordCred, cluster, advertiseHost, serverName, nil)
+	if logFile != "" {
+		opts.LogFile = logFile
+	}
 
 	ns, err := server.NewServer(opts)
 	if err != nil {
@@ -56,9 +73,11 @@ func Start(port int, storeDir string, coordCred NodeCred, cluster ClusterConfig,
 	}
 
 	log.Printf("embedded NATS server started on port %d (store: %s)", port, storeDir)
-	log.Printf("NATS cluster %q listening on port %d for inbound routes", opts.Cluster.Name, opts.Cluster.Port)
 	if len(cluster.Routes) > 0 {
+		log.Printf("NATS cluster %q listening on port %d for inbound routes", opts.Cluster.Name, opts.Cluster.Port)
 		log.Printf("NATS cluster %q joining routes: %v", cluster.Name, cluster.Routes)
+	} else {
+		log.Printf("running standalone (no cluster routes) — JetStream runs in single-node mode")
 	}
 
 	return &EmbeddedServer{ns: ns, baseOpts: opts, advertiseHost: advertiseHost}, nil
@@ -124,9 +143,25 @@ func (e *EmbeddedServer) Shutdown() {
 	}
 }
 
-// ClientURL returns the URL workers and the coordinator itself use to connect.
+// ClientURL returns the address this same process uses to connect back to
+// its own just-started embedded server (workers instead get theirs from a
+// join/approve response's coordURL, built from AdvertiseHost — see
+// joinapi.go). nats-server's own ClientURL() reflects the bind address,
+// which defaults to the 0.0.0.0 wildcard — never a valid target to
+// connect *to*, and specifically fragile here since every dial in this
+// codebase is routed through tsnet's userspace network stack, which has
+// to fall through to a plain OS dial for a non-tailscale address like
+// that. Loopback is always correct for a same-process self-connection.
 func (e *EmbeddedServer) ClientURL() string {
-	return e.ns.ClientURL()
+	u := e.ns.ClientURL()
+	if parsed, err := url.Parse(u); err == nil {
+		host, port, splitErr := net.SplitHostPort(parsed.Host)
+		if splitErr == nil && (host == "0.0.0.0" || host == "") {
+			parsed.Host = net.JoinHostPort("127.0.0.1", port)
+			return parsed.String()
+		}
+	}
+	return u
 }
 
 func buildOpts(
@@ -134,7 +169,7 @@ func buildOpts(
 	storeDir string,
 	coordCred NodeCred,
 	cluster ClusterConfig,
-	advertiseHost string,
+	advertiseHost, serverName string,
 	extraUsers []*server.User,
 ) *server.Options {
 	users := credsToUsers(coordCred, nil)
@@ -143,36 +178,44 @@ func buildOpts(
 	}
 
 	opts := &server.Options{
-		Port:      port,
-		JetStream: true,
-		StoreDir:  storeDir,
-		HTTPPort:  -1,
-		NoSigs:    true,
-		Users:     users,
+		Port:       port,
+		ServerName: serverName,
+		JetStream:  true,
+		StoreDir:   storeDir,
+		HTTPPort:   -1,
+		NoSigs:     true,
+		Users:      users,
 	}
 	if advertiseHost != "" { // when set, tells workers (connect to this address)
 		opts.ClientAdvertise = advertiseHost // applies even without clustering
 	}
 
-	clusterPort := cluster.Port
-	if clusterPort == 0 {
-		clusterPort = 6222
-	}
-	clusterName := cluster.Name
-	if clusterName == "" {
-		clusterName = "edgegrid"
-	}
-	opts.Cluster = server.ClusterOpts{
-		Name:     clusterName,
-		Port:     clusterPort,
-		Username: "cluster",
-		Password: cluster.Secret,
-	}
-	if advertiseHost != "" {
-		opts.Cluster.Advertise = advertiseHost // what other coordinators should connect to on exchange of INFO
-	}
-
+	// Cluster.Port==0 is what nats-server's standAloneMode() checks — only
+	// set it when there's an actual peer to route to. JetStream refuses to
+	// do anything useful (including R1 stream/KV creation) once clustered
+	// with zero real peers: a route pointing at yourself satisfies the
+	// static "configuredRoutes() > 0" check but nats-server always closes
+	// a self-route as a duplicate at runtime, so routing (and JetStream)
+	// never stabilizes. A lone coordinator must stay standalone.
 	if len(cluster.Routes) > 0 {
+		clusterPort := cluster.Port
+		if clusterPort == 0 {
+			clusterPort = 6222
+		}
+		clusterName := cluster.Name
+		if clusterName == "" {
+			clusterName = "edgegrid"
+		}
+		opts.Cluster = server.ClusterOpts{
+			Name:     clusterName,
+			Port:     clusterPort,
+			Username: ClusterUsername,
+			Password: cluster.Secret,
+		}
+		if advertiseHost != "" {
+			opts.Cluster.Advertise = advertiseHost // what other coordinators should connect to on exchange of INFO
+		}
+
 		routes := make([]*url.URL, 0, len(cluster.Routes))
 		for _, r := range cluster.Routes {
 			u, err := url.Parse(r)

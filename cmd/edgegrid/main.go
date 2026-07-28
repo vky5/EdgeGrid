@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/config"
 	"github.com/edgegrid/edgegrid/internal/nodeident"
 	"github.com/edgegrid/edgegrid/internal/nodelog"
+	"github.com/edgegrid/edgegrid/internal/profile"
 	"github.com/edgegrid/edgegrid/internal/tui/app"
 	tuiclient "github.com/edgegrid/edgegrid/internal/tui/client"
 )
@@ -26,31 +28,37 @@ func main() {
 		log.Println("no .env file found; using environment variables")
 	}
 
-	// Subcommands don't touch the existing headless node-runtime path below.
-	if len(os.Args) > 1 {
+	// Determine if running headless agent based on role flags.
+	runHeadless := false
+	for _, arg := range os.Args {
+		if arg == "--server" || arg == "--client" || arg == "-server" || arg == "-client" {
+			runHeadless = true
+			break
+		}
+	}
+
+	if len(os.Args) > 1 && !runHeadless {
 		subcommand := os.Args[1]
 		switch subcommand {
 		case "dashboard", "onboard":
-			// Strip the subcommand word from the *global* os.Args, not
-			// just the local slice handed to runTUI — config.LoadConfig()
-			// gets called later (inside the wizard) and does its own
-			// flag.Parse() against the global os.Args. The flag package
-			// stops parsing at the first non-flag argument, and "onboard"/
-			// "dashboard" (not starting with "-") is exactly that sitting
-			// right before any real flags — so without this, nothing
-			// config.LoadConfig() reads via flags (--server, --client,
-			// --replicas, etc.) ever actually gets parsed when running
-			// through here.
-			// Real copy: the append below reuses os.Args's backing array,
-			// which would otherwise clobber args's own contents in place.
 			args := append([]string(nil), os.Args[2:]...)
 			os.Args = append(os.Args[:1], args...)
-			runTUI(args, subcommand == "onboard")
+			runTUI(args, subcommand)
 			return
 		case "logs":
 			runLogs(os.Args[2:])
 			return
+		case "profile":
+			runProfile(os.Args[2:])
+			return
 		}
+	}
+
+	if !runHeadless {
+		// Default to Welcome Screen when no subcommand or role flags are provided.
+		args := append([]string(nil), os.Args[1:]...)
+		runTUI(args, "welcome")
+		return
 	}
 
 	cfg := config.LoadConfig()
@@ -58,7 +66,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	nodeAgent, closeLog, err := agent.NewAgentWithLogging(ctx, cfg, nil)
+	nodeAgent, closeLog, err := agent.NewAgentWithLogging(ctx, cfg, nil, false)
 	if err != nil {
 		log.Fatalf("failed to initialize EdgeGrid agent: %v", err)
 	}
@@ -92,25 +100,13 @@ func runForeground(ctx context.Context, nodeAgent *agent.Agent) {
 // same place. Whichever role the wizard completes with, it already fully
 // built the real Agent in the background (see onboarding.startNode) —
 // this just takes over running it in the foreground once the TUI exits.
-func runTUI(args []string, startInOnboarding bool) {
-	// Deliberately not a flag.FlagSet: onboarding's eventual
-	// config.LoadConfig() call (inside the wizard, once primary-coordinator
-	// is confirmed) accepts many more flags than just these two, and a
-	// narrow FlagSet here would abort on any of those before ever reaching
-	// it — same reasoning as runLogs not needing this, but runTUI does
-	// since it's shared with the onboard path.
+func runTUI(args []string, startMode string) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	coord := argValue(args, "--coord")
 	dir := config.ResolveDataDir(argValue(args, "--data-dir"))
 
-	// The admin token belongs to whichever coordinator we're connecting to
-	// — it's issued by that server, not something a client can supply on
-	// its own. The local admin.token file is only ever the RIGHT token for
-	// one specific case: no --coord was given either, meaning we're
-	// defaulting to the coordinator running right here on this same
-	// machine/data-dir, which is the one that generated it. If --coord was
-	// given explicitly (a real remote address), the local file has nothing
-	// to do with that server and must never be substituted in — an
-	// explicit --admin-token (or /connect, later) is required instead.
 	localAdminToken := nodeident.LoadToken(dir, "admin.token")
 	adminToken := argValue(args, "--admin-token")
 	if coord == "" && adminToken == "" && localAdminToken != "" {
@@ -118,12 +114,37 @@ func runTUI(args []string, startInOnboarding bool) {
 		adminToken = localAdminToken
 	}
 
-	// A worker's data dir has a node token but never an admin token (only
-	// buildCoordinator ever generates one) — distinguishes "this machine
-	// simply isn't a coordinator" from "hasn't connected to one yet."
 	isWorker := localAdminToken == "" && nodeident.LoadToken(dir, "node.token") != ""
-
 	connected := coord != "" && adminToken != ""
+	noAgent := hasFlag(args, "--no-agent")
+
+	// If the node is already onboarded and we aren't starting in the welcome screen,
+	// start the local agent in the background so the dashboard client can connect to it.
+	if (connected || isWorker) && startMode != "welcome" && !noAgent {
+		cfg := config.LoadConfig()
+		cfg.DataDir = dir
+		if localAdminToken != "" {
+			cfg.Server.Enabled = true
+			if nodeident.LoadToken(dir, "node.token") != "" {
+				cfg.Client.Enabled = true
+			} else {
+				cfg.Client.Enabled = false
+			}
+		} else if isWorker {
+			cfg.Server.Enabled = false
+			cfg.Client.Enabled = true
+		}
+
+		nodeAgent, closeLog, err := agent.NewAgentWithLogging(ctx, cfg, nil, true)
+		if err == nil {
+			go func() {
+				_ = nodeAgent.Start(ctx)
+				nodeAgent.Close()
+				closeLog()
+			}()
+		}
+	}
+
 	var c tuiclient.Client
 	if connected {
 		c = tuiclient.NewHTTP(coord, adminToken)
@@ -131,12 +152,12 @@ func runTUI(args []string, startInOnboarding bool) {
 		c = tuiclient.New()
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	a := app.New(ctx, dir, c, coord, connected, isWorker)
-	if startInOnboarding {
+	switch startMode {
+	case "onboard":
 		a = a.StartInOnboarding()
+	case "welcome":
+		a = a.StartInWelcome()
 	}
 
 	final, err := tea.NewProgram(a, tea.WithAltScreen()).Run()
@@ -149,6 +170,12 @@ func runTUI(args []string, startInOnboarding bool) {
 	if !ok {
 		return
 	}
+
+	if newProfile, onboard, noAgentRestart, restart := finalApp.WantsRestart(); restart {
+		execRestart(newProfile, onboard, noAgentRestart, args)
+		return // only reached if the exec itself failed
+	}
+
 	_, confirmed, nodeAgent, _, startErr := finalApp.WizardResult()
 	if !confirmed {
 		return
@@ -160,6 +187,126 @@ func runTUI(args []string, startInOnboarding bool) {
 
 	fmt.Println("node started — ctrl+c to stop")
 	runForeground(ctx, nodeAgent)
+}
+
+// execRestart replaces the current process with a fresh `edgegrid dashboard`
+// for the newly active profile. Data dir is baked in at startup (NATS,
+// tsnet, and the HTTP listeners are already running against the old one),
+// so an in-place switch isn't possible — only a real restart is. args is
+// stripped of any --data-dir so the new process re-resolves via the profile
+// just set instead of the explicit flag winning again and silently undoing
+// the switch (see config.ResolveDataDir's precedence).
+func execRestart(profileName string, onboard bool, noAgent bool, args []string) {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "restart for profile %q failed: %v\n", profileName, err)
+		return
+	}
+
+	sub := "dashboard"
+	if onboard {
+		sub = "onboard"
+	} else {
+		root, err := profile.Root()
+		if err == nil {
+			dir := filepath.Join(root, profileName)
+			if profileName == "" {
+				dir = "./data"
+			}
+			_, err1 := os.Stat(filepath.Join(dir, "admin.token"))
+			_, err2 := os.Stat(filepath.Join(dir, "node.token"))
+			if err1 != nil && err2 != nil {
+				sub = "onboard"
+			}
+		}
+	}
+
+	cleanArgs := stripFlag(args, "--data-dir")
+	cleanArgs = stripFlag(cleanArgs, "--no-agent")
+	if noAgent {
+		cleanArgs = append(cleanArgs, "--no-agent")
+	}
+
+	newArgv := append([]string{exe, sub}, cleanArgs...)
+
+	var newEnv []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "DATA_DIR=") {
+			newEnv = append(newEnv, kv)
+		}
+	}
+
+	if err := syscall.Exec(exe, newArgv, newEnv); err != nil {
+		fmt.Fprintf(os.Stderr, "restart for profile %q failed: %v\n", profileName, err)
+	}
+}
+
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
+// stripFlag removes a "--flag value" or "--flag=value" pair from args.
+func stripFlag(args []string, flag string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == flag {
+			i++ // also skip the value
+			continue
+		}
+		if strings.HasPrefix(args[i], flag+"=") {
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
+}
+
+// runProfile implements `edgegrid profile list|use <name>|current`.
+func runProfile(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: edgegrid profile <list|use|current> [name]")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "list":
+		names, err := profile.List()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "listing profiles: %v\n", err)
+			os.Exit(1)
+		}
+		active := profile.Active()
+		for _, n := range names {
+			marker := "  "
+			if n == active {
+				marker = "* "
+			}
+			fmt.Println(marker + n)
+		}
+	case "current":
+		if a := profile.Active(); a != "" {
+			fmt.Println(a)
+		} else {
+			fmt.Println("(none — using ./data)")
+		}
+	case "use":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: edgegrid profile use <name>")
+			os.Exit(1)
+		}
+		if err := profile.Use(args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "switching profile: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("active profile set to %q\n", args[1])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown profile subcommand %q\n", args[0])
+		os.Exit(1)
+	}
 }
 
 // runLogs is the plain-CLI equivalent of the TUI's /logs command — both
