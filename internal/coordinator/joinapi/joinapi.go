@@ -1,4 +1,4 @@
-// Package joinapi: HTTP handlers for join/approval — submit, poll, approve/reject, claim.
+// Package joinapi: HTTP handlers for join/approval — submit, poll, approve/reject.
 // See docs/access-control.md and docs/grid-access.md for the full flow.
 package joinapi
 
@@ -14,7 +14,6 @@ import (
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
 	"github.com/edgegrid/edgegrid/internal/natsserver"
 	"github.com/edgegrid/edgegrid/internal/nodeident"
-	"github.com/edgegrid/edgegrid/internal/usermgr"
 )
 
 // Submit accepts a join request from a worker or server node (POST /join).
@@ -47,7 +46,7 @@ func Submit(w http.ResponseWriter, r *http.Request, jm *joinmgr.Manager) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// Return status of a node. 
+// Return status of a node.
 func Status(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.Manager) {
 	req, err := jm.Get(nodeID)
 	if err != nil {
@@ -76,7 +75,6 @@ func Approve(
 	w http.ResponseWriter,
 	r *http.Request, nodeID string,
 	jm *joinmgr.Manager,
-	um *usermgr.Manager,
 	ns *natsserver.EmbeddedServer,
 	jsBroker *broker.Broker,
 	dataDir string,
@@ -136,37 +134,7 @@ func Approve(
 		return
 	}
 
-	// already claimed? auto-grant dashboard access (docs/grid-access.md).
-	if req.GitHubUsername != "" {
-		if grantErr := um.Approve(req.GitHubUsername, "node:"+nodeID); grantErr != nil {
-			log.Printf("warning: failed to auto-grant dashboard access for %s: %v", req.GitHubUsername, grantErr)
-		}
-	}
-
 	log.Printf("approved join request: node=%s role=%s", nodeID, req.Role)
-	w.WriteHeader(http.StatusOK)
-}
-
-// Claim links a GitHub username to a join request (POST /join/claim/{nodeID}).
-func Claim(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.Manager, um *usermgr.Manager) {
-	var body struct {
-		GitHubUsername string `json:"github_username"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.GitHubUsername == "" {
-		http.Error(w, "github_username is required", http.StatusBadRequest)
-		return
-	}
-	if err := jm.Claim(nodeID, body.GitHubUsername); err != nil {
-		http.Error(w, "node not found", http.StatusNotFound)
-		return
-	}
-	// out-of-order case: already approved before claim — grant now, no re-approval will come.
-	if req, err := jm.Get(nodeID); err == nil && req.Status == joinmgr.StatusApproved {
-		if grantErr := um.Approve(body.GitHubUsername, "node:"+nodeID); grantErr != nil {
-			log.Printf("warning: failed to auto-grant dashboard access for %s: %v", body.GitHubUsername, grantErr)
-		}
-	}
-	log.Printf("node %s claimed by github user %s", nodeID, body.GitHubUsername)
 	w.WriteHeader(http.StatusOK)
 }
 

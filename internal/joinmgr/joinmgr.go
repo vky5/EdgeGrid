@@ -24,13 +24,12 @@ const (
 
 // JoinRequest is stored in KV keyed by node ID.
 type JoinRequest struct {
-	NodeID         string    `json:"node_id"`
-	Role           string    `json:"role"`
-	Hostname       string    `json:"hostname"`
-	GitHubUsername string    `json:"github_username,omitempty"` // set when the user claims this node
-	RequestedAt    time.Time `json:"requested_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	Status         string    `json:"status"`
+	NodeID      string    `json:"node_id"`
+	Role        string    `json:"role"`
+	Hostname    string    `json:"hostname"`
+	RequestedAt time.Time `json:"requested_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Status      string    `json:"status"`
 
 	// Set on approval only — not visible in the pending list.
 	Token         string   `json:"token,omitempty"`          // unique NATS credential for this node
@@ -112,7 +111,7 @@ func (m *Manager) List() ([]*JoinRequest, error) {
 // Approve marks the request approved and attaches the credentials the node
 // needs to connect. token is the node's unique NATS password.
 // clusterSecret and clusterRoutes are only relevant for server-role requests.
-func (m *Manager) Approve(nodeID, token, clusterSecret, coordURL string, clusterRoutes []string,) error {
+func (m *Manager) Approve(nodeID, token, clusterSecret, coordURL string, clusterRoutes []string) error {
 	req, err := m.Get(nodeID)
 	if err != nil {
 		return err
@@ -123,22 +122,6 @@ func (m *Manager) Approve(nodeID, token, clusterSecret, coordURL string, cluster
 	req.ClusterSecret = clusterSecret
 	req.ClusterRoutes = clusterRoutes
 	req.CoordURL = coordURL
-	data, err := json.Marshal(req)
-	if err != nil {
-		return err
-	}
-	_, err = m.kv.Put(nodeID, data)
-	return err
-}
-
-// Claim links a GitHub username to an existing join request.
-func (m *Manager) Claim(nodeID, githubUsername string) error {
-	req, err := m.Get(nodeID)
-	if err != nil {
-		return err
-	}
-	req.GitHubUsername = githubUsername
-	req.UpdatedAt = time.Now()
 	data, err := json.Marshal(req)
 	if err != nil {
 		return err
