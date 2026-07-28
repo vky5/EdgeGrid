@@ -13,12 +13,10 @@ import (
 	"github.com/edgegrid/edgegrid/internal/broker"
 	"github.com/edgegrid/edgegrid/internal/coordinator/jobsapi"
 	"github.com/edgegrid/edgegrid/internal/coordinator/joinapi"
-	"github.com/edgegrid/edgegrid/internal/coordinator/usersapi"
 	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 	"github.com/edgegrid/edgegrid/internal/coordinator/workersapi"
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
 	"github.com/edgegrid/edgegrid/internal/natsserver"
-	"github.com/edgegrid/edgegrid/internal/usermgr"
 	"tailscale.com/tsnet"
 )
 
@@ -80,8 +78,7 @@ func isOpenPath(r *http.Request) bool {
 		return true
 	}
 	// GET /join/{nodeID} — a pending node polls for its approval status.
-	// Excludes POST /join/claim/{nodeID}, which is called by the trusted backend.
-	if r.Method == http.MethodGet && strings.HasPrefix(p, "/join/") && !strings.HasPrefix(p, "/join/claim/") {
+	if r.Method == http.MethodGet && strings.HasPrefix(p, "/join/") {
 		return true
 	}
 	return false
@@ -96,7 +93,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager, jm *joinmgr.Manager, um *usermgr.Manager, ns *natsserver.EmbeddedServer, ts *tsnet.Server, dataDir string, adminToken string) {
+func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager, jm *joinmgr.Manager, ns *natsserver.EmbeddedServer, ts *tsnet.Server, dataDir string, adminToken string) {
 	backendMux := http.NewServeMux()
 	// tailnetMux carries only the bootstrap routes a joining node needs
 	// (health check + join submit/poll) and is what the tsnet listener
@@ -218,50 +215,12 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 		nodeID, action := parts[0], parts[1]
 		switch action {
 		case "approve":
-			joinapi.Approve(w, r, nodeID, jm, um, ns, jsBroker, dataDir)
+			joinapi.Approve(w, r, nodeID, jm, ns, jsBroker, dataDir)
 		case "reject":
 			joinapi.Reject(w, nodeID, jm)
 		default:
 			http.NotFound(w, r)
 		}
-	})
-
-	// GET  /admin/users               — list everyone with dashboard access
-	// POST /admin/users/{username}/approve — grant dashboard access directly, no node required
-	backendMux.HandleFunc("/admin/users", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		usersapi.List(w, r, um)
-	})
-	backendMux.HandleFunc("/admin/users/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		path := strings.TrimPrefix(r.URL.Path, "/admin/users/")
-		parts := strings.SplitN(path, "/", 2)
-		if len(parts) != 2 || parts[1] != "approve" {
-			http.NotFound(w, r)
-			return
-		}
-		usersapi.Approve(w, parts[0], um)
-	})
-
-	// GET /users/{username}/status — does this GitHub user have dashboard access?
-	backendMux.HandleFunc("/users/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		path := strings.TrimPrefix(r.URL.Path, "/users/")
-		parts := strings.SplitN(path, "/", 2)
-		if len(parts) != 2 || parts[1] != "status" || parts[0] == "" {
-			http.NotFound(w, r)
-			return
-		}
-		usersapi.Status(w, parts[0], um)
 	})
 
 	// GET /admin/join — list all join requests
@@ -271,20 +230,6 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 			return
 		}
 		joinapi.List(w, r, jm)
-	})
-
-	// POST /join/{nodeID}/claim — link a GitHub username to a pending join request
-	backendMux.HandleFunc("/join/claim/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		nodeID := strings.TrimPrefix(r.URL.Path, "/join/claim/")
-		if nodeID == "" {
-			http.Error(w, "node_id required", http.StatusBadRequest)
-			return
-		}
-		joinapi.Claim(w, r, nodeID, jm, um)
 	})
 
 	backendHandler := corsMiddleware(requireGateway(adminToken, backendMux))
@@ -311,6 +256,6 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 
 	log.Printf("starting HTTP job API on %s", addr)
 	if err := http.ListenAndServe(addr, backendHandler); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("HTTP server failed: %v", err)
+		log.Printf("HTTP server failed: %v", err)
 	}
 }

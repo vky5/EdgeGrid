@@ -9,7 +9,6 @@ import (
 	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
 	"github.com/edgegrid/edgegrid/internal/natsserver"
-	"github.com/edgegrid/edgegrid/internal/usermgr"
 	"github.com/nats-io/nats.go"
 	"tailscale.com/tsnet"
 )
@@ -18,7 +17,6 @@ type Coordinator struct {
 	jsBroker    *broker.Broker           // Broker with nats.conn, jetstream and replicas
 	manager     *workerman.WorkerManager // nats KV store
 	joinMgr     *joinmgr.Manager
-	userMgr     *usermgr.Manager
 	natsServer  *natsserver.EmbeddedServer
 	tsnetServer *tsnet.Server
 	dataDir     string
@@ -41,16 +39,10 @@ func NewCoordinatorWithConn(nc *nats.Conn, replicas int, ns *natsserver.Embedded
 		return nil, fmt.Errorf("failed to initialize join manager: %w", err)
 	}
 
-	um, err := usermgr.New(jsBroker)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize user manager: %w", err)
-	}
-
 	return &Coordinator{
 		jsBroker:   jsBroker,
 		manager:    manager,
 		joinMgr:    jm,
-		userMgr:    um,
 		natsServer: ns,
 	}, nil
 }
@@ -65,6 +57,14 @@ func (c *Coordinator) SetAdminToken(token string) {
 
 func (c *Coordinator) SetTsnetServer(ts *tsnet.Server) {
 	c.tsnetServer = ts
+}
+
+// AdminToken returns the bearer token guarding this coordinator's admin
+// HTTP endpoints — needed by callers (like the onboarding TUI) that want
+// to show it to the operator instead of it only ever reaching a raw
+// console print or the admin.token file on disk.
+func (c *Coordinator) AdminToken() string {
+	return c.adminToken
 }
 
 func (c *Coordinator) EnsureStream() error {
@@ -104,7 +104,7 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 	}
 
 	go c.StartStaleJobRecovery(ctx)
-	go StartHTTPServer(apiAddr, c.jsBroker, c.manager, c.joinMgr, c.userMgr, c.natsServer, c.tsnetServer, c.dataDir, c.adminToken)
+	go StartHTTPServer(apiAddr, c.jsBroker, c.manager, c.joinMgr, c.natsServer, c.tsnetServer, c.dataDir, c.adminToken)
 
 	<-ctx.Done()
 	log.Println("shutting down coordinator")

@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/edgegrid/edgegrid/internal/config"
@@ -45,14 +44,8 @@ func requestAndWaitForApproval(ts *tsnet.Server, cfg *config.Config, ident *node
 		return nil, fmt.Errorf("join request rejected with status %d", resp.StatusCode)
 	}
 
-	fmt.Printf("\n[edgegrid] join request submitted\n")
-	fmt.Printf("  node id : %s\n", ident.NodeID)
-	fmt.Printf("  role    : %s\n", role)
-	if cfg.DashboardURL != "" {
-		fmt.Printf("\n  ➜  claim your node (link GitHub account):\n")
-		fmt.Printf("     %s/claim/%s\n", strings.TrimRight(cfg.DashboardURL, "/"), ident.NodeID)
-	}
-	fmt.Printf("\n  waiting for admin approval...\n\n")
+	log.Printf("[edgegrid] join request submitted (node id: %s, role: %s)", ident.NodeID, role)
+	log.Printf("[edgegrid] waiting for admin approval...")
 
 	// poll until approved or rejected
 	for {
@@ -79,12 +72,12 @@ func requestAndWaitForApproval(ts *tsnet.Server, cfg *config.Config, ident *node
 
 		switch result.Status {
 		case joinmgr.StatusApproved:
-			fmt.Printf("[edgegrid] join approved — connecting...\n")
+			log.Printf("[edgegrid] join approved — connecting...")
 			return &result, nil
 		case joinmgr.StatusRejected:
 			return nil, fmt.Errorf("join request rejected by admin")
 		default:
-			fmt.Printf("[edgegrid] still pending approval...\n")
+			log.Printf("[edgegrid] still pending approval...")
 		}
 	}
 }
