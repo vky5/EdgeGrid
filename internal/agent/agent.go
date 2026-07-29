@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/edgegrid/edgegrid/internal/config"
 	"github.com/edgegrid/edgegrid/internal/coordinator"
@@ -53,6 +54,8 @@ type Agent struct {
 
 	tailscaleIP string
 	nodeID      string
+
+	closeOnce sync.Once
 }
 
 // TailscaleIP is this node's own tailnet address — the one other nodes
@@ -235,21 +238,28 @@ func (a *Agent) Start(ctx context.Context) error {
 	return nil
 }
 
+// Close shuts the agent down. Idempotent — the TUI can now legitimately
+// call this from two places for the same agent (the onboarding wizard
+// replacing an already-running node, and that node's own background runner
+// noticing Start returned), so a second call must be a no-op rather than a
+// double-close of the NATS/tsnet handles.
 func (a *Agent) Close() {
-	log.Println("shutting down EdgeGrid services")
-	if a.worker != nil {
-		a.worker.Close()
-	}
-	if a.natsConn != nil {
-		a.natsConn.Close()
-		log.Println("closed NATS connection")
-	}
-	if a.natsServer != nil {
-		a.natsServer.Shutdown()
-	}
-	if a.tsnetServer != nil {
-		if err := a.tsnetServer.Close(); err != nil {
-			log.Printf("closing tsnet server: %v", err)
+	a.closeOnce.Do(func() {
+		log.Println("shutting down EdgeGrid services")
+		if a.worker != nil {
+			a.worker.Close()
 		}
-	}
+		if a.natsConn != nil {
+			a.natsConn.Close()
+			log.Println("closed NATS connection")
+		}
+		if a.natsServer != nil {
+			a.natsServer.Shutdown()
+		}
+		if a.tsnetServer != nil {
+			if err := a.tsnetServer.Close(); err != nil {
+				log.Printf("closing tsnet server: %v", err)
+			}
+		}
+	})
 }

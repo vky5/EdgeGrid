@@ -120,6 +120,11 @@ func runTUI(args []string, startMode string) {
 
 	// If the node is already onboarded and we aren't starting in the welcome screen,
 	// start the local agent in the background so the dashboard client can connect to it.
+	// The handle is passed into app.New below instead of only living in this
+	// goroutine's closure — App is the single place that knows whether a
+	// node is already running, so re-onboarding via "/onboard" can replace
+	// it instead of silently starting a second one alongside it.
+	var runningAgent *agent.Agent
 	if (connected || isWorker) && startMode != "welcome" && !noAgent {
 		cfg := config.LoadConfig()
 		cfg.DataDir = dir
@@ -137,6 +142,7 @@ func runTUI(args []string, startMode string) {
 
 		nodeAgent, closeLog, err := agent.NewAgentWithLogging(ctx, cfg, nil, true)
 		if err == nil {
+			runningAgent = nodeAgent
 			go func() {
 				_ = nodeAgent.Start(ctx)
 				nodeAgent.Close()
@@ -152,7 +158,7 @@ func runTUI(args []string, startMode string) {
 		c = tuiclient.New()
 	}
 
-	a := app.New(ctx, dir, c, coord, connected, isWorker)
+	a := app.New(ctx, dir, c, coord, connected, isWorker, runningAgent)
 	switch startMode {
 	case "onboard":
 		a = a.StartInOnboarding()

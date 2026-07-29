@@ -93,20 +93,39 @@ type Wizard struct {
 	eventCh    chan agentEventMsg
 	config     *config.Config
 	cancelFn   context.CancelFunc
+
+	// existingAgent is any node agent already running in this process
+	// (non-nil when /onboard is run against an already-provisioned node,
+	// e.g. from the dashboard). It's closed the moment this wizard actually
+	// commits to starting a replacement — see closeExisting.
+	existingAgent *agent.Agent
 }
 
-func NewWizard(ctx context.Context, dataDir string) Wizard {
+func NewWizard(ctx context.Context, dataDir string, existingAgent *agent.Agent) Wizard {
 	cfg := config.LoadConfig()
 	cfg.DataDir = dataDir
 	return Wizard{
-		ctx:     ctx,
-		dataDir: dataDir,
-		step:    stepRole,
-		role:    newRoleModel(cfg),
-		config:  cfg,
+		ctx:           ctx,
+		dataDir:       dataDir,
+		step:          stepRole,
+		role:          newRoleModel(cfg),
+		config:        cfg,
+		existingAgent: existingAgent,
 		// coordinator and joinStatus are (re)built with real role/address
 		// context once roleChosenMsg / coordinatorChosenMsg actually fire —
 		// see Update.
+	}
+}
+
+// closeExisting stops any node agent already running in this process before
+// a new one is started. Re-onboarding an already-provisioned node must
+// replace its agent, not run two side by side against the same ports/tsnet
+// identity/data dir. Safe to call more than once — nils the field so a
+// second call (defensive call sites) is a no-op.
+func (w *Wizard) closeExisting() {
+	if w.existingAgent != nil {
+		w.existingAgent.Close()
+		w.existingAgent = nil
 	}
 }
 
@@ -288,6 +307,7 @@ func (w Wizard) Update(msg tea.Msg) (Wizard, tea.Cmd) {
 		w.chosenRole = msg.role
 		if msg.role == RolePrimaryCoordinator {
 			// Boot the primary coordinator agent immediately instead of previewing first
+			w.closeExisting()
 			w.step = stepStarting
 			w.starting = newStartingModel()
 			w.result = &startResult{}
@@ -313,6 +333,7 @@ func (w Wizard) Update(msg tea.Msg) (Wizard, tea.Cmd) {
 		}
 		w.joinStatus = newJoinStatusModel(roleLabel[w.chosenRole], msg.addr)
 		w.step = stepJoinStatus
+		w.closeExisting()
 		w.result = &startResult{}
 		ctx, cancel := context.WithCancel(w.ctx)
 		w.cancelFn = cancel
@@ -331,6 +352,7 @@ func (w Wizard) Update(msg tea.Msg) (Wizard, tea.Cmd) {
 			// not-yet-started stepDone. Kept as a defensive no-op.
 			return w, nil
 		}
+		w.closeExisting()
 		w.step = stepStarting
 		w.starting = newStartingModel()
 		w.result = &startResult{}
@@ -545,7 +567,7 @@ func (w Wizard) View() string {
 				style.Title.Render(" [ LIVE OUTPUT LOGS ] "),
 				"",
 			)
-			
+
 			// Show last 7 lines of logs
 			var logsList []string
 			if w.step == stepStarting {

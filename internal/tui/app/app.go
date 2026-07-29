@@ -61,11 +61,19 @@ type App struct {
 	wizard    onboarding.Wizard
 	welcome   welcomeModel
 
-	cmdbar            cmdbar.Model
-	logs              logsview.Model
-	showLogs          bool
-	connect           connectModel
-	showConnect       bool
+	// runningAgent is the single node agent running in this process, if
+	// any — the one source of truth for "is a node already up" that
+	// main.go and the onboarding wizard both read/replace instead of each
+	// silently spawning their own. nil until one is started (either
+	// pre-existing at TUI launch, passed in via New, or newly built by a
+	// completed wizard run).
+	runningAgent *agent.Agent
+
+	cmdbar      cmdbar.Model
+	logs        logsview.Model
+	showLogs    bool
+	connect     connectModel
+	showConnect bool
 
 	// restartProfile is set once "/profile <name>" switches the active
 	// profile — data dir is fixed at process startup, so main.go restarts
@@ -83,15 +91,16 @@ type App struct {
 // c is a real client already pointed at a coordinator (vs. the canned
 // Stub) — the dashboard shows a "not connected" state instead of Stub's
 // fake data until /connect (or a real client passed in here) changes that.
-func New(ctx context.Context, dataDir string, c client.Client, coord string, connected, isWorker bool) App {
+func New(ctx context.Context, dataDir string, c client.Client, coord string, connected, isWorker bool, runningAgent *agent.Agent) App {
 	return App{
-		ctx:       ctx,
-		dataDir:   dataDir,
-		mode:      modeDashboard,
-		connected: connected,
-		isWorker:  isWorker,
-		dashboard: dashboard.New(c, coord),
-		cmdbar:    cmdbar.New(commands...),
+		ctx:          ctx,
+		dataDir:      dataDir,
+		mode:         modeDashboard,
+		connected:    connected,
+		isWorker:     isWorker,
+		dashboard:    dashboard.New(c, coord),
+		cmdbar:       cmdbar.New(commands...),
+		runningAgent: runningAgent,
 	}
 }
 
@@ -102,7 +111,7 @@ func New(ctx context.Context, dataDir string, c client.Client, coord string, con
 func (a App) StartInOnboarding() App {
 	a.previousMode = a.mode
 	a.mode = modeOnboarding
-	a.wizard = onboarding.NewWizard(a.ctx, a.dataDir)
+	a.wizard = onboarding.NewWizard(a.ctx, a.dataDir, a.runningAgent)
 	return a
 }
 
@@ -199,7 +208,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else {
 						a.previousMode = modeWelcome
 						a.mode = modeOnboarding
-						a.wizard = onboarding.NewWizard(a.ctx, a.dataDir)
+						a.wizard = onboarding.NewWizard(a.ctx, a.dataDir, a.runningAgent)
 						a.wizard = a.wizard.WithSize(a.width, a.height)
 					}
 					return a, nil
@@ -213,7 +222,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else {
 						a.previousMode = modeWelcome
 						a.mode = modeOnboarding
-						a.wizard = onboarding.NewWizard(a.ctx, a.dataDir)
+						a.wizard = onboarding.NewWizard(a.ctx, a.dataDir, a.runningAgent)
 						a.wizard = a.wizard.WithSize(a.width, a.height)
 					}
 					return a, nil
@@ -324,6 +333,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_, confirmed, nodeAgent, _, startErr := a.wizard.Result()
 			if confirmed {
 				if startErr == nil && nodeAgent != nil {
+					// The wizard already closed whatever agent used to be
+					// running here (see Wizard.closeExisting) before it
+					// built this one — this is where App takes ownership of
+					// its replacement.
+					a.runningAgent = nodeAgent
 					go func() {
 						_ = nodeAgent.Start(a.ctx)
 					}()
@@ -379,7 +393,7 @@ func (a App) runCommand(command string) (tea.Model, tea.Cmd) {
 	switch command {
 	case "onboard":
 		a.mode = modeOnboarding
-		a.wizard = onboarding.NewWizard(a.ctx, a.dataDir)
+		a.wizard = onboarding.NewWizard(a.ctx, a.dataDir, a.runningAgent)
 		a.wizard = a.wizard.WithSize(a.width, a.height)
 		return a, a.wizard.Init()
 	case "logs":
