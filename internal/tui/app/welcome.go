@@ -435,7 +435,11 @@ func (m welcomeModel) Update(msg tea.Msg) (welcomeModel, tea.Cmd) {
 		if key, ok := msg.(tea.KeyMsg); ok {
 			switch key.String() {
 			case "esc":
-				m.subMode = 0
+				if m.fromDashboard || m.selectedIdx == 1 {
+					m.subMode = 1
+				} else {
+					m.subMode = 0
+				}
 				return m, nil
 			case "enter":
 				val := strings.TrimSpace(m.input.Value())
@@ -519,6 +523,17 @@ func (m welcomeModel) Update(msg tea.Msg) (welcomeModel, tea.Cmd) {
 						m.subMode = 5 // switch to delete confirmation subMode!
 					}
 				}
+			case "n":
+				m.input = textinput.New()
+				m.input.Placeholder = "cluster-name"
+				m.input.CharLimit = 64
+				m.input.Width = 25
+				m.input.PromptStyle = lipgloss.NewStyle().Foreground(style.Accent)
+				m.input.TextStyle = lipgloss.NewStyle().Foreground(style.Accent).Bold(true)
+				m.input.SetValue(randomProfileName())
+				m.input.Focus()
+				m.subMode = 2
+				return m, textinput.Blink
 			case "enter":
 				var selected string
 				if m.profileCursor == 0 {
@@ -759,7 +774,7 @@ func renderProfileSelect(m welcomeModel, width int) string {
 
 	lines = append(lines,
 		"",
-		style.Help.Render(" esc: Back  d: Delete Profile"),
+		style.Help.Render(" esc: Back  n: New Profile  d: Delete Profile"),
 	)
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }

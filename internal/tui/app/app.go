@@ -272,7 +272,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if _, ok := msg.(onboarding.BackToDashboardMsg); ok {
-		a.mode = modeDashboard
+		if !isProfileOnboarded(profile.Active()) || a.previousMode == modeWelcome {
+			a.mode = modeWelcome
+		} else {
+			a.mode = modeDashboard
+		}
 		return a, nil
 	}
 
@@ -623,7 +627,7 @@ func (a App) renderSystemFooter() string {
 	statsStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("86"))
 	timeStyle := lipgloss.NewStyle().Foreground(style.Muted)
 
-	leftSection := fmt.Sprintf(" %s %s ", lipgloss.NewStyle().Background(lipgloss.Color("239")).Foreground(lipgloss.Color("255")).Render(" EDGEGRID "), profileStyle.Render(" "+profileName))
+	leftSection := fmt.Sprintf(" %s %s ", lipgloss.NewStyle().Background(lipgloss.Color("239")).Foreground(lipgloss.Color("255")).Render(" EDGEGRID "), profileStyle.Render(" ⧉ profile:"+profileName))
 	middleSection := fmt.Sprintf(" %s %s  %s %s ", cpuMeter, statsStyle.Render(cpuStr), memMeter, statsStyle.Render(memStr))
 	rightSection := fmt.Sprintf(" %s  %s ", timeStyle.Render(timeStr), lipgloss.NewStyle().Background(lipgloss.Color("237")).Foreground(lipgloss.Color("255")).Render(" "+helpKeys+" "))
 
