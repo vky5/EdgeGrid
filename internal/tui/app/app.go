@@ -92,13 +92,19 @@ type App struct {
 // Stub) — the dashboard shows a "not connected" state instead of Stub's
 // fake data until /connect (or a real client passed in here) changes that.
 func New(ctx context.Context, dataDir string, c client.Client, coord string, connected, isWorker bool, runningAgent *agent.Agent) App {
+	var nodeID string
+	if ident, err := nodeident.LoadOrCreate(dataDir); err == nil {
+		nodeID = ident.NodeID
+	}
+	natsURL := nodeident.LoadToken(dataDir, "nats.url")
+
 	return App{
 		ctx:          ctx,
 		dataDir:      dataDir,
 		mode:         modeDashboard,
 		connected:    connected,
 		isWorker:     isWorker,
-		dashboard:    dashboard.New(c, coord),
+		dashboard:    dashboard.New(c, coord, isWorker, nodeID, natsURL, dataDir),
 		cmdbar:       cmdbar.New(commands...),
 		runningAgent: runningAgent,
 	}
@@ -151,6 +157,13 @@ func (a App) Init() tea.Cmd {
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(systemStatsTickMsg); ok {
+		// Overview (worker + coordinator): live agent tasks when this process runs a worker loop.
+		if a.runningAgent != nil {
+			snap := a.runningAgent.WorkerRuntime()
+			a.dashboard.WithWorkerRuntime(snap.Up, snap.Busy, snap.Active, snap.DoneOK, snap.DoneFail, snap.Recent)
+		} else {
+			a.dashboard.WithWorkerRuntime(false, false, nil, 0, 0, nil)
+		}
 		return a, tickSystemStats()
 	}
 
@@ -236,6 +249,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	}
 
+	// Settings saved from the running coordinator tab → restart process so
+	// ports/executor apply (same exec path as profile switch).
+	if _, ok := msg.(dashboard.SettingsRestartMsg); ok {
+		name := profile.Active()
+		if name == "" {
+			// Fallback: last path segment of dataDir when profile system unused.
+			name = filepath.Base(a.dataDir)
+		}
+		a.restartProfile = name
+		a.restartOnboard = false
+		a.restartNoAgent = false
+		return a, tea.Quit
+	}
+
 	// Always let this reach the dashboard, regardless of mode or which
 	// overlay (if any) is open — it's a self-rescheduling tick, and unlike
 	// one-shot messages, if any of the blocks below ever swallowed it
@@ -264,7 +291,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if sub, ok := msg.(connectSubmitMsg); ok {
 			c := client.NewHTTP(sub.coord, sub.adminToken)
-			a.dashboard = dashboard.New(c, sub.coord)
+			var nodeID string
+			if ident, err := nodeident.LoadOrCreate(a.dataDir); err == nil {
+				nodeID = ident.NodeID
+			}
+			natsURL := nodeident.LoadToken(a.dataDir, "nats.url")
+			a.dashboard = dashboard.New(c, sub.coord, a.isWorker, nodeID, natsURL, a.dataDir)
 			a.connected = true
 			a.showConnect = false
 			return a, nil
@@ -300,7 +332,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if key, ok := msg.(tea.KeyMsg); ok {
-		typingInWizard := a.mode == modeOnboarding && a.wizard.CapturesTextInput()
+		// Same rule as onboarding's coordinator field: while a free-form
+		// text input has focus, "/" and "q" are literal keystrokes, not
+		// global shortcuts (paths like /home/... need the slash).
+		typing := (a.mode == modeOnboarding && a.wizard.CapturesTextInput()) ||
+			(a.mode == modeDashboard && a.dashboard.CapturesTextInput())
 		switch key.String() {
 		case "ctrl+c":
 			// Always an emergency exit, even while typing — unlike "q" and
@@ -309,12 +345,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// helps.
 			return a, tea.Quit
 		case "q":
-			if !typingInWizard {
+			if !typing {
 				return a, tea.Quit
 			}
 		case "/":
-			if typingInWizard {
-				break // let it reach the wizard's own text field below, literally
+			if typing {
+				break // let it reach the focused field below, literally
 			}
 			var cmd tea.Cmd
 			a.cmdbar, cmd = a.cmdbar.Activate()
@@ -347,12 +383,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				coord := "http://127.0.0.1:8080"
 				adminToken := nodeident.LoadToken(a.dataDir, "admin.token")
 				isWorker := adminToken == "" && nodeident.LoadToken(a.dataDir, "node.token") != ""
+				var nodeID string
+				if ident, err := nodeident.LoadOrCreate(a.dataDir); err == nil {
+					nodeID = ident.NodeID
+				}
+				natsURL := nodeident.LoadToken(a.dataDir, "nats.url")
 				if adminToken != "" {
 					c := client.NewHTTP(coord, adminToken)
-					a.dashboard = dashboard.New(c, coord)
+					a.dashboard = dashboard.New(c, coord, isWorker, nodeID, natsURL, a.dataDir)
 					a.connected = true
 				} else {
-					a.dashboard = dashboard.New(client.New(), "")
+					a.dashboard = dashboard.New(client.New(), "", isWorker, nodeID, natsURL, a.dataDir)
 					a.connected = false
 					a.isWorker = isWorker
 				}
@@ -419,38 +460,64 @@ func (a App) runCommand(command string) (tea.Model, tea.Cmd) {
 }
 
 // notConnectedView is shown instead of dashboard content until a real
-// coordinator is connected — replaces silently showing Stub's fake data,
-// which gave no indication the dashboard wasn't actually talking to
-// anything. isWorker gets a different message: a worker has no
-// coordinator of its own to default to, which isn't the same situation
-// as a coordinator machine that just hasn't connected yet.
+// coordinator is connected — replaces silently showing Stub's fake data.
+// Pure workers never hit this path (they get the worker-only dashboard
+// message instead); this is for coordinator profiles without HTTP yet.
 func (a App) notConnectedView() string {
-	if a.isWorker {
-		return style.Title.Render("Not available") + "\n\n" +
-			style.Help.Render("This node is a worker — it doesn't run a coordinator.") + "\n" +
-			style.Help.Render("Use /connect to view a coordinator elsewhere on the network.")
-	}
 	return style.Title.Render("Not connected") + "\n\n" +
 		style.Help.Render("No coordinator connected yet.") + "\n" +
 		style.Help.Render("Use /connect to connect to one.")
 }
 
-func (a App) title() string {
-	switch a.mode {
-	case modeOnboarding:
-		return "EdgeGrid Setup"
+// subtitle is the text after the blue EDGEGRID badge in the top bar.
+func (a App) subtitle() string {
+	switch {
+	case a.showLogs:
+		return "Logs"
+	case a.showConnect:
+		return "Connect"
+	case a.mode == modeWelcome:
+		return "Launcher"
+	case a.mode == modeOnboarding:
+		return "Setup"
 	default:
-		title := "EdgeGrid Dashboard"
+		s := "Dashboard"
 		if c := a.dashboard.Coord(); c != "" {
-			title += "  ·  " + c
+			s += "  ·  " + c
 		}
-		return title
+		return s
 	}
+}
+
+// renderHeader is the top chrome for every screen: blue EDGEGRID badge + context.
+// Same brand bar on welcome, onboarding, dashboard tabs, logs, and connect —
+// not only the dashboard body.
+func (a App) renderHeader() string {
+	w := max(a.width, 0)
+	badge := lipgloss.NewStyle().
+		Background(style.Accent).
+		Foreground(lipgloss.Color("255")).
+		Bold(true).
+		Render(" EDGEGRID ")
+	rest := lipgloss.NewStyle().
+		Background(style.Accent).
+		Foreground(lipgloss.Color("255")).
+		Render("  " + a.subtitle() + " ")
+	bar := lipgloss.JoinHorizontal(lipgloss.Top, badge, rest)
+	if a.mode == modeOnboarding && a.wizard.StepLabel() != "" && !a.showLogs && !a.showConnect {
+		bar = lipgloss.JoinHorizontal(lipgloss.Top, bar, style.StepLabel.Render(a.wizard.StepLabel()))
+	}
+	// Stretch blue background across the full terminal width.
+	pad := w - lipgloss.Width(bar)
+	if pad > 0 {
+		bar = bar + lipgloss.NewStyle().Background(style.Accent).Render(strings.Repeat(" ", pad))
+	}
+	return bar
 }
 
 func (a App) View() string {
 	if a.showLogs {
-		header := style.HeaderBar.Width(max(a.width, 0)).Render(a.title())
+		header := a.renderHeader()
 		footer := a.renderSystemFooter()
 		bodyHeight := max(a.height-lipgloss.Height(header)-lipgloss.Height(footer), 1)
 		placedBody := lipgloss.Place(a.width, bodyHeight, lipgloss.Center, lipgloss.Center, a.logs.View())
@@ -458,7 +525,7 @@ func (a App) View() string {
 	}
 
 	if a.showConnect {
-		header := style.HeaderBar.Width(max(a.width, 0)).Render(a.title())
+		header := a.renderHeader()
 		footer := a.renderSystemFooter()
 		a.connect = a.connect.WithSize(a.width, a.height)
 		bodyHeight := max(a.height-lipgloss.Height(header)-lipgloss.Height(footer), 1)
@@ -467,17 +534,14 @@ func (a App) View() string {
 	}
 
 	if a.mode == modeWelcome {
-		header := style.HeaderBar.Width(max(a.width, 0)).Render("EdgeGrid Launcher")
+		header := a.renderHeader()
 		footer := a.renderSystemFooter()
 		bodyHeight := max(a.height-lipgloss.Height(header)-lipgloss.Height(footer), 1)
 		placedBody := lipgloss.Place(a.width, bodyHeight, lipgloss.Center, lipgloss.Center, a.welcome.View())
 		return lipgloss.JoinVertical(lipgloss.Left, header, placedBody, footer)
 	}
 
-	header := style.HeaderBar.Width(max(a.width, 0)).Render(a.title())
-	if a.mode == modeOnboarding && a.wizard.StepLabel() != "" {
-		header = lipgloss.JoinHorizontal(lipgloss.Top, header, style.StepLabel.Render(a.wizard.StepLabel()))
-	}
+	header := a.renderHeader()
 
 	var footer string
 	if a.cmdbar.Active() {
@@ -490,7 +554,7 @@ func (a App) View() string {
 	switch {
 	case a.mode == modeOnboarding:
 		body = a.wizard.View()
-	case !a.connected:
+	case !a.connected && !a.isWorker:
 		body = a.notConnectedView()
 	default:
 		body = a.dashboard.View()
@@ -641,7 +705,9 @@ func (a App) renderSystemFooter() string {
 	statsStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("86"))
 	timeStyle := lipgloss.NewStyle().Foreground(style.Muted)
 
-	leftSection := fmt.Sprintf(" %s %s ", lipgloss.NewStyle().Background(lipgloss.Color("239")).Foreground(lipgloss.Color("255")).Render(" EDGEGRID "), profileStyle.Render(" ⧉ profile:"+profileName))
+	// Footer badge matches the top bar brand (blue Accent), on every screen.
+	edgeBadge := lipgloss.NewStyle().Background(style.Accent).Foreground(lipgloss.Color("255")).Bold(true).Render(" EDGEGRID ")
+	leftSection := fmt.Sprintf(" %s %s ", edgeBadge, profileStyle.Render(" ⧉ profile:"+profileName))
 	middleSection := fmt.Sprintf(" %s %s  %s %s ", cpuMeter, statsStyle.Render(cpuStr), memMeter, statsStyle.Render(memStr))
 	rightSection := fmt.Sprintf(" %s  %s ", timeStyle.Render(timeStr), lipgloss.NewStyle().Background(lipgloss.Color("237")).Foreground(lipgloss.Color("255")).Render(" "+helpKeys+" "))
 

@@ -155,10 +155,15 @@ func (h *HTTP) ListJobs() ([]JobSummary, error) {
 	return summaries, nil
 }
 
-func (h *HTTP) SubmitJob(script, requirements string) error {
-	body, err := json.Marshal(map[string]string{
-		"training_script": script,
-		"requirements":    requirements,
+func (h *HTTP) SubmitJob(params JobParams) error {
+	body, err := json.Marshal(map[string]any{
+		"training_script": params.Script,
+		"requirements":    params.Requirements,
+		"dataset_type":    params.DatasetType,
+		"dataset_ref":     params.DatasetRef,
+		"base_model_type": params.ModelType,
+		"base_model_ref":  params.ModelRef,
+		"requires_gpu":    params.RequiresGPU,
 	})
 	if err != nil {
 		return err
@@ -185,7 +190,10 @@ func (h *HTTP) CancelJob(jobID string) error {
 // lines arrive within the window as a "logs so far" snapshot instead of
 // blocking indefinitely on a still-running job. The caller is expected to
 // run this off the UI goroutine (see dashboard's async fetch on open).
-const jobLogsTimeout = 3 * time.Second
+// jobLogsTimeout bounds JobLogs' read of the /logs SSE stream. Long enough
+// to get historical lines + the coordinator's 2s completion poll; short
+// enough that a still-running job returns a "so far" snapshot for the TUI.
+const jobLogsTimeout = 5 * time.Second
 
 func (h *HTTP) JobLogs(jobID string) (string, error) {
 	req, err := http.NewRequest(http.MethodGet, h.baseURL+"/jobs/"+jobID+"/logs", nil)
@@ -212,6 +220,8 @@ func (h *HTTP) JobLogs(jobID string) (string, error) {
 	var doneState string
 	sawEvent := false
 	scanner := bufio.NewScanner(resp.Body)
+	// Log lines can be long; raise the default 64KiB token limit.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		switch {
@@ -236,7 +246,10 @@ func (h *HTTP) JobLogs(jobID string) (string, error) {
 
 	out := strings.Join(lines, "\n")
 	if out == "" {
-		out = "(no logs yet)"
+		out = "(no logs yet)\n\n" +
+			"If every job is empty: the worker may have been on the mock executor\n" +
+			"(old default) which never ran your Python script. Restart the agent\n" +
+			"with --executor training (now the default) and submit again."
 	}
 	if doneState != "" {
 		out += fmt.Sprintf("\n\n-- job %s --", doneState)

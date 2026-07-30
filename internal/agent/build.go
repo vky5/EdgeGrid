@@ -60,25 +60,29 @@ func buildWorker(cfg *config.Config, nc *nats.Conn) (*worker.Worker, error) {
 		return nil, nil
 	}
 
+	// JetStream log publisher shared by training (real stdout) and mock (synthetic lines).
+	js, err := nc.JetStream()
+	if err != nil {
+		nc.Close()
+		return nil, fmt.Errorf("failed to init JetStream for log publishing: %w", err)
+	}
+	logPublish := func(jobID, line string) {
+		if _, err := js.Publish(broker.SubjectLogsPrefix+jobID, []byte(line)); err != nil {
+			log.Printf("failed to publish log line for job %s: %v", jobID, err)
+		}
+	}
+
 	var execInstance executor.Executor
 	switch cfg.Client.Executor {
 	case "training":
-		js, err := nc.JetStream()
-		if err != nil {
-			nc.Close()
-			return nil, fmt.Errorf("failed to init JetStream for log publishing: %w", err)
-		}
-		execInstance = executor.NewTrainingExecutor(func(jobID, line string) {
-			if _, err := js.Publish(broker.SubjectLogsPrefix+jobID, []byte(line)); err != nil {
-				log.Printf("failed to publish log line for job %s: %v", jobID, err)
-			}
-		})
+		execInstance = executor.NewTrainingExecutor(logPublish)
 	case "mock", "":
-		execInstance = executor.NewMockExecutor()
+		execInstance = executor.NewMockExecutor(logPublish)
 	default:
 		nc.Close()
 		return nil, fmt.Errorf("unknown executor type %q — valid options: training, mock", cfg.Client.Executor)
 	}
+	log.Printf("worker executor=%q (training runs Python + streams logs; mock fakes a short run)", cfg.Client.Executor)
 
 	workerAgent, err := worker.NewWorkerWithConn(
 		nc,

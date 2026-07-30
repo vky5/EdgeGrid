@@ -43,12 +43,22 @@ type JoinRequestSummary struct {
 	Status    string
 }
 
+type JobParams struct {
+	Script       string
+	Requirements string
+	DatasetType  string
+	DatasetRef   string
+	ModelType    string
+	ModelRef     string
+	RequiresGPU  bool
+}
+
 // Client is everything the dashboard screens need. Jobs/Workers are still
 // stubbed — see HTTP's doc comment; Admin is real.
 type Client interface {
 	ListJobs() ([]JobSummary, error)
 	JobLogs(jobID string) (string, error)
-	SubmitJob(script, requirements string) error
+	SubmitJob(params JobParams) error
 	CancelJob(jobID string) error
 
 	ListWorkers() ([]WorkerSummary, error)
@@ -75,7 +85,7 @@ func (s *Stub) JobLogs(jobID string) (string, error) {
 	return "(stub) no transport wired yet — logs for " + jobID + " would appear here", nil
 }
 
-func (s *Stub) SubmitJob(script, requirements string) error { return nil }
+func (s *Stub) SubmitJob(params JobParams) error { return nil }
 
 func (s *Stub) CancelJob(jobID string) error { return nil }
 

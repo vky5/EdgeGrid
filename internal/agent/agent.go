@@ -77,6 +77,33 @@ func (a *Agent) AdminToken() string {
 	return a.coordinator.AdminToken()
 }
 
+// WorkerSnap is an in-process snapshot for the node Overview TUI.
+type WorkerSnap struct {
+	Up       bool
+	Busy     bool
+	Active   []string
+	DoneOK   int
+	DoneFail int
+	Recent   []worker.FinishedJob // session-local, newest last
+}
+
+// WorkerRuntime is a snapshot for Overview: agent up, busy, active jobs, and
+// session finished counts. No admin HTTP / fleet data.
+func (a *Agent) WorkerRuntime() WorkerSnap {
+	if a == nil || a.worker == nil {
+		return WorkerSnap{}
+	}
+	ok, fail, recent := a.worker.SessionStats()
+	return WorkerSnap{
+		Up:       true,
+		Busy:     a.worker.IsBusy(),
+		Active:   a.worker.ActiveJobIDs(),
+		DoneOK:   ok,
+		DoneFail: fail,
+		Recent:   recent,
+	}
+}
+
 // NewAgent brings up a full node. onProgress, if non-nil, receives every
 // status line tsnet would otherwise only send to log.Printf — notably the
 // interactive login URL — so a caller like the onboarding TUI can surface

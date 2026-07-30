@@ -104,6 +104,7 @@ type Wizard struct {
 func NewWizard(ctx context.Context, dataDir string, existingAgent *agent.Agent) Wizard {
 	cfg := config.LoadConfig()
 	cfg.DataDir = dataDir
+	config.ApplyProfileSettings(cfg)
 	return Wizard{
 		ctx:           ctx,
 		dataDir:       dataDir,
@@ -184,6 +185,7 @@ func waitForAgentEvent(ch chan agentEventMsg) tea.Cmd {
 func startNode(ctx context.Context, cfg *config.Config, result *startResult) chan agentEventMsg {
 	ch := make(chan agentEventMsg, 8)
 	go func() {
+		config.ApplyProfileSettings(cfg) // pick up Configure Settings / prior onboarding saves
 		result.cfg = cfg
 
 		onProgress := func(line string) {

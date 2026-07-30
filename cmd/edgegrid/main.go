@@ -107,8 +107,21 @@ func runTUI(args []string, startMode string) {
 
 	localAdminToken := nodeident.LoadToken(dir, "admin.token")
 	adminToken := argValue(args, "--admin-token")
+
+	// Profile settings (ports, executor) live in dataDir/settings.json.
+	bootCfg := config.LoadConfig()
+	bootCfg.DataDir = dir
+	config.ApplyProfileSettings(bootCfg)
+
 	if coord == "" && adminToken == "" && localAdminToken != "" {
-		coord = "http://127.0.0.1:8080"
+		api := bootCfg.Server.Port
+		if api == "" {
+			api = ":8080"
+		}
+		if !strings.HasPrefix(api, ":") {
+			api = ":" + api
+		}
+		coord = "http://127.0.0.1" + api
 		adminToken = localAdminToken
 	}
 
@@ -124,8 +137,7 @@ func runTUI(args []string, startMode string) {
 	// it instead of silently starting a second one alongside it.
 	var runningAgent *agent.Agent
 	if (connected || isWorker) && startMode != "welcome" && !noAgent {
-		cfg := config.LoadConfig()
-		cfg.DataDir = dir
+		cfg := bootCfg
 		if localAdminToken != "" {
 			cfg.Server.Enabled = true
 			if cfg.JoinURL == "" || nodeident.LoadToken(dir, "node.token") != "" {

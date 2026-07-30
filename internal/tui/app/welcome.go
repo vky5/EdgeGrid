@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/edgegrid/edgegrid/internal/config"
 	"github.com/edgegrid/edgegrid/internal/profile"
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
@@ -354,7 +356,9 @@ func renderLeftPanel(width, height int, activeNode int, angleA, angleB float64) 
 type welcomeModel struct {
 	width, height       int
 	selectedIdx         int      // 0 = Setup new node, 1 = Choose previous profile, 2 = Connect remote, 3 = Diagnostics, 4 = Logs
-	subMode             int      // 0 = main menu, 1 = choose profile list, 2 = new cluster name input, 3 = profile submenu, 4 = benchmark
+	// subMode: 0 main, 1 profiles, 2 new name, 3 profile submenu, 4 benchmark,
+	// 5 delete confirm, 6 profile settings editor
+	subMode             int
 	profiles            []string // loaded list of profiles
 	profileCursor       int      // cursor for profile list
 	profileOffset       int      // scrolling viewport offset for profile list
@@ -369,6 +373,14 @@ type welcomeModel struct {
 	benchmarkProgress float64
 	benchmarkActive   bool
 	benchmarkLogs     []string
+
+	// Profile settings editor (subMode 6)
+	settingsFields []string
+	settingsIdx    int
+	settingsVals   map[string]string
+	settingsStatus string
+	settingsDir    string
+	settingsRole   string
 }
 
 func newWelcomeModel() welcomeModel {
@@ -598,9 +610,330 @@ func (m welcomeModel) Update(msg tea.Msg) (welcomeModel, tea.Cmd) {
 			case "n", "N", "esc":
 				m.subMode = 1 // cancel and return to profile list
 			}
+		} else if m.subMode == 6 {
+			return m.updateProfileSettings(msg)
 		}
 	}
 	return m, nil
+}
+
+func (m welcomeModel) updateProfileSettings(msg tea.Msg) (welcomeModel, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		if len(m.settingsFields) > 0 {
+			f := m.settingsFields[m.settingsIdx]
+			if f == "Executor" || f == "Require Approval" {
+				return m, nil
+			}
+		}
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	}
+	field := ""
+	if len(m.settingsFields) > 0 {
+		field = m.settingsFields[m.settingsIdx]
+	}
+	switch key.String() {
+	case "esc":
+		m.subMode = 3
+		m.settingsStatus = ""
+		return m, nil
+	case "up", "k":
+		if field == "Executor" {
+			i := config.ExecutorIndex(m.settingsVals["Executor"])
+			if i > 0 {
+				m.settingsVals["Executor"] = config.KnownExecutors[i-1]
+				return m, nil
+			}
+			// top of list → previous field
+			m = m.saveSettingsField()
+			if m.settingsIdx > 0 {
+				m.settingsIdx--
+			} else {
+				m.settingsIdx = len(m.settingsFields) - 1
+			}
+			m = m.focusSettingsField()
+			return m, textinput.Blink
+		}
+		if field == "Require Approval" {
+			if !strings.EqualFold(m.settingsVals["Require Approval"], "true") {
+				m.settingsVals["Require Approval"] = "true"
+				return m, nil
+			}
+			m = m.saveSettingsField()
+			if m.settingsIdx > 0 {
+				m.settingsIdx--
+			} else {
+				m.settingsIdx = len(m.settingsFields) - 1
+			}
+			m = m.focusSettingsField()
+			return m, textinput.Blink
+		}
+		m = m.saveSettingsField()
+		if m.settingsIdx > 0 {
+			m.settingsIdx--
+		} else {
+			m.settingsIdx = len(m.settingsFields) - 1
+		}
+		m = m.focusSettingsField()
+		return m, textinput.Blink
+	case "down", "j":
+		if field == "Executor" {
+			i := config.ExecutorIndex(m.settingsVals["Executor"])
+			if i < len(config.KnownExecutors)-1 {
+				m.settingsVals["Executor"] = config.KnownExecutors[i+1]
+				return m, nil
+			}
+			// bottom of list → next field
+			m = m.saveSettingsField()
+			if m.settingsIdx < len(m.settingsFields)-1 {
+				m.settingsIdx++
+			} else {
+				m.settingsIdx = 0
+			}
+			m = m.focusSettingsField()
+			return m, textinput.Blink
+		}
+		if field == "Require Approval" {
+			if strings.EqualFold(m.settingsVals["Require Approval"], "true") {
+				m.settingsVals["Require Approval"] = "false"
+				return m, nil
+			}
+			m = m.saveSettingsField()
+			if m.settingsIdx < len(m.settingsFields)-1 {
+				m.settingsIdx++
+			} else {
+				m.settingsIdx = 0
+			}
+			m = m.focusSettingsField()
+			return m, textinput.Blink
+		}
+		m = m.saveSettingsField()
+		if m.settingsIdx < len(m.settingsFields)-1 {
+			m.settingsIdx++
+		} else {
+			m.settingsIdx = 0
+		}
+		m = m.focusSettingsField()
+		return m, textinput.Blink
+	case "left", "h":
+		if field == "Require Approval" {
+			m.settingsVals["Require Approval"] = "false"
+			return m, nil
+		}
+		if field == "Executor" {
+			i := config.ExecutorIndex(m.settingsVals["Executor"])
+			if i > 0 {
+				m.settingsVals["Executor"] = config.KnownExecutors[i-1]
+			}
+			return m, nil
+		}
+	case "right", "l":
+		if field == "Require Approval" {
+			m.settingsVals["Require Approval"] = "true"
+			return m, nil
+		}
+		if field == "Executor" {
+			i := config.ExecutorIndex(m.settingsVals["Executor"])
+			if i < len(config.KnownExecutors)-1 {
+				m.settingsVals["Executor"] = config.KnownExecutors[i+1]
+			}
+			return m, nil
+		}
+	case " ", "space":
+		if field == "Require Approval" {
+			if strings.EqualFold(m.settingsVals["Require Approval"], "true") {
+				m.settingsVals["Require Approval"] = "false"
+			} else {
+				m.settingsVals["Require Approval"] = "true"
+			}
+			return m, nil
+		}
+	case "ctrl+s":
+		m = m.saveSettingsField()
+		if err := m.persistProfileSettings(); err != nil {
+			m.settingsStatus = "save failed: " + err.Error()
+		} else {
+			m.settingsStatus = "saved · Start Local Agent to apply ports/executor"
+		}
+		return m, nil
+	case "enter":
+		// Confirm current selection and go to next field — never flip true/false or executor.
+		if field != "Executor" && field != "Require Approval" {
+			m = m.saveSettingsField()
+		}
+		if m.settingsIdx < len(m.settingsFields)-1 {
+			m.settingsIdx++
+			m = m.focusSettingsField()
+			return m, textinput.Blink
+		}
+		if err := m.persistProfileSettings(); err != nil {
+			m.settingsStatus = "save failed: " + err.Error()
+		} else {
+			m.settingsStatus = "saved · Start Local Agent to apply ports/executor"
+		}
+		return m, nil
+	}
+	if field == "Executor" || field == "Require Approval" {
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func toggleWelcomeBool(s string) string {
+	if strings.EqualFold(s, "true") || s == "1" {
+		return "false"
+	}
+	return "true"
+}
+
+func (m welcomeModel) saveSettingsField() welcomeModel {
+	if m.settingsVals == nil || len(m.settingsFields) == 0 {
+		return m
+	}
+	if m.settingsIdx < 0 || m.settingsIdx >= len(m.settingsFields) {
+		return m
+	}
+	name := m.settingsFields[m.settingsIdx]
+	if name == "Executor" || name == "Require Approval" {
+		return m
+	}
+	m.settingsVals[name] = strings.TrimSpace(m.input.Value())
+	return m
+}
+
+func (m welcomeModel) focusSettingsField() welcomeModel {
+	if len(m.settingsFields) == 0 {
+		return m
+	}
+	name := m.settingsFields[m.settingsIdx]
+	if name == "Executor" || name == "Require Approval" {
+		m.input.Blur()
+		return m
+	}
+	val := m.settingsVals[name]
+	m.input.SetValue(val)
+	m.input.SetCursor(len(val))
+	m.input.Focus()
+	return m
+}
+
+func (m *welcomeModel) openProfileSettings() {
+	root, _ := profile.Root()
+	dir := filepath.Join(root, m.selectedProfileName)
+	m.settingsDir = dir
+	m.settingsRole = config.DetectRoleHint(dir)
+	s, _ := config.LoadProfileSettings(dir)
+
+	// Defaults from file or sensible fallbacks
+	natsPort := s.NATSPort
+	if natsPort == 0 {
+		natsPort = 4222
+	}
+	clusterPort := s.ClusterPort
+	if clusterPort == 0 {
+		clusterPort = 6222
+	}
+	apiPort := strings.TrimPrefix(s.APIPort, ":")
+	if apiPort == "" {
+		apiPort = "8080"
+	}
+	exec := s.Executor
+	if exec == "" {
+		exec = "training"
+	}
+	req := "false"
+	if s.RequireApproval != nil && *s.RequireApproval {
+		req = "true"
+	}
+	clusterName := s.ClusterName
+	if clusterName == "" {
+		clusterName = "edgegrid"
+	}
+	join := s.JoinURL
+	host := s.TailscaleHostname
+	if host == "" {
+		host, _ = os.Hostname()
+	}
+
+	m.settingsVals = map[string]string{
+		"NATS Port":         strconv.Itoa(natsPort),
+		"Cluster Port":      strconv.Itoa(clusterPort),
+		"API Port":          apiPort,
+		"Cluster Name":      clusterName,
+		"Executor":          exec,
+		"Require Approval":  req,
+		"Join URL":          join,
+		"Tailscale Hostname": host,
+	}
+
+	switch m.settingsRole {
+	case "worker":
+		m.settingsFields = []string{"Executor", "Require Approval", "Join URL", "Tailscale Hostname"}
+	case "primary", "secondary":
+		// Coordinators: ports + optional executor if they also run jobs
+		m.settingsFields = []string{"API Port", "NATS Port", "Cluster Port", "Cluster Name", "Executor", "Require Approval", "Tailscale Hostname"}
+	default:
+		m.settingsFields = []string{"API Port", "NATS Port", "Cluster Port", "Cluster Name", "Executor", "Require Approval", "Join URL", "Tailscale Hostname"}
+	}
+	m.settingsIdx = 0
+	m.settingsStatus = ""
+	m.input = textinput.New()
+	m.input.CharLimit = 128
+	m.input.Width = 28
+	m.input.Prompt = ""
+	m.input.PromptStyle = lipgloss.NewStyle().Foreground(style.Accent)
+	m.input.TextStyle = lipgloss.NewStyle().Foreground(style.Accent).Bold(true)
+	*m = m.focusSettingsField()
+	m.subMode = 6
+}
+
+func (m welcomeModel) persistProfileSettings() error {
+	m = m.saveSettingsField()
+	get := func(k string) string { return strings.TrimSpace(m.settingsVals[k]) }
+
+	s := config.ProfileSettings{Role: m.settingsRole}
+	if v := get("NATS Port"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("NATS Port: %w", err)
+		}
+		s.NATSPort = n
+	}
+	if v := get("Cluster Port"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("Cluster Port: %w", err)
+		}
+		s.ClusterPort = n
+	}
+	if v := get("API Port"); v != "" {
+		s.APIPort = v
+	}
+	if v := get("Cluster Name"); v != "" {
+		s.ClusterName = v
+	}
+	if v := get("Executor"); v != "" {
+		v = strings.ToLower(v)
+		if config.NormalizeExecutor(v) == "" {
+			return fmt.Errorf("executor must be one of: %s", strings.Join(config.KnownExecutors, ", "))
+		}
+		s.Executor = v
+	}
+	if v := get("Require Approval"); v != "" {
+		b := strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "yes")
+		s.RequireApproval = &b
+	}
+	if v := get("Join URL"); v != "" {
+		s.JoinURL = v
+	}
+	if v := get("Tailscale Hostname"); v != "" {
+		s.TailscaleHostname = v
+	}
+	return config.SaveProfileSettings(m.settingsDir, s)
 }
 
 func (m *welcomeModel) triggerSelection() tea.Cmd {
@@ -655,13 +988,9 @@ func (m *welcomeModel) triggerSubmenu() tea.Cmd {
 			}
 		}
 	case 2:
-		return func() tea.Msg {
-			return welcomeRestartMsg{
-				profileName: m.selectedProfileName,
-				onboard:     true,
-				noAgent:     false,
-			}
-		}
+		// In-place profile settings (settings.json) — not full re-onboard.
+		m.openProfileSettings()
+		return textinput.Blink
 	case 3:
 		m.subMode = 1
 	}
@@ -794,6 +1123,107 @@ func renderCreateCluster(m welcomeModel, width int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
+func renderProfileSettings(m welcomeModel, width int) string {
+	role := m.settingsRole
+	if role == "" {
+		role = "unknown"
+	}
+	var lines []string
+	lines = append(lines,
+		style.Title.Render("PROFILE SETTINGS: "+m.selectedProfileName),
+		style.Help.Render("role hint: "+role+"  ·  saved to settings.json"),
+		"",
+		style.Help.Render("↑/↓ field (Executor: scroll list)   ←/→ Approval   enter next   ctrl+s save   esc"),
+		"",
+	)
+	for i, field := range m.settingsFields {
+		focused := i == m.settingsIdx
+		if focused {
+			lines = append(lines, style.Selected.Render("› "+field))
+		} else {
+			lines = append(lines, style.Help.Render("  "+field))
+		}
+		switch field {
+		case "Executor":
+			lines = append(lines, renderWelcomeExecutorList(m.settingsVals["Executor"], focused), "")
+		case "Require Approval":
+			on := strings.EqualFold(m.settingsVals["Require Approval"], "true") || m.settingsVals["Require Approval"] == "1"
+			for _, o := range []struct{ val, title, desc string }{
+				{"true", "true", "pause each job until a human approves on the worker"},
+				{"false", "false", "start jobs immediately when assigned (no prompt)"},
+			} {
+				sel := (o.val == "true" && on) || (o.val == "false" && !on)
+				prefix := "    "
+				body := fmt.Sprintf("%-6s  %s", o.title, o.desc)
+				switch {
+				case sel && focused:
+					prefix = "  › "
+					body = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(style.Accent).Render(" " + body + " ")
+				case sel:
+					prefix = "  • "
+					body = lipgloss.NewStyle().Bold(true).Foreground(style.Accent).Render(body)
+				default:
+					body = style.Help.Render(body)
+				}
+				lines = append(lines, prefix+body)
+			}
+			if focused {
+				lines = append(lines, style.Help.Render("    ↑ true   ↓ false   enter next field"))
+			}
+			lines = append(lines, "")
+		default:
+			if focused {
+				lines = append(lines, "  "+m.input.View(), "")
+			} else {
+				lines = append(lines, "  "+lipgloss.NewStyle().Bold(true).Render(m.settingsVals[field]), "")
+			}
+		}
+	}
+	if m.settingsStatus != "" {
+		st := style.Help
+		if strings.HasPrefix(m.settingsStatus, "save failed") {
+			st = style.ErrorText
+		} else {
+			st = lipgloss.NewStyle().Foreground(style.Accent)
+		}
+		lines = append(lines, st.Render(m.settingsStatus))
+	} else {
+		lines = append(lines, style.Help.Render("No restart prompt here — use Start Local Agent after save."))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+func renderWelcomeExecutorList(current string, focused bool) string {
+	var lines []string
+	for _, e := range config.KnownExecutors {
+		desc := ""
+		switch e {
+		case "training":
+			desc = "run real Python; stream job logs"
+		case "mock":
+			desc = "fake short run; script not executed"
+		}
+		body := fmt.Sprintf("%-10s  %s", e, desc)
+		selected := e == current
+		prefix := "    "
+		switch {
+		case selected && focused:
+			prefix = "  › "
+			body = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(style.Accent).Render(" " + body + " ")
+		case selected:
+			prefix = "  • "
+			body = lipgloss.NewStyle().Bold(true).Foreground(style.Accent).Render(body)
+		default:
+			body = style.Help.Render(body)
+		}
+		lines = append(lines, prefix+body)
+	}
+	if focused {
+		lines = append(lines, style.Help.Render("    ↑/↓ choose   enter next field"))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func renderDeleteConfirm(m welcomeModel, width int) string {
 	var lines []string
 	lines = append(lines,
@@ -829,7 +1259,7 @@ func renderProfileSubmenu(m welcomeModel, width int) string {
 	}{
 		{"Start Local Agent & Open Dashboard", "Boot local agent and load cluster"},
 		{"Open Dashboard (Monitor Only)", "Skip agent startup, client-only connect"},
-		{"Configure Settings", "Re-run the configuration wizard"},
+		{"Configure Settings", "Edit ports, executor, and other profile knobs"},
 		{"Back to Profiles List", "Return to the profiles selector"},
 	}
 
@@ -954,6 +1384,8 @@ func (m welcomeModel) View() string {
 		rightContent = renderBenchmark(m, colWidth)
 	case 5:
 		rightContent = renderDeleteConfirm(m, colWidth)
+	case 6:
+		rightContent = renderProfileSettings(m, colWidth)
 	}
 		
 	rightLines := strings.Split(lipgloss.Place(colWidth, bodyHeight, lipgloss.Center, lipgloss.Center, rightContent), "\n")
