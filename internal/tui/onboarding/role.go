@@ -206,8 +206,10 @@ func (m roleModel) saveCurrentField() roleModel {
 
 func (m roleModel) applyTempConfig() roleModel {
 	role := roleOptions[m.cursor].role
+	roleName := ""
 	switch role {
 	case RolePrimaryCoordinator:
+		roleName = "primary"
 		if p, err := strconv.Atoi(m.tempNatsPort); err == nil {
 			m.config.NATSPort = p
 		}
@@ -217,16 +219,23 @@ func (m roleModel) applyTempConfig() roleModel {
 		m.config.ClusterName = m.tempClusterName
 		m.config.TailscaleHostname = m.tempTSHostname
 	case RoleSecondaryCoordinator:
+		roleName = "secondary"
 		m.config.JoinURL = m.tempJoinURL
 		if p, err := strconv.Atoi(m.tempClusterPort); err == nil {
 			m.config.ClusterPort = p
 		}
 		m.config.TailscaleHostname = m.tempTSHostname
 	case RoleWorker:
+		roleName = "worker"
 		m.config.JoinURL = m.tempJoinURL
 		m.config.Client.Executor = m.tempExecutor
 		m.config.Client.RequireApproval = m.tempReqApproval
 		m.config.TailscaleHostname = m.tempTSHostname
+	}
+	// Persist to the profile data dir so Configure Settings / next agent start
+	// see the same knobs (flags/env alone do not survive per-profile).
+	if m.config.DataDir != "" {
+		_ = config.SaveProfileSettings(m.config.DataDir, config.SnapshotFromConfig(m.config, roleName))
 	}
 	return m
 }

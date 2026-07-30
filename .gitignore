@@ -4,10 +4,8 @@ node_modules
 /edgegrid
 *.exe
 dist/
-data/nats/
-data/*.token
-data/*.secret
-data/node.id
+data/
+tmp/
 
 # Python executor artifacts
 internal/worker/executor/.venv/

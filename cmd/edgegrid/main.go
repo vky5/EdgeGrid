@@ -24,9 +24,7 @@ import (
 )
 
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("no .env file found; using environment variables")
-	}
+	_ = godotenv.Load()
 
 	// Determine if running headless agent based on role flags.
 	runHeadless := false
@@ -109,8 +107,21 @@ func runTUI(args []string, startMode string) {
 
 	localAdminToken := nodeident.LoadToken(dir, "admin.token")
 	adminToken := argValue(args, "--admin-token")
+
+	// Profile settings (ports, executor) live in dataDir/settings.json.
+	bootCfg := config.LoadConfig()
+	bootCfg.DataDir = dir
+	config.ApplyProfileSettings(bootCfg)
+
 	if coord == "" && adminToken == "" && localAdminToken != "" {
-		coord = "http://127.0.0.1:8080"
+		api := bootCfg.Server.Port
+		if api == "" {
+			api = ":8080"
+		}
+		if !strings.HasPrefix(api, ":") {
+			api = ":" + api
+		}
+		coord = "http://127.0.0.1" + api
 		adminToken = localAdminToken
 	}
 
@@ -126,11 +137,10 @@ func runTUI(args []string, startMode string) {
 	// it instead of silently starting a second one alongside it.
 	var runningAgent *agent.Agent
 	if (connected || isWorker) && startMode != "welcome" && !noAgent {
-		cfg := config.LoadConfig()
-		cfg.DataDir = dir
+		cfg := bootCfg
 		if localAdminToken != "" {
 			cfg.Server.Enabled = true
-			if nodeident.LoadToken(dir, "node.token") != "" {
+			if cfg.JoinURL == "" || nodeident.LoadToken(dir, "node.token") != "" {
 				cfg.Client.Enabled = true
 			} else {
 				cfg.Client.Enabled = false
@@ -138,6 +148,7 @@ func runTUI(args []string, startMode string) {
 		} else if isWorker {
 			cfg.Server.Enabled = false
 			cfg.Client.Enabled = true
+			cfg.EmbedNATS = false
 		}
 
 		nodeAgent, closeLog, err := agent.NewAgentWithLogging(ctx, cfg, nil, true)

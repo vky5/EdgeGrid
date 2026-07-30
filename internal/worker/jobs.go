@@ -145,6 +145,7 @@ func (a *Worker) handleJob(ctx context.Context, msg *nats.Msg) {
 		if kvErr == nil {
 			_ = jobstate.UpdateJobStatus(kv, req.JobId, jobstate.StateFailed, a.id, err.Error(), "")
 		}
+		a.RecordFinished(req.JobId, false)
 	} else {
 		log.Printf("job %s completed, checkpoint: %s", req.JobId, checkpointKey)
 		resp.Success = true
@@ -152,6 +153,7 @@ func (a *Worker) handleJob(ctx context.Context, msg *nats.Msg) {
 		if kvErr == nil {
 			_ = jobstate.UpdateJobStatus(kv, req.JobId, jobstate.StateCompleted, a.id, "", checkpointKey)
 		}
+		a.RecordFinished(req.JobId, true)
 	}
 
 	if pubErr := a.broker.PublishProto(broker.SubjectResults, resp); pubErr != nil {

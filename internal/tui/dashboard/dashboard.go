@@ -6,9 +6,14 @@
 // logs overlay, and global quit key all live one level up in
 // internal/tui/app, shared with onboarding, so there's one implementation
 // of that chrome, not two.
+//
+// Both workers and coordinators get Overview (local machine + job tasks).
+// Pure workers only get Overview — they solve jobs over NATS and cannot
+// submit or admin the grid. Coordinators get Overview + Jobs + Workers + Admin.
 package dashboard
 
 import (
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,6 +21,7 @@ import (
 
 	"github.com/edgegrid/edgegrid/internal/tui/client"
 	"github.com/edgegrid/edgegrid/internal/tui/style"
+	"github.com/edgegrid/edgegrid/internal/worker"
 )
 
 // refreshInterval is how often the Workers tab re-polls the coordinator —
@@ -35,12 +41,12 @@ func refreshCmd() tea.Cmd {
 type tab int
 
 const (
-	tabJobs tab = iota
+	tabOverview tab = iota
+	tabJobs
 	tabWorkers
 	tabAdmin
+	tabSettings
 )
-
-var tabNames = []string{"Jobs", "Workers", "Admin"}
 
 // jobsView is which of jobsList/jobDetail/submitJob the Jobs tab shows.
 type jobsView int
@@ -51,21 +57,26 @@ const (
 	jobsViewSubmit
 )
 
-// chromeLines leaves room for the tab bar (this package) plus the header/
-// footer bars app.App renders around it.
-const chromeLines = 4
+// chromeLines leaves room for the tab bar inside the body region App already
+// sized (App subtracts its own header/footer). Too small and Jobs/Workers
+// tables overflow and look “broken”; 3 ≈ tab row + padding.
+const chromeLines = 3
 
 // Dashboard is the dashboard's content model — see package doc for what it
 // deliberately doesn't own.
 type Dashboard struct {
-	client client.Client
-	coord  string
-	tab    tab
+	client   client.Client
+	coord    string
+	dataDir  string
+	isWorker bool
+	tab      tab
 
 	jobsView  jobsView
 	jobsList  jobsListModel
 	jobDetail jobDetailModel
 	submitJob submitJobModel
+	overview  overviewModel
+	settings  settingsModel
 
 	workersList workersListModel
 	admin       adminModel
@@ -73,19 +84,38 @@ type Dashboard struct {
 	width, height int
 }
 
-func New(c client.Client, coord string) Dashboard {
-	return Dashboard{
+func New(c client.Client, coord string, isWorker bool, nodeID string, natsURL string, dataDir string) Dashboard {
+	d := Dashboard{
 		client:      c,
 		coord:       coord,
-		tab:         tabJobs,
+		dataDir:     dataDir,
+		isWorker:    isWorker,
+		tab:         tabJobs, // coordinator lands on Jobs (primary ops surface)
 		jobsView:    jobsViewList,
 		jobsList:    newJobsListModel(c),
 		workersList: newWorkersListModel(c),
 		admin:       newAdminModel(c),
+		overview:    newOverviewModel(nodeID, natsURL, isWorker),
+		submitJob:   newSubmitJobModel(c, clientIsHTTP(c)),
+		settings:    newSettingsModel(dataDir),
 	}
+	if isWorker {
+		d.tab = tabOverview // workers only have Overview
+	}
+	return d
 }
 
-func (d Dashboard) Init() tea.Cmd {
+// clientIsHTTP is true only for a real coordinator HTTP client — not Stub.
+func clientIsHTTP(c client.Client) bool {
+	_, ok := c.(*client.HTTP)
+	return ok
+}
+
+func (d *Dashboard) Init() tea.Cmd {
+	if d.isWorker {
+		// Overview only — no jobs/workers admin poll.
+		return nil
+	}
 	return tea.Batch(
 		refreshCmd(),
 		d.jobsList.Init(),
@@ -99,14 +129,58 @@ func (d *Dashboard) resizeTables() {
 	d.workersList = d.workersList.WithSize(d.width, h)
 	d.admin.table.SetHeight(h)
 	d.admin.table.SetWidth(d.width)
+	d.overview.width = d.width
+	d.overview.height = h
+	d.submitJob = d.submitJob.WithSize(d.width, h)
+	d.settings.width = d.width
+	d.settings.height = h
+}
+
+func (d *Dashboard) newSubmitJob() submitJobModel {
+	h := max(d.height-chromeLines, 3)
+	return newSubmitJobModel(d.client, clientIsHTTP(d.client)).WithSize(d.width, h)
+}
+
+// WithWorkerRuntime pushes in-process agent status into Overview for both
+// pure workers and coordinators that run a worker loop.
+func (d *Dashboard) WithWorkerRuntime(
+	agentUp, busy bool,
+	jobIDs []string,
+	doneOK, doneFail int,
+	recent []worker.FinishedJob,
+) {
+	d.overview = d.overview.WithAgentRuntime(agentUp, busy, jobIDs, doneOK, doneFail, recent)
+	d.overview = d.overview.refreshLocal()
 }
 
 // Coord reports the connected coordinator address, for app.App's header.
 func (d Dashboard) Coord() string { return d.coord }
 
+// CapturesTextInput reports whether the current view is holding focus in a
+// free-form text field. App uses this to avoid treating "/" as the command
+// bar and "q" as quit while the user is typing (e.g. file paths on submit).
+func (d Dashboard) CapturesTextInput() bool {
+	if d.isWorker {
+		return false
+	}
+	if d.tab == tabJobs && d.jobsView == jobsViewSubmit {
+		return d.submitJob.CapturesTextInput()
+	}
+	// Settings text fields + restart confirm must not trigger / or q.
+	if d.tab == tabSettings {
+		return true
+	}
+	return false
+}
+
 // HelpText reports the current footer hint, for app.App's chrome.
 func (d Dashboard) HelpText() string {
+	if d.isWorker {
+		return "/logs   / command   q quit"
+	}
 	switch d.tab {
+	case tabOverview:
+		return "n submit job   Tab switch tabs   /logs   / command   q quit"
 	case tabJobs:
 		switch d.jobsView {
 		case jobsViewList:
@@ -114,14 +188,39 @@ func (d Dashboard) HelpText() string {
 		case jobsViewDetail:
 			return "esc back"
 		case jobsViewSubmit:
-			return "ctrl+s submit   esc cancel"
+			return "Tab navigate   ctrl+o load file   ctrl+s submit   esc cancel"
 		}
 	case tabWorkers:
 		return "↑/↓ select   tab switch   / command   q quit"
 	case tabAdmin:
 		return "a approve   r reject   tab switch   / command   q quit"
+	case tabSettings:
+		return "↑/↓ fields   ←/→ executor   ctrl+s save   tab switch   q quit"
 	}
 	return ""
+}
+
+func (d Dashboard) getTabNames() []string {
+	if d.isWorker {
+		return []string{"Overview"}
+	}
+	return []string{"Overview", "Jobs", "Workers", "Admin", "Settings"}
+}
+
+func (d Dashboard) tabFromName(name string) tab {
+	switch strings.ToLower(name) {
+	case "overview":
+		return tabOverview
+	case "jobs":
+		return tabJobs
+	case "workers":
+		return tabWorkers
+	case "admin":
+		return tabAdmin
+	case "settings":
+		return tabSettings
+	}
+	return tabOverview
 }
 
 func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
@@ -131,15 +230,59 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 		return d, nil
 	}
 
-	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "tab" {
-		d.tab = (d.tab + 1) % tab(len(tabNames))
-		if d.tab == tabWorkers {
-			return d, d.workersList.Init()
-		}
-		if d.tab == tabJobs {
-			return d, d.jobsList.Init()
-		}
+	// Pure workers: Overview only — no submit, no admin tabs.
+	if d.isWorker {
 		return d, nil
+	}
+
+	if key, ok := msg.(tea.KeyMsg); ok {
+		if key.String() == "n" && d.tab == tabOverview {
+			d.tab = tabJobs
+			d.jobsView = jobsViewSubmit
+			d.submitJob = d.newSubmitJob()
+			return d, d.submitJob.Init()
+		}
+	}
+
+	// Tab switches top-level dashboard tabs, except on the submit form where
+	// Tab / Shift+Tab cycle fields (and ctrl+o path entry). Block while the
+	// settings restart confirm dialog is open.
+	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "tab" {
+		onSubmit := d.tab == tabJobs && d.jobsView == jobsViewSubmit
+		settingsConfirm := d.tab == tabSettings && d.settings.confirmRestart
+		if !onSubmit && !settingsConfirm {
+			names := d.getTabNames()
+			if len(names) <= 1 {
+				return d, nil
+			}
+			var currIdx int
+			for i, name := range names {
+				if d.tabFromName(name) == d.tab {
+					currIdx = i
+					break
+				}
+			}
+			nextIdx := (currIdx + 1) % len(names)
+			d.tab = d.tabFromName(names[nextIdx])
+			if d.tab == tabOverview {
+				d.overview = d.overview.refreshLocal()
+			}
+			if d.tab == tabWorkers {
+				return d, d.workersList.Init()
+			}
+			if d.tab == tabJobs {
+				d.jobsView = jobsViewList
+				return d, d.jobsList.Init()
+			}
+			if d.tab == tabAdmin {
+				d.admin = d.admin.refresh()
+			}
+			if d.tab == tabSettings {
+				d.settings = d.settings.load()
+				return d, d.settings.Init()
+			}
+			return d, nil
+		}
 	}
 
 	switch msg := msg.(type) {
@@ -148,9 +291,9 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 		d.jobsView = jobsViewDetail
 		return d, d.jobDetail.Init()
 	case newJobMsg:
-		d.submitJob = newSubmitJobModel(d.client)
+		d.submitJob = d.newSubmitJob()
 		d.jobsView = jobsViewSubmit
-		return d, nil
+		return d, d.submitJob.Init()
 	case backToJobsMsg:
 		d.jobsView = jobsViewList
 		d.jobsList = newJobsListModel(d.client)
@@ -164,6 +307,8 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 	case RefreshMsg:
 		d.workersList = d.workersList.refresh()
 		d.jobsList = d.jobsList.refresh()
+		d.admin = d.admin.refresh()
+		d.overview = d.overview.refreshLocal()
 		return d, refreshCmd()
 	}
 
@@ -182,23 +327,35 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 		d.workersList, cmd = d.workersList.Update(msg)
 	case tabAdmin:
 		d.admin, cmd = d.admin.Update(msg)
+	case tabSettings:
+		d.settings, cmd = d.settings.Update(msg)
 	}
 	return d, cmd
 }
 
 func (d Dashboard) View() string {
 	var tabParts []string
-	for i, name := range tabNames {
-		if tab(i) == d.tab {
-			tabParts = append(tabParts, style.TabActive.Render(name))
+	names := d.getTabNames()
+	for _, name := range names {
+		var s string
+		if d.tabFromName(name) == d.tab {
+			s = style.TabActive.Render("[ " + strings.ToUpper(name) + " ]")
 		} else {
-			tabParts = append(tabParts, style.TabInactive.Render(name))
+			s = style.TabInactive.Render("  " + strings.ToUpper(name) + "  ")
 		}
+		tabParts = append(tabParts, s)
 	}
-	bar := lipgloss.JoinHorizontal(lipgloss.Top, tabParts...)
+	tabRow := lipgloss.JoinHorizontal(lipgloss.Top, tabParts...)
+	var hint string
+	if len(names) > 1 {
+		hint = style.Help.Render("   ( press Tab to switch )")
+	}
+	bar := lipgloss.JoinHorizontal(lipgloss.Center, tabRow, hint)
 
 	var content string
 	switch d.tab {
+	case tabOverview:
+		content = d.overview.View()
 	case tabJobs:
 		switch d.jobsView {
 		case jobsViewList:
@@ -212,6 +369,8 @@ func (d Dashboard) View() string {
 		content = d.workersList.View()
 	case tabAdmin:
 		content = d.admin.View()
+	case tabSettings:
+		content = d.settings.View()
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, bar, content)

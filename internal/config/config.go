@@ -104,7 +104,7 @@ func loadConfigOnce() *Config {
 	natsStore := flag.String("nats-store", "", "Directory for embedded NATS JetStream persistence (default ./data/nats)")
 	apiPort := flag.String("port", "", "Coordinator HTTP API port (default 8080)")
 	workerID := flag.String("worker-id", "", "Custom worker ID (worker only)")
-	executorType := flag.String("executor", "", "Executor backend: mock or training (default mock)")
+	executorType := flag.String("executor", "", "Executor backend: mock or training (default training — runs real Python + NATS logs)")
 	requireApproval := flag.Bool("require-approval", false, "Worker must approve each job before running it")
 	replicas := flag.Int("replicas", 0, "NATS JetStream replication factor (0 = auto-detect from env)")
 	clusterName := flag.String("cluster-name", "", "NATS cluster name — all server nodes must use the same name (default edgegrid)")
@@ -181,7 +181,10 @@ func loadConfigOnce() *Config {
 	if finalExecutor == "" {
 		finalExecutor = os.Getenv("EXECUTOR")
 		if finalExecutor == "" {
-			finalExecutor = "mock"
+			// training runs the submitted script and publishes stdout to
+			// jobs.logs.* so the dashboard can stream logs. mock is for
+			// tests/CI without Python: EXECUTOR=mock or --executor mock.
+			finalExecutor = "training"
 		}
 	}
 

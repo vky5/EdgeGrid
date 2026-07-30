@@ -58,11 +58,27 @@ func newJobsListModel(c client.Client) jobsListModel {
 		),
 		viewport: viewport.New(30, 8),
 	}
+	// Default Selected is only bold pink text — invisible on a multi-row list.
+	// Use Accent blue background so the cursor row is obvious.
+	st := table.DefaultStyles()
+	st.Header = st.Header.
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(style.Muted).
+		BorderBottom(true).
+		Bold(true).
+		Foreground(style.Accent)
+	st.Selected = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("15")).
+		Background(style.Accent).
+		Bold(true)
+	m.table.SetStyles(st)
+	m.table.Focus()
 	m.viewport.SetContent("Select a job")
 	return m.refresh()
 }
 
 func (m jobsListModel) refresh() jobsListModel {
+	cursor := m.table.Cursor()
 	jobs, err := m.client.ListJobs()
 	m.err = err
 	m.jobs = jobs
@@ -71,6 +87,10 @@ func (m jobsListModel) refresh() jobsListModel {
 		rows = append(rows, table.Row{j.ID, j.Status, j.Worker})
 	}
 	m.table.SetRows(rows)
+	if len(rows) > 0 {
+		m.table.SetCursor(min(cursor, len(rows)-1))
+	}
+	m.table.Focus() // keep selection styles after SetRows / poll refresh
 	return m
 }
 
@@ -86,7 +106,7 @@ func (m jobsListModel) WithSize(width, height int) jobsListModel {
 	return m
 }
 
-func (m jobsListModel) Init() tea.Cmd {
+func (m *jobsListModel) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	cmds = append(cmds, dashboardAnimTickCmd())
 	if w, ok := m.selected(); ok {
@@ -147,6 +167,12 @@ func (m jobsListModel) Update(msg tea.Msg) (jobsListModel, tea.Cmd) {
 	case dashboardAnimTickMsg:
 		m.frame++
 		cmds = append(cmds, dashboardAnimTickCmd())
+		// Re-fetch logs every ~2s while a job is selected so RUNNING jobs
+		// fill in as lines arrive (single fetch on select was a one-shot).
+		if m.frame%8 == 0 && m.selectedJobID != "" && !m.logsLoading {
+			m.logsLoading = true
+			cmds = append(cmds, fetchJobLogsCmd(m.client, m.selectedJobID))
+		}
 	}
 
 	var tableCmd tea.Cmd
@@ -169,13 +195,6 @@ func (m jobsListModel) Update(msg tea.Msg) (jobsListModel, tea.Cmd) {
 }
 
 func (m jobsListModel) View() string {
-	left := m.table.View()
-	if m.err != nil {
-		left = style.ErrorText.Render(m.err.Error())
-	} else if len(m.jobs) == 0 {
-		left = style.Help.Render("No jobs submitted yet.")
-	}
-
 	wTotal := m.width
 	if wTotal <= 0 {
 		wTotal = 120
@@ -185,6 +204,25 @@ func (m jobsListModel) View() string {
 	if hTarget < 12 {
 		hTarget = 12
 	}
+
+	if m.err != nil {
+		return lipgloss.Place(wTotal, hTarget, lipgloss.Center, lipgloss.Center, style.ErrorText.Render(m.err.Error()))
+	}
+
+	if len(m.jobs) == 0 {
+		msg := "No jobs submitted to the cluster yet.\n\n" +
+			"Press " + style.Selected.Render("N") + " to submit a new training job."
+		box := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(style.Muted).
+			Padding(2, 4).
+			Width(50).
+			Align(lipgloss.Center).
+			Render(msg)
+		return lipgloss.Place(wTotal, hTarget, lipgloss.Center, lipgloss.Center, box)
+	}
+
+	left := m.table.View()
 
 	remaining := wTotal - workersListWidth - 2
 	if remaining < 40 {
