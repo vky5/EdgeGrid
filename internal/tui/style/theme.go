@@ -32,6 +32,7 @@ var (
 			Padding(0, 2)
 
 	TabInactive = lipgloss.NewStyle().
+			Bold(true).
 			Foreground(Muted).
 			Padding(0, 2)
 

@@ -24,9 +24,7 @@ import (
 )
 
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("no .env file found; using environment variables")
-	}
+	_ = godotenv.Load()
 
 	// Determine if running headless agent based on role flags.
 	runHeadless := false
@@ -130,7 +128,7 @@ func runTUI(args []string, startMode string) {
 		cfg.DataDir = dir
 		if localAdminToken != "" {
 			cfg.Server.Enabled = true
-			if nodeident.LoadToken(dir, "node.token") != "" {
+			if cfg.JoinURL == "" || nodeident.LoadToken(dir, "node.token") != "" {
 				cfg.Client.Enabled = true
 			} else {
 				cfg.Client.Enabled = false
@@ -138,6 +136,7 @@ func runTUI(args []string, startMode string) {
 		} else if isWorker {
 			cfg.Server.Enabled = false
 			cfg.Client.Enabled = true
+			cfg.EmbedNATS = false
 		}
 
 		nodeAgent, closeLog, err := agent.NewAgentWithLogging(ctx, cfg, nil, true)

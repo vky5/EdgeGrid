@@ -86,7 +86,7 @@ func (m jobsListModel) WithSize(width, height int) jobsListModel {
 	return m
 }
 
-func (m jobsListModel) Init() tea.Cmd {
+func (m *jobsListModel) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	cmds = append(cmds, dashboardAnimTickCmd())
 	if w, ok := m.selected(); ok {

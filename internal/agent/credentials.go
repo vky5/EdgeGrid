@@ -68,24 +68,30 @@ func resolveNATSCredential(ts *tsnet.Server, cfg *config.Config, ident *nodeiden
 		}
 	}
 
-	// worker: join if no token yet.
+	// worker: load credentials or join if missing.
 	if !cfg.EmbedNATS && cfg.Client.Enabled {
-		if cfg.JoinURL != "" {
-			token := nodeident.LoadToken(cfg.DataDir, "node.token")
-			if token == "" {
-				joinResult, err := requestAndWaitForApproval(ts, cfg, ident, joinmgr.RoleWorker)
-				if err != nil {
-					return natsserver.NodeCred{}, "", nil, err
-				}
-				token = joinResult.Token
-				if err := nodeident.SaveToken(cfg.DataDir, "node.token", token); err != nil {
-					log.Printf("warning: could not save node token: %v", err)
-				}
-				// update NATS URL if given.
-				if joinResult.CoordURL != "" {
-					cfg.NatsURL = joinResult.CoordURL
+		if savedNatsURL := nodeident.LoadToken(cfg.DataDir, "nats.url"); savedNatsURL != "" {
+			cfg.NatsURL = savedNatsURL
+		}
+
+		token := nodeident.LoadToken(cfg.DataDir, "node.token")
+		if token == "" && cfg.JoinURL != "" {
+			joinResult, err := requestAndWaitForApproval(ts, cfg, ident, joinmgr.RoleWorker)
+			if err != nil {
+				return natsserver.NodeCred{}, "", nil, err
+			}
+			token = joinResult.Token
+			if err := nodeident.SaveToken(cfg.DataDir, "node.token", token); err != nil {
+				log.Printf("warning: could not save node token: %v", err)
+			}
+			if joinResult.CoordURL != "" {
+				cfg.NatsURL = joinResult.CoordURL
+				if err := nodeident.SaveToken(cfg.DataDir, "nats.url", joinResult.CoordURL); err != nil {
+					log.Printf("warning: could not save NATS URL: %v", err)
 				}
 			}
+		}
+		if token != "" {
 			natsCred = natsserver.NodeCred{Username: ident.NodeID, Password: token}
 		}
 	}

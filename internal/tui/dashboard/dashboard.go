@@ -9,6 +9,7 @@
 package dashboard
 
 import (
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -85,7 +86,7 @@ func New(c client.Client, coord string) Dashboard {
 	}
 }
 
-func (d Dashboard) Init() tea.Cmd {
+func (d *Dashboard) Init() tea.Cmd {
 	return tea.Batch(
 		refreshCmd(),
 		d.jobsList.Init(),
@@ -139,6 +140,9 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 		if d.tab == tabJobs {
 			return d, d.jobsList.Init()
 		}
+		if d.tab == tabAdmin {
+			d.admin = d.admin.refresh()
+		}
 		return d, nil
 	}
 
@@ -164,6 +168,7 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 	case RefreshMsg:
 		d.workersList = d.workersList.refresh()
 		d.jobsList = d.jobsList.refresh()
+		d.admin = d.admin.refresh()
 		return d, refreshCmd()
 	}
 
@@ -189,13 +194,17 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 func (d Dashboard) View() string {
 	var tabParts []string
 	for i, name := range tabNames {
+		var s string
 		if tab(i) == d.tab {
-			tabParts = append(tabParts, style.TabActive.Render(name))
+			s = style.TabActive.Render("[ " + strings.ToUpper(name) + " ]")
 		} else {
-			tabParts = append(tabParts, style.TabInactive.Render(name))
+			s = style.TabInactive.Render("  " + strings.ToUpper(name) + "  ")
 		}
+		tabParts = append(tabParts, s)
 	}
-	bar := lipgloss.JoinHorizontal(lipgloss.Top, tabParts...)
+	tabRow := lipgloss.JoinHorizontal(lipgloss.Top, tabParts...)
+	hint := style.Help.Render("   ( press Tab to switch )")
+	bar := lipgloss.JoinHorizontal(lipgloss.Center, tabRow, hint)
 
 	var content string
 	switch d.tab {
