@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/edgegrid/edgegrid/internal/config"
 	"github.com/edgegrid/edgegrid/internal/coordinator"
@@ -17,18 +18,13 @@ import (
 	"tailscale.com/tsnet"
 )
 
-// NewAgentWithLogging is NewAgent plus nodelog.Setup — the one place a
-// node's log file gets opened, called identically by the plain headless
-// start and by the onboarding wizard's post-confirmation startup, so
-// there's a single "how a node starts" implementation rather than each
-// caller wiring logging up on its own.
-func NewAgentWithLogging(ctx context.Context, cfg *config.Config, onProgress func(string)) (*Agent, func() error, error) {
+func NewAgentWithLogging(ctx context.Context, cfg *config.Config, onProgress func(string), tuiMode bool) (*Agent, func() error, error) {
 	closeLog, err := nodelog.Setup(cfg.DataDir)
 	if err != nil {
 		log.Printf("warning: could not open log file, logging to stdout only: %v", err)
 		closeLog = func() error { return nil }
 	}
-	if onProgress != nil {
+	if tuiMode {
 		// In TUI mode, we do NOT want logs written to os.Stdout because it corrupts the Bubble Tea screen.
 		f, err := os.OpenFile(nodelog.Path(cfg.DataDir), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err == nil {
@@ -58,6 +54,8 @@ type Agent struct {
 
 	tailscaleIP string
 	nodeID      string
+
+	closeOnce sync.Once
 }
 
 // TailscaleIP is this node's own tailnet address — the one other nodes
@@ -240,21 +238,28 @@ func (a *Agent) Start(ctx context.Context) error {
 	return nil
 }
 
+// Close shuts the agent down. Idempotent — the TUI can now legitimately
+// call this from two places for the same agent (the onboarding wizard
+// replacing an already-running node, and that node's own background runner
+// noticing Start returned), so a second call must be a no-op rather than a
+// double-close of the NATS/tsnet handles.
 func (a *Agent) Close() {
-	log.Println("shutting down EdgeGrid services")
-	if a.worker != nil {
-		a.worker.Close()
-	}
-	if a.natsConn != nil {
-		a.natsConn.Close()
-		log.Println("closed NATS connection")
-	}
-	if a.natsServer != nil {
-		a.natsServer.Shutdown()
-	}
-	if a.tsnetServer != nil {
-		if err := a.tsnetServer.Close(); err != nil {
-			log.Printf("closing tsnet server: %v", err)
+	a.closeOnce.Do(func() {
+		log.Println("shutting down EdgeGrid services")
+		if a.worker != nil {
+			a.worker.Close()
 		}
-	}
+		if a.natsConn != nil {
+			a.natsConn.Close()
+			log.Println("closed NATS connection")
+		}
+		if a.natsServer != nil {
+			a.natsServer.Shutdown()
+		}
+		if a.tsnetServer != nil {
+			if err := a.tsnetServer.Close(); err != nil {
+				log.Printf("closing tsnet server: %v", err)
+			}
+		}
+	})
 }

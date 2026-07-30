@@ -54,6 +54,7 @@ func NewBroker(nc *nats.Conn, replicas int) (*Broker, error) {
 	if replicas < 1 {
 		replicas = 1
 	}
+	log.Printf("JetStream broker: replicas=%d (streams/KV buckets need this many JetStream servers to place onto)", replicas)
 	return &Broker{Conn: nc, JS: js, Replicas: replicas}, nil
 }
 

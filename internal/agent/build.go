@@ -40,9 +40,9 @@ func buildCoordinator(cfg *config.Config, nc *nats.Conn, embeddedNATS *natsserve
 		if err := nodeident.SaveToken(cfg.DataDir, "admin.token", adminToken); err != nil {
 			log.Printf("warning: could not save admin token: %v", err)
 		}
-		fmt.Printf("\n[edgegrid] ✦ admin token (save this): %s\n\n", adminToken)
+		log.Printf("[edgegrid] ✦ admin token (save this): %s", adminToken)
 	} else {
-		fmt.Printf("[edgegrid] admin token loaded from %s/admin.token\n", cfg.DataDir)
+		log.Printf("[edgegrid] admin token loaded from %s/admin.token", cfg.DataDir)
 	}
 	coord.SetAdminToken(adminToken)
 

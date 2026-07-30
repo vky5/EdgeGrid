@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 )
@@ -37,7 +38,7 @@ func LoadOrCreate(dataDir string) (*Identity, error) {
 	if err := SaveToken(dataDir, identFile, string(data)); err != nil {
 		return nil, fmt.Errorf("save node identity: %w", err)
 	}
-	fmt.Printf("[edgegrid] new node identity: %s\n", id.NodeID)
+	log.Printf("[edgegrid] new node identity: %s", id.NodeID)
 	return id, nil
 }
 

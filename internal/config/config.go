@@ -3,8 +3,12 @@ package config
 import (
 	"flag"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+
+	"github.com/edgegrid/edgegrid/internal/profile"
 )
 
 type Config struct {
@@ -18,7 +22,6 @@ type Config struct {
 	ClusterPort   int      // intra-cluster gossip port (default 6222)
 	Routes        []string // seed route URLs, e.g. nats://blacktree.in:6222
 	JoinURL       string   // coordinator HTTP URL to send a join request to (non-primary nodes)
-	DashboardURL  string   // dashboard URL shown to the user to claim their node (optional)
 	AdvertiseHost string   // externally-reachable host for this coordinator's embedded NATS (optional)
 
 	TailscaleAuthKey  string // tsnet auth key for joining the tailnet (optional; falls back to interactive login)
@@ -56,7 +59,44 @@ func envStr(key, fallback string) string {
 	return fallback
 }
 
+// ResolveDataDir applies the flag → DATA_DIR env → active profile → ./data
+// fallback used everywhere a data dir is needed (node startup, the TUI, the
+// plain `logs` CLI) — one implementation so all of them agree on where a
+// node's state lives. The flag and env var stay first so they remain an
+// explicit escape hatch even once a profile is active.
+func ResolveDataDir(flagVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	if v := os.Getenv("DATA_DIR"); v != "" {
+		return v
+	}
+	if dir := profile.Dir(); dir != "" {
+		return dir
+	}
+	return "./data"
+}
+
+var (
+	loadOnce  sync.Once
+	loadedCfg *Config
+)
+
+// LoadConfig parses flags/env into a Config exactly once per process and
+// caches the result — registering the same flag name on the global
+// flag.CommandLine twice panics ("flag redefined"), and this now has more
+// than one call site that can legitimately run more than once in the same
+// process (e.g. the TUI's onboarding wizard can be entered more than once
+// via "/onboard"). Every call after the first just returns the cached
+// Config; flags/env are read once, at process start, same as before.
 func LoadConfig() *Config {
+	loadOnce.Do(func() {
+		loadedCfg = loadConfigOnce()
+	})
+	return loadedCfg
+}
+
+func loadConfigOnce() *Config {
 	roleServer := flag.Bool("server", false, "Start the coordinator server")
 	roleClient := flag.Bool("client", false, "Start the worker client agent")
 	natsURL := flag.String("nats", "", "NATS server URL (omit to auto-start embedded NATS when running as coordinator)")
@@ -71,7 +111,6 @@ func LoadConfig() *Config {
 	clusterPort := flag.Int("cluster-port", 0, "Intra-cluster gossip port for embedded NATS (default 6222)")
 	routes := flag.String("routes", "", "Comma-separated seed route URLs for clustering, e.g. nats://blacktree.in:6222")
 	joinURL := flag.String("join", "", "Coordinator HTTP URL to request cluster/worker join approval, e.g. http://blacktree.in:8080")
-	dashboardURL := flag.String("dashboard", "", "Dashboard URL shown to the user to claim their node, e.g. https://edgegrid.vercel.app")
 	dataDir := flag.String("data-dir", "", "Directory for node identity and credential files (default ./data)")
 	advertiseHost := flag.String("advertise-host", "", "Externally-reachable host for this coordinator's embedded NATS, e.g. blacktree.in (default: none — join responses fall back to localhost)")
 	tsAuthKey := flag.String("ts-authkey", "", "tsnet auth key for joining the tailnet (default: interactive login, or TS_AUTHKEY env)")
@@ -112,9 +151,14 @@ func LoadConfig() *Config {
 		finalNATSPort = envInt("NATS_PORT", 4222)
 	}
 
+	finalDataDir := ResolveDataDir(*dataDir)
+
 	finalNATSStore := *natsStore
 	if finalNATSStore == "" {
-		finalNATSStore = envStr("NATS_STORE_DIR", "./data/nats")
+		// Derived from the resolved data dir (not a literal "./data/nats")
+		// so JetStream storage moves with the data dir/profile instead of
+		// always landing in the same place regardless of which is active.
+		finalNATSStore = envStr("NATS_STORE_DIR", filepath.Join(finalDataDir, "nats"))
 	}
 
 	finalPort := *apiPort
@@ -172,19 +216,9 @@ func LoadConfig() *Config {
 		}
 	}
 
-	finalDataDir := *dataDir
-	if finalDataDir == "" {
-		finalDataDir = envStr("DATA_DIR", "./data")
-	}
-
 	finalJoinURL := *joinURL
 	if finalJoinURL == "" {
 		finalJoinURL = os.Getenv("JOIN_URL")
-	}
-
-	finalDashboardURL := *dashboardURL
-	if finalDashboardURL == "" {
-		finalDashboardURL = os.Getenv("DASHBOARD_URL")
 	}
 
 	finalAdvertiseHost := *advertiseHost
@@ -216,7 +250,6 @@ func LoadConfig() *Config {
 		ClusterPort:   finalClusterPort,
 		Routes:        finalRoutes,
 		JoinURL:       finalJoinURL,
-		DashboardURL:  finalDashboardURL,
 		AdvertiseHost: finalAdvertiseHost,
 
 		TailscaleAuthKey:  finalTailscaleAuthKey,
