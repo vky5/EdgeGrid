@@ -9,6 +9,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
 	"github.com/edgegrid/edgegrid/internal/natsserver"
+	"github.com/edgegrid/edgegrid/internal/tokenmgr"
 	"github.com/nats-io/nats.go"
 	"tailscale.com/tsnet"
 )
@@ -17,6 +18,7 @@ type Coordinator struct {
 	jsBroker    *broker.Broker           // Broker with nats.conn, jetstream and replicas
 	manager     *workerman.WorkerManager // nats KV store
 	joinMgr     *joinmgr.Manager
+	tokenMgr    *tokenmgr.Manager
 	natsServer  *natsserver.EmbeddedServer
 	tsnetServer *tsnet.Server
 	dataDir     string
@@ -39,10 +41,16 @@ func NewCoordinatorWithConn(nc *nats.Conn, replicas int, ns *natsserver.Embedded
 		return nil, fmt.Errorf("failed to initialize join manager: %w", err)
 	}
 
+	tm, err := tokenmgr.New(jsBroker)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize token manager: %w", err)
+	}
+
 	return &Coordinator{
 		jsBroker:   jsBroker,
 		manager:    manager,
 		joinMgr:    jm,
+		tokenMgr:   tm,
 		natsServer: ns,
 	}, nil
 }
@@ -104,7 +112,7 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 	}
 
 	go c.StartStaleJobRecovery(ctx)
-	go StartHTTPServer(apiAddr, c.jsBroker, c.manager, c.joinMgr, c.natsServer, c.tsnetServer, c.dataDir, c.adminToken)
+	go StartHTTPServer(apiAddr, c.jsBroker, c.manager, c.joinMgr, c.tokenMgr, c.natsServer, c.tsnetServer, c.dataDir, c.adminToken)
 
 	<-ctx.Done()
 	log.Println("shutting down coordinator")

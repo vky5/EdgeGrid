@@ -13,10 +13,12 @@ import (
 	"github.com/edgegrid/edgegrid/internal/broker"
 	"github.com/edgegrid/edgegrid/internal/coordinator/jobsapi"
 	"github.com/edgegrid/edgegrid/internal/coordinator/joinapi"
+	"github.com/edgegrid/edgegrid/internal/coordinator/tokenapi"
 	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 	"github.com/edgegrid/edgegrid/internal/coordinator/workersapi"
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
 	"github.com/edgegrid/edgegrid/internal/natsserver"
+	"github.com/edgegrid/edgegrid/internal/tokenmgr"
 	"tailscale.com/tsnet"
 )
 
@@ -93,7 +95,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager, jm *joinmgr.Manager, ns *natsserver.EmbeddedServer, ts *tsnet.Server, dataDir string, adminToken string) {
+func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager, jm *joinmgr.Manager, tm *tokenmgr.Manager, ns *natsserver.EmbeddedServer, ts *tsnet.Server, dataDir string, adminToken string) {
 	backendMux := http.NewServeMux()
 	// tailnetMux carries only the bootstrap routes a joining node needs
 	// (health check + join submit/poll) and is what the tsnet listener
@@ -230,6 +232,37 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 			return
 		}
 		joinapi.List(w, r, jm)
+	})
+
+	// POST /admin/tokens/mint       — mint a new Tailscale auth key
+	// GET  /admin/tokens            — list minted tokens (status/node/IP)
+	// POST /admin/tokens/{id}/revoke — revoke a minted token
+	backendMux.HandleFunc("/admin/tokens/mint", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		tokenapi.Mint(w, r, tm, dataDir)
+	})
+	backendMux.HandleFunc("/admin/tokens", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		tokenapi.List(w, r, tm, jm)
+	})
+	backendMux.HandleFunc("/admin/tokens/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		path := strings.TrimPrefix(r.URL.Path, "/admin/tokens/")
+		id, action, ok := strings.Cut(path, "/")
+		if !ok || action != "revoke" {
+			http.Error(w, "path must be /admin/tokens/{id}/revoke", http.StatusBadRequest)
+			return
+		}
+		tokenapi.Revoke(w, r, id, tm, dataDir)
 	})
 
 	backendHandler := corsMiddleware(requireGateway(adminToken, backendMux))
