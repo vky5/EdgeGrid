@@ -142,6 +142,14 @@ func NewAgent(ctx context.Context, cfg *config.Config, onProgress func(string)) 
 	if cfg.AdvertiseHost == "" && ip4.IsValid() {
 		cfg.AdvertiseHost = ip4.String()
 	}
+	// Persisted so a later process start (e.g. `edgegrid dashboard`, before
+	// any agent is up yet) can default its coordinator address to this
+	// node's real tsnet IP instead of 127.0.0.1 — see runTUI in main.go.
+	if ip4.IsValid() {
+		if err := nodeident.SaveToken(cfg.DataDir, "tailscale.ip", ip4.String()); err != nil {
+			log.Printf("warning: could not save tailscale ip: %v", err)
+		}
+	}
 
 	// Load or generate persistent node identity.
 	ident, err := nodeident.LoadOrCreate(cfg.DataDir)
