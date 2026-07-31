@@ -113,7 +113,7 @@ func New(ctx context.Context, dataDir string, c client.Client, coord string, con
 		nodeID = ident.NodeID
 	}
 	natsURL := nodeident.LoadToken(dataDir, "nats.url")
-	isPrimary := !isWorker && nodeident.LoadToken(dataDir, "admin.token") != "" && nodeident.LoadToken(dataDir, "node.token") == ""
+	isPrimary := config.DetectRoleHint(dataDir) == "primary"
 
 	return App{
 		ctx:          ctx,
@@ -422,8 +422,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.displayCoord = "http://" + nodeAgent.TailscaleIP() + ":" + port
 				}
 				adminToken := nodeident.LoadToken(a.dataDir, "admin.token")
-				isWorker := adminToken == "" && nodeident.LoadToken(a.dataDir, "node.token") != ""
-				isPrimary := !isWorker && adminToken != "" && nodeident.LoadToken(a.dataDir, "node.token") == ""
+				role := config.DetectRoleHint(a.dataDir)
+				isWorker := role == "worker"
+				isPrimary := role == "primary"
 				var nodeID string
 				if ident, err := nodeident.LoadOrCreate(a.dataDir); err == nil {
 					nodeID = ident.NodeID

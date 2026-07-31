@@ -168,13 +168,33 @@ func SnapshotFromConfig(cfg *Config, role string) ProfileSettings {
 	}
 }
 
-// DetectRoleHint looks at tokens in dataDir to guess profile kind for the UI.
+// DetectRoleHint reports this profile's role: "primary", "secondary", or
+// "worker" (empty if unknown).
+//
+// Prefers the role persisted to settings.json at onboarding's role-selection
+// step (see onboarding/role.go) — written the moment a role is confirmed,
+// before any join/approval even starts, so it's unaffected by whether that
+// flow later completes. Only falls back to inferring from which credential
+// files exist for profiles that never went through the wizard (headless
+// --server/--client launches) or predate this being tracked.
+//
+// The fallback matters: a secondary coordinator generates admin.token only
+// after a successful join+approval (see agent/build.go's buildCoordinator).
+// A node whose first run was interrupted between saving node.token and
+// reaching that point — or any run that read the *inferred* role instead of
+// the persisted one and started as a plain worker as a result — never gets
+// admin.token, permanently misclassifying it as a worker on every future
+// restart too (a worker-configured run never calls buildCoordinator either).
+// Persisting role directly at selection time breaks that loop.
 func DetectRoleHint(dataDir string) string {
+	if s, err := LoadProfileSettings(dataDir); err == nil && s.Role != "" {
+		return s.Role
+	}
 	admin := fileExists(filepath.Join(dataDir, "admin.token"))
 	node := fileExists(filepath.Join(dataDir, "node.token"))
 	switch {
 	case admin && node:
-		return "primary" // coord that can also work
+		return "secondary" // has coordinator creds and was itself approved into another cluster
 	case admin:
 		return "primary"
 	case node:
