@@ -2,6 +2,8 @@ package agent
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -23,11 +25,21 @@ func requestAndWaitForApproval(ts *tsnet.Server, cfg *config.Config, ident *node
 	if err != nil {
 		return nil, fmt.Errorf("prepare poll nonce: %w", err)
 	}
+	// Reported so the coordinator's tokenapi can recognize a join that used
+	// a minted key without either side ever sending the raw key again.
+	var authKeyHash string
+	if cfg.TailscaleAuthKey != "" {
+		sum := sha256.Sum256([]byte(cfg.TailscaleAuthKey))
+		authKeyHash = hex.EncodeToString(sum[:])
+	}
+	ip4, _ := ts.TailscaleIPs()
 	reqBody, _ := json.Marshal(map[string]string{
-		"node_id":  ident.NodeID,
-		"role":     role,
-		"hostname": hostname,
-		"nonce":    nonce,
+		"node_id":       ident.NodeID,
+		"role":          role,
+		"hostname":      hostname,
+		"nonce":         nonce,
+		"auth_key_hash": authKeyHash,
+		"ip":            ip4.String(),
 	})
 
 	joinURL := cfg.JoinURL
