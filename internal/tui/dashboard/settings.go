@@ -11,8 +11,22 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/edgegrid/edgegrid/internal/config"
+	"github.com/edgegrid/edgegrid/internal/nodeident"
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
+
+// tsAPIFields are the three settings persisted straight to their own 0600
+// files (nodeident.SaveToken), not settings.json — same convention as
+// admin.token/cluster.secret, since these are the credential that lets the
+// coordinator mint Tailscale auth keys (see internal/tailscaleapi). Kept as
+// a package-level map so load()/persist()/focusField() share one source of
+// truth for field name -> file name instead of three separate switches.
+var tsAPIFields = map[string]string{
+	"Tailscale API Client ID":     "ts_api_client_id",
+	"Tailscale API Client Secret": "ts_api_client_secret",
+	"Tailscale API Tailnet":       "ts_api_tailnet",
+	"Tailscale API Tag":           "ts_api_tag",
+}
 
 // SettingsRestartMsg is emitted after a successful save when the user
 // confirmed restart — app must quit so main can exec a fresh process
@@ -20,10 +34,11 @@ import (
 type SettingsRestartMsg struct{}
 
 type settingsModel struct {
-	dataDir string
-	role    string
-	width   int
-	height  int
+	dataDir   string
+	role      string
+	isPrimary bool
+	width     int
+	height    int
 
 	fields []string
 	idx    int
@@ -96,12 +111,25 @@ func (m settingsModel) load() settingsModel {
 		"Tailscale Hostname": host,
 	}
 
+	// isPrimary mirrors the stricter definition used to gate the Tokens tab
+	// itself (admin.token present, node.token absent — never joined anyone
+	// else) — deliberately not config.DetectRoleHint's looser "primary",
+	// which also returns "primary" for a coordinator that has both tokens
+	// (was itself once approved into another cluster).
+	m.isPrimary = nodeident.LoadToken(m.dataDir, "admin.token") != "" && nodeident.LoadToken(m.dataDir, "node.token") == ""
+
 	switch m.role {
 	case "worker":
 		m.fields = []string{"Executor", "Require Approval", "Join URL", "Tailscale Hostname"}
 	default:
 		// coordinator / primary / unknown — ports + executor
 		m.fields = []string{"API Port", "NATS Port", "Cluster Port", "Cluster Name", "Executor", "Require Approval", "Tailscale Hostname"}
+	}
+	if m.isPrimary {
+		for _, name := range []string{"Tailscale API Client ID", "Tailscale API Client Secret", "Tailscale API Tailnet", "Tailscale API Tag"} {
+			m.vals[name] = nodeident.LoadToken(m.dataDir, tsAPIFields[name])
+			m.fields = append(m.fields, name)
+		}
 	}
 	m.idx = 0
 	m.dirty = false
@@ -120,6 +148,11 @@ func (m settingsModel) focusField() settingsModel {
 		m.input.Blur()
 		m.input.SetValue(m.vals[name])
 		return m
+	}
+	if name == "Tailscale API Client Secret" {
+		m.input.EchoMode = textinput.EchoPassword
+	} else {
+		m.input.EchoMode = textinput.EchoNormal
 	}
 	val := m.vals[name]
 	m.input.SetValue(val)
@@ -348,6 +381,17 @@ func (m settingsModel) persist() error {
 	if v := get("Tailscale Hostname"); v != "" {
 		s.TailscaleHostname = v
 	}
+	// Written straight to their own 0600 files, not settings.json — same
+	// credential convention as admin.token, and read fresh on every mint/
+	// revoke call (tailscaleapi.LoadCredentials), so this takes effect
+	// immediately with no coordinator restart needed.
+	for name, file := range tsAPIFields {
+		if v := get(name); v != "" {
+			if err := nodeident.SaveToken(m.dataDir, file, v); err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+		}
+	}
 	return config.SaveProfileSettings(m.dataDir, s)
 }
 
@@ -386,7 +430,7 @@ func (m settingsModel) View() string {
 		}
 		b.WriteString(yes + "    " + no + "\n\n")
 		b.WriteString(style.Help.Render("←/→ select   enter confirm   esc/n stay"))
-		return b.String()
+		return lipgloss.NewStyle().Width(w).Render(b.String())
 	}
 
 	b.WriteString(style.Help.Render("↑/↓ navigate (lists: exit at ends)   enter next   ctrl+s save") + "\n\n")
@@ -410,7 +454,11 @@ func (m settingsModel) View() string {
 			if focused {
 				b.WriteString("  " + m.input.View() + "\n\n")
 			} else {
-				b.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(m.vals[field]) + "\n\n")
+				shown := m.vals[field]
+				if field == "Tailscale API Client Secret" && shown != "" {
+					shown = strings.Repeat("•", len(shown))
+				}
+				b.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(shown) + "\n\n")
 			}
 		}
 	}
@@ -426,7 +474,12 @@ func (m settingsModel) View() string {
 	} else {
 		b.WriteString(style.Help.Render("saved settings load on agent start"))
 	}
-	return b.String()
+	// Stretched to the full tab width, like every table-based tab already
+	// is (SetWidth(d.width)) — otherwise this is the one tab whose content
+	// is narrower than the tab bar, and App.View()'s horizontal centering
+	// (invisible when content already fills the width) visibly drags both
+	// the body and the tab bar above it toward the middle of the screen.
+	return lipgloss.NewStyle().Width(w).Render(b.String())
 }
 
 // renderExecutorList is a vertical scrollable list — scales when KnownExecutors grows.

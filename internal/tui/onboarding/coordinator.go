@@ -12,13 +12,17 @@ import (
 )
 
 // coordinatorChosenMsg is emitted when the user confirms a join address.
+// authKey is optional — left blank, the joining node falls back to tsnet's
+// interactive login instead of joining silently.
 type coordinatorChosenMsg struct {
-	addr string
+	addr    string
+	authKey string
 }
 
 type coordinatorModel struct {
 	roleLabel     string
 	input         textinput.Model
+	authKeyInput  textinput.Model
 	width, height int
 	frame         int
 }
@@ -32,7 +36,16 @@ func newCoordinatorModel(roleLabel, defaultAddr string) coordinatorModel {
 	ti.Width = 48
 	ti.PromptStyle = lipgloss.NewStyle().Foreground(style.Accent)
 	ti.TextStyle = lipgloss.NewStyle().Foreground(style.Accent).Bold(true)
-	return coordinatorModel{roleLabel: roleLabel, input: ti}
+
+	authTi := textinput.New()
+	authTi.Placeholder = "tskey-auth-... (optional)"
+	authTi.EchoMode = textinput.EchoPassword
+	authTi.CharLimit = 256
+	authTi.Width = 48
+	authTi.PromptStyle = lipgloss.NewStyle().Foreground(style.Muted)
+	authTi.TextStyle = lipgloss.NewStyle().Foreground(style.Muted).Bold(true)
+
+	return coordinatorModel{roleLabel: roleLabel, input: ti, authKeyInput: authTi}
 }
 
 func (m coordinatorModel) WithSize(width, height int) coordinatorModel {
@@ -51,13 +64,31 @@ func (m coordinatorModel) Update(msg tea.Msg) (coordinatorModel, tea.Cmd) {
 		m.frame++
 		return m, tickCmd()
 	case tea.KeyMsg:
-		if msg.String() == "enter" && m.input.Value() != "" {
-			addr := m.input.Value()
-			return m, func() tea.Msg { return coordinatorChosenMsg{addr: addr} }
+		switch msg.String() {
+		case "tab", "shift+tab":
+			if m.input.Focused() {
+				m.input.Blur()
+				m.authKeyInput.Focus()
+			} else {
+				m.authKeyInput.Blur()
+				m.input.Focus()
+			}
+			return m, textinput.Blink
+		case "enter":
+			if m.input.Value() != "" {
+				addr := m.input.Value()
+				authKey := m.authKeyInput.Value()
+				return m, func() tea.Msg { return coordinatorChosenMsg{addr: addr, authKey: authKey} }
+			}
+			return m, nil
 		}
 	}
 	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
+	if m.authKeyInput.Focused() {
+		m.authKeyInput, cmd = m.authKeyInput.Update(msg)
+	} else {
+		m.input, cmd = m.input.Update(msg)
+	}
 	return m, cmd
 }
 
@@ -93,7 +124,7 @@ func (m coordinatorModel) renderArt(w int) string {
 }
 
 func (m coordinatorModel) renderHint(w int) string {
-	text := "INFO: Enter the HTTP address of an active primary coordinator. The joining node will request token validation and secure network credentials."
+	text := "INFO: Enter the HTTP address of an active primary coordinator. If its operator gave you a Tailscale auth key, enter it too (tab to switch fields) to join silently — otherwise you'll get an interactive Tailscale login link instead."
 	return lipgloss.NewStyle().
 		Foreground(style.Help.GetForeground()).
 		Width(max(w-4, 15)).
@@ -130,12 +161,29 @@ func (m coordinatorModel) View() string {
 	leftLines = append(leftLines, style.Help.Render("Join as: ")+style.Selected.Render(m.roleLabel), "")
 	leftLines = append(leftLines, style.Title.Render("Coordinator address"), "")
 
+	addrBorder := style.Muted
+	authBorder := style.Muted
+	if m.input.Focused() {
+		addrBorder = style.Accent
+	} else {
+		authBorder = style.Accent
+	}
+
 	inputBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(style.Accent).
+		BorderForeground(addrBorder).
 		Padding(0, 1).
 		Width(wLeft - 4)
 	leftLines = append(leftLines, inputBox.Render(m.input.View()), "")
+
+	leftLines = append(leftLines, style.Title.Render("Tailscale auth key")+style.Help.Render(" (optional, tab to focus)"), "")
+
+	authBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(authBorder).
+		Padding(0, 1).
+		Width(wLeft - 4)
+	leftLines = append(leftLines, authBox.Render(m.authKeyInput.View()), "")
 
 	leftLines = append(leftLines, style.Help.Render(strings.Repeat("┄", max(wLeft-4, 10))), "")
 	leftLines = append(leftLines, style.Help.Render("Examples"), "")

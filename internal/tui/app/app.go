@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -56,6 +57,21 @@ type App struct {
 	// different from "just hasn't connected to one yet."
 	connected bool
 	isWorker  bool
+	// isPrimary is true only for the coordinator that never joined anyone
+	// else (has admin.token but no node.token — see runTUI) — the only role
+	// that can hold Tailscale API credentials, so the only one that gets a
+	// Tokens tab.
+	isPrimary bool
+
+	// displayCoord is the address shown in the header for the operator to
+	// share — the node's real Tailscale IP, when known. Deliberately not
+	// the same value as dashboard.Coord()/the client's base URL: the
+	// dashboard's own HTTP client must stay on loopback (only backendMux
+	// serves /admin, /workers, /jobs — the tsnet listener reachable via the
+	// Tailscale IP only carries /health and /join), so the address worth
+	// dialing and the address worth showing are genuinely different things.
+	// Empty falls back to dashboard.Coord() in subtitle().
+	displayCoord string
 
 	dashboard dashboard.Dashboard
 	wizard    onboarding.Wizard
@@ -97,6 +113,7 @@ func New(ctx context.Context, dataDir string, c client.Client, coord string, con
 		nodeID = ident.NodeID
 	}
 	natsURL := nodeident.LoadToken(dataDir, "nats.url")
+	isPrimary := !isWorker && nodeident.LoadToken(dataDir, "admin.token") != "" && nodeident.LoadToken(dataDir, "node.token") == ""
 
 	return App{
 		ctx:          ctx,
@@ -104,7 +121,9 @@ func New(ctx context.Context, dataDir string, c client.Client, coord string, con
 		mode:         modeDashboard,
 		connected:    connected,
 		isWorker:     isWorker,
-		dashboard:    dashboard.New(c, coord, isWorker, nodeID, natsURL, dataDir),
+		isPrimary:    isPrimary,
+		displayCoord: displayCoordFor(dataDir, coord),
+		dashboard:    dashboard.New(c, coord, isWorker, isPrimary, nodeID, natsURL, dataDir),
 		cmdbar:       cmdbar.New(commands...),
 		runningAgent: runningAgent,
 	}
@@ -296,9 +315,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				nodeID = ident.NodeID
 			}
 			natsURL := nodeident.LoadToken(a.dataDir, "nats.url")
-			a.dashboard = dashboard.New(c, sub.coord, a.isWorker, nodeID, natsURL, a.dataDir)
+			a.dashboard = dashboard.New(c, sub.coord, a.isWorker, a.isPrimary, nodeID, natsURL, a.dataDir)
 			a.connected = true
 			a.showConnect = false
+			// sub.coord is whatever the operator typed in directly — no
+			// separate "share address" to prefer over it, unlike the
+			// co-located-agent cases where displayCoord differs from the
+			// loopback address actually dialed.
+			a.displayCoord = ""
 			return a, nil
 		}
 		var cmd tea.Cmd
@@ -366,7 +390,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var wizardCmd tea.Cmd
 			a.wizard, wizardCmd = a.wizard.Update(msg)
 
-			_, confirmed, nodeAgent, _, startErr := a.wizard.Result()
+			_, confirmed, nodeAgent, cfg, startErr := a.wizard.Result()
 			if confirmed {
 				if startErr == nil && nodeAgent != nil {
 					// The wizard already closed whatever agent used to be
@@ -379,10 +403,27 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}()
 				}
 
-				// Initialize dashboard client pointing to local agent
-				coord := "http://127.0.0.1:8080"
+				// Initialize dashboard client pointing to local agent — always
+				// loopback. Only the coordinator's real host listener
+				// (backendMux) serves /admin, /workers, /jobs; the tsnet
+				// listener reachable via the Tailscale IP only carries
+				// /health and /join (see router.go's tailnetMux), so an
+				// admin-facing client pointed at the Tailscale IP 404s on
+				// everything it needs. The Tailscale IP is still worth
+				// showing the operator for sharing — that's displayCoord,
+				// kept separate from the address actually dialed.
+				port := "8080"
+				if cfg != nil && cfg.Server.Port != "" {
+					port = strings.TrimPrefix(cfg.Server.Port, ":")
+				}
+				coord := "http://127.0.0.1:" + port
+				a.displayCoord = ""
+				if nodeAgent != nil && nodeAgent.TailscaleIP() != "" {
+					a.displayCoord = "http://" + nodeAgent.TailscaleIP() + ":" + port
+				}
 				adminToken := nodeident.LoadToken(a.dataDir, "admin.token")
 				isWorker := adminToken == "" && nodeident.LoadToken(a.dataDir, "node.token") != ""
+				isPrimary := !isWorker && adminToken != "" && nodeident.LoadToken(a.dataDir, "node.token") == ""
 				var nodeID string
 				if ident, err := nodeident.LoadOrCreate(a.dataDir); err == nil {
 					nodeID = ident.NodeID
@@ -390,13 +431,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				natsURL := nodeident.LoadToken(a.dataDir, "nats.url")
 				if adminToken != "" {
 					c := client.NewHTTP(coord, adminToken)
-					a.dashboard = dashboard.New(c, coord, isWorker, nodeID, natsURL, a.dataDir)
+					a.dashboard = dashboard.New(c, coord, isWorker, isPrimary, nodeID, natsURL, a.dataDir)
 					a.connected = true
 				} else {
-					a.dashboard = dashboard.New(client.New(), "", isWorker, nodeID, natsURL, a.dataDir)
+					a.dashboard = dashboard.New(client.New(), "", isWorker, isPrimary, nodeID, natsURL, a.dataDir)
 					a.connected = false
 					a.isWorker = isWorker
 				}
+				a.isPrimary = isPrimary
 
 				a.mode = modeDashboard
 				a.dashboard, _ = a.dashboard.Update(tea.WindowSizeMsg{Width: a.width, Height: a.height})
@@ -469,6 +511,22 @@ func (a App) notConnectedView() string {
 		style.Help.Render("Use /connect to connect to one.")
 }
 
+// displayCoordFor builds the address worth showing the operator to share —
+// this node's persisted Tailscale IP plus coord's port — falling back to
+// coord itself (typically loopback) if no Tailscale IP has been persisted
+// yet. Never used for the dashboard's actual client transport; see
+// App.displayCoord's doc comment for why that has to stay loopback.
+func displayCoordFor(dataDir, coord string) string {
+	ip := nodeident.LoadToken(dataDir, "tailscale.ip")
+	if ip == "" || coord == "" {
+		return ""
+	}
+	if u, err := url.Parse(coord); err == nil && u.Port() != "" {
+		return "http://" + ip + ":" + u.Port()
+	}
+	return ""
+}
+
 // subtitle is the text after the blue EDGEGRID badge in the top bar.
 func (a App) subtitle() string {
 	switch {
@@ -482,7 +540,11 @@ func (a App) subtitle() string {
 		return "Setup"
 	default:
 		s := "Dashboard"
-		if c := a.dashboard.Coord(); c != "" {
+		c := a.displayCoord
+		if c == "" {
+			c = a.dashboard.Coord()
+		}
+		if c != "" {
 			s += "  ·  " + c
 		}
 		return s

@@ -113,6 +113,9 @@ func runTUI(args []string, startMode string) {
 	bootCfg.DataDir = dir
 	config.ApplyProfileSettings(bootCfg)
 
+	noAgent := hasFlag(args, "--no-agent")
+	agentWillStart := startMode != "welcome" && !noAgent
+
 	if coord == "" && adminToken == "" && localAdminToken != "" {
 		api := bootCfg.Server.Port
 		if api == "" {
@@ -121,13 +124,21 @@ func runTUI(args []string, startMode string) {
 		if !strings.HasPrefix(api, ":") {
 			api = ":" + api
 		}
+		// Always loopback here, deliberately — this coord is the dashboard's
+		// own transport to its co-located coordinator, and only the
+		// coordinator's real host listener (backendMux, plain
+		// http.ListenAndServe) serves /admin, /workers, /jobs. The tsnet
+		// listener (reachable via the Tailscale IP) only carries /health and
+		// /join — see router.go's tailnetMux — so pointing this at the
+		// Tailscale IP 404s every admin call even when it's reachable at
+		// all. The address worth showing the operator to share is a
+		// separate, display-only concern — see App.displayCoord.
 		coord = "http://127.0.0.1" + api
 		adminToken = localAdminToken
 	}
 
 	isWorker := localAdminToken == "" && nodeident.LoadToken(dir, "node.token") != ""
 	connected := coord != "" && adminToken != ""
-	noAgent := hasFlag(args, "--no-agent")
 
 	// If the node is already onboarded and we aren't starting in the welcome screen,
 	// start the local agent in the background so the dashboard client can connect to it.
@@ -136,7 +147,7 @@ func runTUI(args []string, startMode string) {
 	// node is already running, so re-onboarding via "/onboard" can replace
 	// it instead of silently starting a second one alongside it.
 	var runningAgent *agent.Agent
-	if (connected || isWorker) && startMode != "welcome" && !noAgent {
+	if (connected || isWorker) && agentWillStart {
 		cfg := bootCfg
 		if localAdminToken != "" {
 			cfg.Server.Enabled = true

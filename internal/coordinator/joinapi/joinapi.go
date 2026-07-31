@@ -19,10 +19,12 @@ import (
 // Submit accepts a join request from a worker or server node (POST /join).
 func Submit(w http.ResponseWriter, r *http.Request, jm *joinmgr.Manager) {
 	var body struct {
-		NodeID   string `json:"node_id"`
-		Role     string `json:"role"`
-		Hostname string `json:"hostname"`
-		Nonce    string `json:"nonce"`
+		NodeID      string `json:"node_id"`
+		Role        string `json:"role"`
+		Hostname    string `json:"hostname"`
+		Nonce       string `json:"nonce"`
+		AuthKeyHash string `json:"auth_key_hash"`
+		IP          string `json:"ip"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NodeID == "" || body.Role == "" || body.Nonce == "" {
 		http.Error(w, "node_id, role, and nonce are required", http.StatusBadRequest)
@@ -34,6 +36,8 @@ func Submit(w http.ResponseWriter, r *http.Request, jm *joinmgr.Manager) {
 		Role:        body.Role,
 		Hostname:    body.Hostname,
 		PollNonce:   body.Nonce,
+		AuthKeyHash: body.AuthKeyHash,
+		IP:          body.IP,
 		Status:      joinmgr.StatusPending,
 		RequestedAt: time.Now(),
 		UpdatedAt:   time.Now(),

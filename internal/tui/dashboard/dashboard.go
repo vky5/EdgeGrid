@@ -45,6 +45,7 @@ const (
 	tabJobs
 	tabWorkers
 	tabAdmin
+	tabTokens
 	tabSettings
 )
 
@@ -65,11 +66,12 @@ const chromeLines = 3
 // Dashboard is the dashboard's content model — see package doc for what it
 // deliberately doesn't own.
 type Dashboard struct {
-	client   client.Client
-	coord    string
-	dataDir  string
-	isWorker bool
-	tab      tab
+	client    client.Client
+	coord     string
+	dataDir   string
+	isWorker  bool
+	isPrimary bool
+	tab       tab
 
 	jobsView  jobsView
 	jobsList  jobsListModel
@@ -80,21 +82,29 @@ type Dashboard struct {
 
 	workersList workersListModel
 	admin       adminModel
+	tokens      tokensModel
 
 	width, height int
 }
 
-func New(c client.Client, coord string, isWorker bool, nodeID string, natsURL string, dataDir string) Dashboard {
+// isPrimary is true only for the coordinator that never joined anyone else
+// (see cfg.JoinURL == "" && cfg.Server.Enabled at the call sites) — the
+// only role that can hold Tailscale API credentials for minting, per the
+// design agreed on: a secondary coordinator's data dir never has them, so
+// there'd be nothing for its Tokens tab to do.
+func New(c client.Client, coord string, isWorker, isPrimary bool, nodeID string, natsURL string, dataDir string) Dashboard {
 	d := Dashboard{
 		client:      c,
 		coord:       coord,
 		dataDir:     dataDir,
 		isWorker:    isWorker,
+		isPrimary:   isPrimary,
 		tab:         tabJobs, // coordinator lands on Jobs (primary ops surface)
 		jobsView:    jobsViewList,
 		jobsList:    newJobsListModel(c),
 		workersList: newWorkersListModel(c),
 		admin:       newAdminModel(c),
+		tokens:      newTokensModel(c),
 		overview:    newOverviewModel(nodeID, natsURL, isWorker),
 		submitJob:   newSubmitJobModel(c, clientIsHTTP(c)),
 		settings:    newSettingsModel(dataDir),
@@ -129,6 +139,8 @@ func (d *Dashboard) resizeTables() {
 	d.workersList = d.workersList.WithSize(d.width, h)
 	d.admin.table.SetHeight(h)
 	d.admin.table.SetWidth(d.width)
+	d.tokens.table.SetWidth(d.width)
+	d.tokens = d.tokens.WithHeight(h)
 	d.overview.width = d.width
 	d.overview.height = h
 	d.submitJob = d.submitJob.WithSize(d.width, h)
@@ -194,6 +206,8 @@ func (d Dashboard) HelpText() string {
 		return "↑/↓ select   tab switch   / command   q quit"
 	case tabAdmin:
 		return "a approve   r reject   tab switch   / command   q quit"
+	case tabTokens:
+		return "m mint   c copy   r revoke   tab switch   / command   q quit"
 	case tabSettings:
 		return "↑/↓ fields   ←/→ executor   ctrl+s save   tab switch   q quit"
 	}
@@ -203,6 +217,9 @@ func (d Dashboard) HelpText() string {
 func (d Dashboard) getTabNames() []string {
 	if d.isWorker {
 		return []string{"Overview"}
+	}
+	if d.isPrimary {
+		return []string{"Overview", "Jobs", "Workers", "Admin", "Tokens", "Settings"}
 	}
 	return []string{"Overview", "Jobs", "Workers", "Admin", "Settings"}
 }
@@ -217,6 +234,8 @@ func (d Dashboard) tabFromName(name string) tab {
 		return tabWorkers
 	case "admin":
 		return tabAdmin
+	case "tokens":
+		return tabTokens
 	case "settings":
 		return tabSettings
 	}
@@ -277,6 +296,9 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 			if d.tab == tabAdmin {
 				d.admin = d.admin.refresh()
 			}
+			if d.tab == tabTokens {
+				d.tokens = d.tokens.refresh()
+			}
 			if d.tab == tabSettings {
 				d.settings = d.settings.load()
 				return d, d.settings.Init()
@@ -308,6 +330,9 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 		d.workersList = d.workersList.refresh()
 		d.jobsList = d.jobsList.refresh()
 		d.admin = d.admin.refresh()
+		if d.isPrimary {
+			d.tokens = d.tokens.refresh()
+		}
 		d.overview = d.overview.refreshLocal()
 		return d, refreshCmd()
 	}
@@ -327,6 +352,8 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 		d.workersList, cmd = d.workersList.Update(msg)
 	case tabAdmin:
 		d.admin, cmd = d.admin.Update(msg)
+	case tabTokens:
+		d.tokens, cmd = d.tokens.Update(msg)
 	case tabSettings:
 		d.settings, cmd = d.settings.Update(msg)
 	}
@@ -369,6 +396,8 @@ func (d Dashboard) View() string {
 		content = d.workersList.View()
 	case tabAdmin:
 		content = d.admin.View()
+	case tabTokens:
+		content = d.tokens.View()
 	case tabSettings:
 		content = d.settings.View()
 	}

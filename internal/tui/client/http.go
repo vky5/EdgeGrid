@@ -303,6 +303,73 @@ func (h *HTTP) RejectJoin(nodeID string) error {
 	return nil
 }
 
+// tokenWire mirrors tokenapi's tokenView JSON shape without importing the
+// coordinator's internal package — same reasoning as joinRequestWire.
+type tokenWire struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	Revoked   bool      `json:"revoked"`
+	Activated bool      `json:"activated"`
+	NodeID    string    `json:"node_id"`
+	NodeIP    string    `json:"node_ip"`
+	Hostname  string    `json:"hostname"`
+	Role      string    `json:"role"`
+}
+
+func (h *HTTP) ListTokens() ([]TokenSummary, error) {
+	resp, err := h.do(http.MethodGet, "/admin/tokens", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var toks []tokenWire
+	if err := json.NewDecoder(resp.Body).Decode(&toks); err != nil {
+		return nil, fmt.Errorf("decoding token list: %w", err)
+	}
+
+	summaries := make([]TokenSummary, 0, len(toks))
+	for _, t := range toks {
+		summaries = append(summaries, TokenSummary{
+			ID:        t.ID,
+			CreatedAt: relativeTime(t.CreatedAt),
+			Revoked:   t.Revoked,
+			Activated: t.Activated,
+			NodeID:    t.NodeID,
+			NodeIP:    t.NodeIP,
+			Hostname:  t.Hostname,
+			Role:      t.Role,
+		})
+	}
+	return summaries, nil
+}
+
+func (h *HTTP) MintToken() (MintedToken, error) {
+	resp, err := h.do(http.MethodPost, "/admin/tokens/mint", nil)
+	if err != nil {
+		return MintedToken{}, err
+	}
+	defer resp.Body.Close()
+
+	var body struct {
+		ID  string `json:"id"`
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return MintedToken{}, fmt.Errorf("decoding mint response: %w", err)
+	}
+	return MintedToken{ID: body.ID, Key: body.Key}, nil
+}
+
+func (h *HTTP) RevokeToken(id string) error {
+	resp, err := h.do(http.MethodPost, "/admin/tokens/"+id+"/revoke", nil)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // relativeTime gives the same "Ns/Nm/Nh ago" shape the Stub's canned rows
 // used, so switching from Stub to HTTP doesn't change how the Admin tab
 // reads.

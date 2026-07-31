@@ -6,6 +6,8 @@
 // touching any screen code.
 package client
 
+import "fmt"
+
 // JobSummary is the subset of job state a screen needs to render a row or
 // detail view. Deliberately not internal/broker's proto type — the TUI
 // shouldn't couple to the wire format before the transport is chosen.
@@ -43,6 +45,25 @@ type JoinRequestSummary struct {
 	Status    string
 }
 
+// TokenSummary is a minted Tailscale auth key's status, as the Tokens tab
+// renders it — never the raw key itself, only tokenapi's List response.
+type TokenSummary struct {
+	ID        string
+	CreatedAt string
+	Revoked   bool
+	Activated bool
+	NodeID    string
+	NodeIP    string
+	Hostname  string
+	Role      string
+}
+
+// MintedToken is what a fresh mint returns — Key is shown exactly once.
+type MintedToken struct {
+	ID  string
+	Key string
+}
+
 type JobParams struct {
 	Script       string
 	Requirements string
@@ -66,6 +87,10 @@ type Client interface {
 	ListPendingJoins() ([]JoinRequestSummary, error)
 	ApproveJoin(nodeID string) error
 	RejectJoin(nodeID string) error
+
+	ListTokens() ([]TokenSummary, error)
+	MintToken() (MintedToken, error)
+	RevokeToken(id string) error
 }
 
 // Stub is a placeholder Client returning canned data so screens can be
@@ -107,3 +132,11 @@ func (s *Stub) ListPendingJoins() ([]JoinRequestSummary, error) {
 func (s *Stub) ApproveJoin(nodeID string) error { return nil }
 
 func (s *Stub) RejectJoin(nodeID string) error { return nil }
+
+func (s *Stub) ListTokens() ([]TokenSummary, error) { return nil, nil }
+
+func (s *Stub) MintToken() (MintedToken, error) {
+	return MintedToken{}, fmt.Errorf("no transport wired yet — mint requires a real coordinator connection")
+}
+
+func (s *Stub) RevokeToken(id string) error { return nil }
