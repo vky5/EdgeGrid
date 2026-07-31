@@ -137,7 +137,14 @@ func runTUI(args []string, startMode string) {
 		adminToken = localAdminToken
 	}
 
-	isWorker := localAdminToken == "" && nodeident.LoadToken(dir, "node.token") != ""
+	// role is the authoritative signal for what this profile is — persisted
+	// at onboarding's role-selection step, before any join/approval even
+	// starts (see config.DetectRoleHint's doc comment for why this matters:
+	// deriving role from "does admin.token exist" instead is what let a
+	// secondary coordinator whose first run never reached buildCoordinator
+	// get stuck reconfiguring itself as a worker forever).
+	role := config.DetectRoleHint(dir)
+	isWorker := role == "worker"
 	connected := coord != "" && adminToken != ""
 
 	// If the node is already onboarded and we aren't starting in the welcome screen,
@@ -147,16 +154,17 @@ func runTUI(args []string, startMode string) {
 	// node is already running, so re-onboarding via "/onboard" can replace
 	// it instead of silently starting a second one alongside it.
 	var runningAgent *agent.Agent
-	if (connected || isWorker) && agentWillStart {
+	if (connected || role != "") && agentWillStart {
 		cfg := bootCfg
-		if localAdminToken != "" {
+		switch role {
+		case "primary", "secondary":
 			cfg.Server.Enabled = true
 			if cfg.JoinURL == "" || nodeident.LoadToken(dir, "node.token") != "" {
 				cfg.Client.Enabled = true
 			} else {
 				cfg.Client.Enabled = false
 			}
-		} else if isWorker {
+		case "worker":
 			cfg.Server.Enabled = false
 			cfg.Client.Enabled = true
 			cfg.EmbedNATS = false

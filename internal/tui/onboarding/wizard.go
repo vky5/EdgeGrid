@@ -334,6 +334,21 @@ func (w Wizard) Update(msg tea.Msg) (Wizard, tea.Cmd) {
 			w.config.Client.Enabled = true
 			w.config.EmbedNATS = false
 		}
+		// Persisted immediately, not just left in memory — a coordinator-role
+		// node (EmbedNATS=true) re-requests join approval on every startup
+		// (resolveNATSCredential has no "already approved" skip, unlike the
+		// worker branch), and it decides whether to do that purely from
+		// cfg.JoinURL being non-empty. Without this, a secondary coordinator
+		// that restarts without the address passed again as a CLI flag falls
+		// into the primary/self-generate branch instead — silently becoming
+		// a disconnected standalone instance with no cluster routes, which
+		// is why its Workers/Jobs tabs would show nothing shared with the
+		// coordinator it originally joined.
+		if w.config.DataDir != "" {
+			s, _ := config.LoadProfileSettings(w.config.DataDir)
+			s.JoinURL = msg.addr
+			_ = config.SaveProfileSettings(w.config.DataDir, s)
+		}
 		w.joinStatus = newJoinStatusModel(roleLabel[w.chosenRole], msg.addr)
 		w.step = stepJoinStatus
 		w.closeExisting()

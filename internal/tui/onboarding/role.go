@@ -49,6 +49,38 @@ var roleOptions = []roleOption{
 	},
 }
 
+// roleName is the string persisted to settings.json's Role field for each
+// Role — the single source of truth config.DetectRoleHint prefers over
+// inferring role from which credential files happen to exist on disk.
+func roleName(role Role) string {
+	switch role {
+	case RolePrimaryCoordinator:
+		return "primary"
+	case RoleSecondaryCoordinator:
+		return "secondary"
+	case RoleWorker:
+		return "worker"
+	default:
+		return ""
+	}
+}
+
+// saveRoleOnly persists just the role to settings.json, preserving whatever
+// else is already there — used on the direct enter-to-confirm path (no
+// "press e to edit settings" detour), so role gets recorded even when
+// nothing else does. See config.DetectRoleHint's doc comment for why an
+// unrecorded role is a real bug, not a cosmetic gap: it's what let a
+// secondary coordinator whose admin.token hadn't been generated yet get
+// permanently misclassified as a worker on every future restart.
+func saveRoleOnly(dataDir string, role Role) {
+	if dataDir == "" {
+		return
+	}
+	s, _ := config.LoadProfileSettings(dataDir)
+	s.Role = roleName(role)
+	_ = config.SaveProfileSettings(dataDir, s)
+}
+
 // roleChosenMsg is emitted when the user confirms a role, so wizard.go can
 // advance to the next step.
 type roleChosenMsg struct {
@@ -206,10 +238,8 @@ func (m roleModel) saveCurrentField() roleModel {
 
 func (m roleModel) applyTempConfig() roleModel {
 	role := roleOptions[m.cursor].role
-	roleName := ""
 	switch role {
 	case RolePrimaryCoordinator:
-		roleName = "primary"
 		if p, err := strconv.Atoi(m.tempNatsPort); err == nil {
 			m.config.NATSPort = p
 		}
@@ -219,14 +249,12 @@ func (m roleModel) applyTempConfig() roleModel {
 		m.config.ClusterName = m.tempClusterName
 		m.config.TailscaleHostname = m.tempTSHostname
 	case RoleSecondaryCoordinator:
-		roleName = "secondary"
 		m.config.JoinURL = m.tempJoinURL
 		if p, err := strconv.Atoi(m.tempClusterPort); err == nil {
 			m.config.ClusterPort = p
 		}
 		m.config.TailscaleHostname = m.tempTSHostname
 	case RoleWorker:
-		roleName = "worker"
 		m.config.JoinURL = m.tempJoinURL
 		m.config.Client.Executor = m.tempExecutor
 		m.config.Client.RequireApproval = m.tempReqApproval
@@ -235,7 +263,7 @@ func (m roleModel) applyTempConfig() roleModel {
 	// Persist to the profile data dir so Configure Settings / next agent start
 	// see the same knobs (flags/env alone do not survive per-profile).
 	if m.config.DataDir != "" {
-		_ = config.SaveProfileSettings(m.config.DataDir, config.SnapshotFromConfig(m.config, roleName))
+		_ = config.SaveProfileSettings(m.config.DataDir, config.SnapshotFromConfig(m.config, roleName(role)))
 	}
 	return m
 }
@@ -341,6 +369,7 @@ func (m roleModel) Update(msg tea.Msg) (roleModel, tea.Cmd) {
 			}
 		case "enter":
 			role := roleOptions[m.cursor].role
+			saveRoleOnly(m.config.DataDir, role)
 			return m, func() tea.Msg {
 				return roleChosenMsg{role: role}
 			}
@@ -499,14 +528,14 @@ func (m roleModel) renderArt() string {
 
 		workerRack := lipgloss.NewStyle().Foreground(greenColor).Bold(true).Render(
 			`       ┌─────────────────────────────────────────────┐` + "\n" +
-			cLine(centerText("WORKER CHASSIS (YOU)", 43)) + "\n" +
-			`       ├─────────────────────────────────────────────┤` + "\n" +
-			cLine("  FANS    : "+fan1+" "+fan2) + "\n" +
-			cLine("  GPU_CORE: "+gpuStr) + "\n" +
-			cLine("  HARDWARE: "+hardwareStr) + "\n" +
-			cLine("  MEMORY  : "+vramStr) + "\n" +
-			cLine("  EXECUTOR: Docker Container Runner") + "\n" +
-			`       └─────────────────────────────────────────────┘`)
+				cLine(centerText("WORKER CHASSIS (YOU)", 43)) + "\n" +
+				`       ├─────────────────────────────────────────────┤` + "\n" +
+				cLine("  FANS    : "+fan1+" "+fan2) + "\n" +
+				cLine("  GPU_CORE: "+gpuStr) + "\n" +
+				cLine("  HARDWARE: "+hardwareStr) + "\n" +
+				cLine("  MEMORY  : "+vramStr) + "\n" +
+				cLine("  EXECUTOR: Docker Container Runner") + "\n" +
+				`       └─────────────────────────────────────────────┘`)
 
 		return coordBox + "\n" + connectors + "\n" + workerRack
 	}
@@ -580,7 +609,6 @@ func (m roleModel) View() string {
 		Width(wSelection).
 		MaxWidth(wSelection).
 		Padding(1, 1)
-
 
 	middlePaneStyle := lipgloss.NewStyle().
 		Width(wSettings).
