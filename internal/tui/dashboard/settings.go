@@ -111,18 +111,25 @@ func (m settingsModel) load() settingsModel {
 		"Tailscale Hostname": host,
 	}
 
-	// isPrimary mirrors the stricter definition used to gate the Tokens tab
-	// itself (admin.token present, node.token absent — never joined anyone
-	// else) — deliberately not config.DetectRoleHint's looser "primary",
-	// which also returns "primary" for a coordinator that has both tokens
-	// (was itself once approved into another cluster).
-	m.isPrimary = nodeident.LoadToken(m.dataDir, "admin.token") != "" && nodeident.LoadToken(m.dataDir, "node.token") == ""
+	// isPrimary mirrors the definition used to gate the Tokens tab itself —
+	// the coordinator that never joined anyone else, the only one that can
+	// hold Tailscale API credentials. config.DetectRoleHint prefers the role
+	// persisted at onboarding's role-selection step over inferring from
+	// which credential files exist, so this stays accurate even for a
+	// secondary coordinator whose admin.token hasn't been generated yet.
+	m.isPrimary = config.DetectRoleHint(m.dataDir) == "primary"
 
 	switch m.role {
 	case "worker":
 		m.fields = []string{"Executor", "Require Approval", "Join URL", "Tailscale Hostname"}
+	case "secondary":
+		// Join URL matters here specifically — a coordinator-role node
+		// re-requests join approval on every startup using it (see
+		// wizard.go's coordinatorChosenMsg), so it has to be editable if it
+		// was never captured (old profiles) or the coordinator moved.
+		m.fields = []string{"API Port", "NATS Port", "Cluster Port", "Cluster Name", "Join URL", "Executor", "Require Approval", "Tailscale Hostname"}
 	default:
-		// coordinator / primary / unknown — ports + executor
+		// primary / unknown — ports + executor, no Join URL (primary never joins anyone)
 		m.fields = []string{"API Port", "NATS Port", "Cluster Port", "Cluster Name", "Executor", "Require Approval", "Tailscale Hostname"}
 	}
 	if m.isPrimary {
