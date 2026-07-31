@@ -323,6 +323,7 @@ func (w Wizard) Update(msg tea.Msg) (Wizard, tea.Cmd) {
 		return w, nil
 	case coordinatorChosenMsg:
 		w.config.JoinURL = msg.addr
+		w.config.TailscaleAuthKey = msg.authKey
 		switch w.chosenRole {
 		case RoleSecondaryCoordinator:
 			w.config.Server.Enabled = true
@@ -452,8 +453,13 @@ func (w Wizard) View() string {
 				loginURL = w.joinStatus.loginURL
 			}
 		}
+		// A directly-provided auth key never produces a login URL — tsnet
+		// authenticates against it immediately, so there's no SSO wait to
+		// show. Without this, the step sat on a muted dot for the entire
+		// join, looking stuck even though auth was already done.
+		authKeySkipsSSO := w.config != nil && w.config.TailscaleAuthKey != "" && !hasSSO
 
-		if w.step == stepDone {
+		if w.step == stepDone || authKeySkipsSSO {
 			leftLines = append(leftLines, fmt.Sprintf(" %s  Network Security (SSO)", greenCheck))
 		} else if hasSSO {
 			leftLines = append(leftLines, fmt.Sprintf(" %s  SSO Login Required", activeArrow))
@@ -479,7 +485,11 @@ func (w Wizard) View() string {
 		if w.step == stepStarting {
 			progress = w.starting.Progress
 		} else if w.step == stepJoinStatus {
-			progress = 0.65
+			if authKeySkipsSSO {
+				progress = 0.8 // SSO step already satisfied, one fewer step left waiting
+			} else {
+				progress = 0.65
+			}
 		} else {
 			progress = 1.0
 		}
