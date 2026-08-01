@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"sync"
 
@@ -18,29 +17,23 @@ import (
 	"tailscale.com/tsnet"
 )
 
-func NewAgentWithLogging(ctx context.Context, cfg *config.Config, onProgress func(string), tuiMode bool) (*Agent, func() error, error) {
-	closeLog, err := nodelog.Setup(cfg.DataDir)
+func NewAgentWithLogging(
+	ctx context.Context,
+	cfg *config.Config,
+	onProgress func(string),
+	tuiMode bool,
+) (*Agent, func() error, error) {
+	closeLog, err := nodelog.Setup(cfg.DataDir, tuiMode)
 	if err != nil {
 		log.Printf("warning: could not open log file, logging to stdout only: %v", err)
 		closeLog = func() error { return nil }
 	}
-	if tuiMode {
-		// In TUI mode, we do NOT want logs written to os.Stdout because it corrupts the Bubble Tea screen.
-		f, err := os.OpenFile(nodelog.Path(cfg.DataDir), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err == nil {
-			log.SetOutput(f)
-			oldClose := closeLog
-			closeLog = func() error {
-				f.Close()
-				return oldClose()
-			}
-		}
-	}
-	a, err := NewAgent(ctx, cfg, onProgress)
+
+	nodeAgent, err := NewAgent(ctx, cfg, onProgress)
 	if err != nil {
 		return nil, closeLog, err
 	}
-	return a, closeLog, nil
+	return nodeAgent, closeLog, nil 
 }
 
 // Entire lifecycle of the application
@@ -58,18 +51,13 @@ type Agent struct {
 	closeOnce sync.Once
 }
 
-// TailscaleIP is this node's own tailnet address — the one other nodes
-// need to reach it. Empty if tsnet never came up (NewAgent would have
-// failed before returning in that case, so in practice this is always set
-// on a successfully-built Agent).
+// returns tailscale IP address of this node or "" if tsnet is not running
 func (a *Agent) TailscaleIP() string { return a.tailscaleIP }
 
 // NodeID is this node's persistent identity (see nodeident).
 func (a *Agent) NodeID() string { return a.nodeID }
 
-// AdminToken is the bearer token guarding this node's admin HTTP
-// endpoints — empty for a worker, which never runs a coordinator/admin
-// API at all.
+// AdminToken is the bearer token guarding this node's admin HTTP endpoint (not for node without coordinator)
 func (a *Agent) AdminToken() string {
 	if a.coordinator == nil {
 		return ""
@@ -81,14 +69,13 @@ func (a *Agent) AdminToken() string {
 type WorkerSnap struct {
 	Up       bool
 	Busy     bool
-	Active   []string
+	Active   []string // job ids of currently active jobs
 	DoneOK   int
 	DoneFail int
 	Recent   []worker.FinishedJob // session-local, newest last
 }
 
-// WorkerRuntime is a snapshot for Overview: agent up, busy, active jobs, and
-// session finished counts. No admin HTTP / fleet data.
+// create a snapshot of worker state
 func (a *Agent) WorkerRuntime() WorkerSnap {
 	if a == nil || a.worker == nil {
 		return WorkerSnap{}
@@ -104,11 +91,7 @@ func (a *Agent) WorkerRuntime() WorkerSnap {
 	}
 }
 
-// NewAgent brings up a full node. onProgress, if non-nil, receives every
-// status line tsnet would otherwise only send to log.Printf — notably the
-// interactive login URL — so a caller like the onboarding TUI can surface
-// it directly instead of the user needing to go find it in stdout/log
-// files. Always still logged normally too; this is additive.
+// Build the Agent struct and authenticate tsnet
 func NewAgent(ctx context.Context, cfg *config.Config, onProgress func(string)) (*Agent, error) {
 	ts := &tsnet.Server{
 		Dir:      filepath.Join(cfg.DataDir, "tsnet"),
@@ -125,26 +108,22 @@ func NewAgent(ctx context.Context, cfg *config.Config, onProgress func(string)) 
 			onProgress(line)
 		}
 	}
-	status, err := ts.Up(ctx) //
+	status, err := ts.Up(ctx) // for auth/login (if no AuthKey passed, through url)
 	if err != nil {
 		return nil, fmt.Errorf("tsnet up: %w", err)
 	}
-	ip4, ip6 := ts.TailscaleIPs()
+	ip4, ip6 := ts.TailscaleIPs() // tailscale ips for this node
 	tsnetUpLine := fmt.Sprintf("tsnet up: hostname=%s ip4=%s ip6=%s backend=%s", cfg.TailscaleHostname, ip4, ip6, status.BackendState)
 	log.Print(tsnetUpLine)
 	if onProgress != nil {
-		// Unlike tsnet's own UserLogf-routed lines above, this one is our
-		// own log.Printf — never reached onProgress before, so a caller
-		// like the onboarding TUI's "Starting" screen never showed the
-		// address it just got, only the raw log file did.
-		onProgress(tsnetUpLine)
+		onProgress(tsnetUpLine) // not a ts.UserLogf() need to send ourself
 	}
+
 	if cfg.AdvertiseHost == "" && ip4.IsValid() {
 		cfg.AdvertiseHost = ip4.String()
 	}
-	// Persisted so a later process start (e.g. `edgegrid dashboard`, before
-	// any agent is up yet) can default its coordinator address to this
-	// node's real tsnet IP instead of 127.0.0.1 — see runTUI in main.go.
+	
+	// Persist tailscale IP for this node
 	if ip4.IsValid() {
 		if err := nodeident.SaveToken(cfg.DataDir, "tailscale.ip", ip4.String()); err != nil {
 			log.Printf("warning: could not save tailscale ip: %v", err)
@@ -165,18 +144,9 @@ func NewAgent(ctx context.Context, cfg *config.Config, onProgress func(string)) 
 	var embeddedNATS *natsserver.EmbeddedServer
 	if cfg.EmbedNATS {
 		if len(clusterRoutes) > 0 {
-			// Rewrite remote route addresses (e.g. from a join/approve
-			// response) to local proxies dialed through tsnet — nats-server's
-			// own dialer can't reach a tsnet address directly.
 			clusterRoutes = bridgeOutboundRoutes(ctx, ts, clusterRoutes)
 		}
-		// A lone bootstrap coordinator (no --routes, nothing joined yet)
-		// stays standalone — natsserver.buildOpts only enables clustering
-		// when clusterRoutes is non-empty (see its comment: a self-route
-		// can't satisfy this, nats-server always kills it as a duplicate
-		// at runtime, and clustered JetStream never stabilizes with zero
-		// real peers). Cluster-mode wiring for a node that later gets
-		// joined is a separate follow-up, not handled yet.
+		
 		embeddedNATS, err = startEmbeddedNATS(cfg, natsCred, clusterSecret, clusterRoutes)
 		if err != nil {
 			return nil, err
@@ -198,11 +168,7 @@ func NewAgent(ctx context.Context, cfg *config.Config, onProgress func(string)) 
 		nats.MaxReconnects(-1),
 		nats.ReconnectWait(2 * nats.DefaultReconnectWait),
 		nats.SetCustomDialer(tsnetDialer{ts}),
-		// RetryOnFailedConnect means Connect() below can return success
-		// before a real connection exists yet — these make that visible
-		// instead of silent, since otherwise the only symptom is an
-		// unrelated-looking timeout wherever the connection is first
-		// actually used (e.g. the coordinator's KV bucket creation).
+		
 		nats.ConnectHandler(func(c *nats.Conn) {
 			log.Printf("NATS connected: %s", c.ConnectedUrl())
 		}),
@@ -273,11 +239,13 @@ func (a *Agent) Start(ctx context.Context) error {
 	return nil
 }
 
-// Close shuts the agent down. Idempotent — the TUI can now legitimately
-// call this from two places for the same agent (the onboarding wizard
-// replacing an already-running node, and that node's own background runner
-// noticing Start returned), so a second call must be a no-op rather than a
-// double-close of the NATS/tsnet handles.
+// Close shuts the agent down. It is intentionally idempotent because the TUI
+// can legitimately ask the same agent to close from more than one path:
+//   - the onboarding wizard replaces an already-running node
+//   - the background runner notices Start returned and performs cleanup
+//
+// Only the first call should close worker/NATS/tsnet resources. Later calls
+// must be no-ops so we never double-close the same handles.
 func (a *Agent) Close() {
 	a.closeOnce.Do(func() {
 		log.Println("shutting down EdgeGrid services")

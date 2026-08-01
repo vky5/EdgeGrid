@@ -67,10 +67,7 @@ func (c *Coordinator) SetTsnetServer(ts *tsnet.Server) {
 	c.tsnetServer = ts
 }
 
-// AdminToken returns the bearer token guarding this coordinator's admin
-// HTTP endpoints — needed by callers (like the onboarding TUI) that want
-// to show it to the operator instead of it only ever reaching a raw
-// console print or the admin.token file on disk.
+// AdminToken returns the bearer token guarding this coordinator's admin HTTP endpoints. 
 func (c *Coordinator) AdminToken() string {
 	return c.adminToken
 }
