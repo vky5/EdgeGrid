@@ -118,19 +118,27 @@ func Approve(
 	// embedded server at all (external NATS — known gap, see
 	// docs/security/known-gaps.md).
 	host := "localhost"
+	natsPort := 4222
+	clusterPort := 6222
 	if ns != nil {
 		if h := ns.AdvertiseHost(); h != "" {
 			host = h
 		}
+		if p := ns.ClientPort(); p != 0 {
+			natsPort = p
+		}
+		if p := ns.ClusterPort(); p != 0 {
+			clusterPort = p
+		}
 	}
-	coordURL := fmt.Sprintf("nats://%s:%d", host, 4222) // ? this is for client connections and uses the Pub/Sub protocol
+	coordURL := fmt.Sprintf("nats://%s:%d", host, natsPort) // client connections, Pub/Sub protocol
 
 	// clusterSecret/Routes: the route-peer address, only needed by a non-primary coordinator.
 	var clusterSecret string
 	var clusterRoutes []string
 	if req.Role == joinmgr.RoleServer {
 		clusterSecret = nodeident.LoadToken(dataDir, "cluster.secret")
-		clusterRoutes = []string{fmt.Sprintf("nats://%s:%d", host, 6222)} // ? this is for server to server communication and uses some other kinda protocol
+		clusterRoutes = []string{fmt.Sprintf("nats://%s:%d", host, clusterPort)} // server-to-server route protocol
 	}
 
 	if err := jm.Approve(nodeID, token, clusterSecret, coordURL, clusterRoutes); err != nil {

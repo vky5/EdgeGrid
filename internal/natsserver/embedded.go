@@ -93,6 +93,24 @@ func (e *EmbeddedServer) AdvertiseHost() string {
 	return e.advertiseHost
 }
 
+// ClientPort returns the port this server's own NATS clients connect to —
+// the single source of truth for join responses instead of assuming the
+// default (see joinapi.Approve, which used to hardcode 4222).
+func (e *EmbeddedServer) ClientPort() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.baseOpts.Port
+}
+
+// ClusterPort returns the cluster route port, or 0 if clustering isn't
+// configured on this server (see joinapi.Approve, which used to hardcode
+// 6222).
+func (e *EmbeddedServer) ClusterPort() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.baseOpts.Cluster.Port
+}
+
 // AddUser adds a new approved node credential and hot-reloads the NATS server.
 // Safe to call concurrently.
 func (e *EmbeddedServer) AddUser(cred NodeCred) error {
