@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"github.com/edgegrid/edgegrid/internal/broker"
+	"github.com/edgegrid/edgegrid/internal/coordinator/peermgr"
 	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
 	"github.com/edgegrid/edgegrid/internal/natsserver"
@@ -19,10 +20,13 @@ type Coordinator struct {
 	manager     *workerman.WorkerManager // nats KV store
 	joinMgr     *joinmgr.Manager
 	tokenMgr    *tokenmgr.Manager
+	peerMgr     *peermgr.Manager
 	natsServer  *natsserver.EmbeddedServer
 	tsnetServer *tsnet.Server
 	dataDir     string
 	adminToken  string
+	nodeID      string // this coordinator's own node ID
+	joinURL     string // HTTP address of the coordinator this one joined; empty on a primary
 }
 
 func NewCoordinatorWithConn(nc *nats.Conn, replicas int, ns *natsserver.EmbeddedServer) (*Coordinator, error) {
@@ -46,17 +50,30 @@ func NewCoordinatorWithConn(nc *nats.Conn, replicas int, ns *natsserver.Embedded
 		return nil, fmt.Errorf("failed to initialize token manager: %w", err)
 	}
 
+	pm, err := peermgr.New(jsBroker)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize peer manager: %w", err)
+	}
+
 	return &Coordinator{
 		jsBroker:   jsBroker,
 		manager:    manager,
 		joinMgr:    jm,
 		tokenMgr:   tm,
+		peerMgr:    pm,
 		natsServer: ns,
 	}, nil
 }
 
 func (c *Coordinator) SetDataDir(dir string) {
 	c.dataDir = dir
+}
+
+// SetSelfIdentity records this coordinator's own node ID and, for a secondary,
+// the HTTP address of the coordinator it joined (empty on a primary).
+func (c *Coordinator) SetSelfIdentity(nodeID, joinURL string) {
+	c.nodeID = nodeID
+	c.joinURL = joinURL
 }
 
 func (c *Coordinator) SetAdminToken(token string) {
@@ -109,7 +126,10 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 	}
 
 	go c.StartStaleJobRecovery(ctx)
-	go StartHTTPServer(apiAddr, c.jsBroker, c.manager, c.joinMgr, c.tokenMgr, c.natsServer, c.tsnetServer, c.dataDir, c.adminToken)
+	go StartHTTPServer(apiAddr, c.jsBroker, c.manager, c.joinMgr, c.tokenMgr, c.peerMgr, c.natsServer, c.tsnetServer, c.dataDir, c.adminToken, c.nodeID)
+
+	// Secondary only: complete the peer pair with the coordinator we joined.
+	go c.announceToPrimary()
 
 	<-ctx.Done()
 	log.Println("shutting down coordinator")

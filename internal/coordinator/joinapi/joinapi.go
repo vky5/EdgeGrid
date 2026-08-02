@@ -4,7 +4,6 @@ package joinapi
 import (
 	"crypto/subtle"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -102,13 +101,12 @@ func Approve(
 		_, _ = kv.Put(nodeID, []byte(token))
 	}
 
-	host := "localhost"
+	// The client URL this node should dial us on. A joining coordinator also
+	// keeps this as its peer record for us (see peerapi.Announce).
+	coordURL := "nats://localhost:4222"
 	if ns != nil {
-		if h := ns.AdvertiseHost(); h != "" {
-			host = h
-		}
+		coordURL = ns.AdvertisedClientURL()
 	}
-	coordURL := fmt.Sprintf("nats://%s:%d", host, 4222) // ? this is for client connections and uses the Pub/Sub protocol
 
 	if err := jm.Approve(nodeID, token, coordURL); err != nil {
 		http.Error(w, "failed to approve join request", http.StatusInternalServerError)

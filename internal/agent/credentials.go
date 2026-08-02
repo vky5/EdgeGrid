@@ -18,6 +18,8 @@ import (
 //     - perform join+wait for approval as RoleServer -> joinResult
 //     - natsCred: joinResult.Token (username=ident.NodeID)
 //     - persisted: node.token
+//       (joinResult.CoordURL is not kept here — the coordinator re-learns the
+//       peer's URL from the /peer/announce reply and stores it in the peers KV)
 // - worker (cfg.EmbedNATS == false && cfg.Client.Enabled):
 //     - if node.token exists, use it as natsCred (username=ident.NodeID)
 //     - else if cfg.JoinURL != "", perform join+wait for approval as RoleWorker -> joinResult

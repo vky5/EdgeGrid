@@ -187,7 +187,7 @@ func NewAgent(ctx context.Context, cfg *config.Config, onProgress func(string)) 
 	//! NOTE: an Agent can run with neither coordinator nor worker built — just a NATS connection.
 
 	// build coordinator/worker (not started yet)
-	coord, err := buildCoordinator(cfg, nc, embeddedNATS, ts)
+	coord, err := buildCoordinator(cfg, nc, embeddedNATS, ts, ident)
 	if err != nil {
 		return nil, err
 	}

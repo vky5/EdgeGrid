@@ -69,6 +69,29 @@ func (e *EmbeddedServer) AdvertiseHost() string {
 	return e.advertiseHost
 }
 
+// Port returns the actual bound client port
+func (e *EmbeddedServer) Port() int {
+	if tcpAddr, ok := e.ns.Addr().(*net.TCPAddr); ok {
+		return tcpAddr.Port
+	}
+	return 0
+}
+
+// AdvertisedClientURL is the NATS URL other nodes should dial this server on:
+// the configured advertise host (falling back to localhost) plus the real
+// bound port. Single source of truth for what we hand out to joiners and peers.
+func (e *EmbeddedServer) AdvertisedClientURL() string {
+	host := e.AdvertiseHost()
+	if host == "" {
+		host = "localhost"
+	}
+	port := e.Port()
+	if port == 0 {
+		port = 4222
+	}
+	return fmt.Sprintf("nats://%s:%d", host, port)
+}
+
 // AddUser adds a new approved node credential and hot-reloads the NATS server.
 // Safe to call concurrently. (Used to add newly approved nodes from watchApprovedNodes.	)
 func (e *EmbeddedServer) AddUser(cred NodeCred) error {
