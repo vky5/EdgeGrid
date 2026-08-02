@@ -136,29 +136,22 @@ func NewAgent(ctx context.Context, cfg *config.Config, onProgress func(string)) 
 		return nil, fmt.Errorf("node identity: %w", err)
 	}
 
-	natsCred, clusterSecret, clusterRoutes, err := resolveNATSCredential(ts, cfg, ident)
+	natsCred, err := resolveNATSCredential(ts, cfg, ident)
 	if err != nil {
 		return nil, err
 	}
 
 	var embeddedNATS *natsserver.EmbeddedServer
 	if cfg.EmbedNATS {
-		if len(clusterRoutes) > 0 {
-			clusterRoutes = bridgeOutboundRoutes(ctx, ts, clusterRoutes)
-		}
 		
-		embeddedNATS, err = startEmbeddedNATS(cfg, natsCred, clusterSecret, clusterRoutes)
+		
+		embeddedNATS, err = startEmbeddedNATS(cfg, natsCred)
 		if err != nil {
 			return nil, err
 		}
 		// Unconditional: joining nodes need this even with zero peer
 		// coordinators — nats-server's own bind is invisible to tsnet.
 		bridgeInboundPort(ts, cfg.NATSPort)
-		if len(clusterRoutes) > 0 {
-			// Accept inbound route connections arriving over the tailnet
-			// and relay them to the local cluster port.
-			bridgeInboundPort(ts, cfg.ClusterPort)
-		}
 	}
 
 	// dial NATS with the resolved credential (own or received via approval)

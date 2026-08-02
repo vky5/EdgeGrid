@@ -18,9 +18,6 @@ type Config struct {
 	NATSStore     string   // JetStream persistence directory for embedded NATS
 	DataDir       string   // directory for node identity and token files (default ./data)
 	Replicas      int      // NATS JetStream replication factor: 1=dev, 3=prod
-	ClusterName   string   // NATS cluster name (all nodes must match)
-	ClusterPort   int      // intra-cluster gossip port (default 6222)
-	Routes        []string // seed route URLs, e.g. nats://blacktree.in:6222
 	JoinURL       string   // coordinator HTTP URL to send a join request to (non-primary nodes)
 	AdvertiseHost string   // externally-reachable host for this coordinator's embedded NATS (optional)
 
@@ -107,9 +104,6 @@ func loadConfigOnce() *Config {
 	executorType := flag.String("executor", "", "Executor backend: mock or training (default training — runs real Python + NATS logs)")
 	requireApproval := flag.Bool("require-approval", false, "Worker must approve each job before running it")
 	replicas := flag.Int("replicas", 0, "NATS JetStream replication factor (0 = auto-detect from env)")
-	clusterName := flag.String("cluster-name", "", "NATS cluster name — all server nodes must use the same name (default edgegrid)")
-	clusterPort := flag.Int("cluster-port", 0, "Intra-cluster gossip port for embedded NATS (default 6222)")
-	routes := flag.String("routes", "", "Comma-separated seed route URLs for clustering, e.g. nats://blacktree.in:6222")
 	joinURL := flag.String("join", "", "Coordinator HTTP URL to request cluster/worker join approval, e.g. http://blacktree.in:8080")
 	dataDir := flag.String("data-dir", "", "Directory for node identity and credential files (default ./data)")
 	advertiseHost := flag.String("advertise-host", "", "Externally-reachable host for this coordinator's embedded NATS, e.g. blacktree.in (default: none — join responses fall back to localhost)")
@@ -196,29 +190,6 @@ func loadConfigOnce() *Config {
 		finalReplicas = 1
 	}
 
-	finalClusterName := *clusterName
-	if finalClusterName == "" {
-		finalClusterName = envStr("NATS_CLUSTER_NAME", "edgegrid")
-	}
-
-	finalClusterPort := *clusterPort
-	if finalClusterPort == 0 {
-		finalClusterPort = envInt("NATS_CLUSTER_PORT", 6222)
-	}
-
-	var finalRoutes []string
-	routeStr := *routes
-	if routeStr == "" {
-		routeStr = os.Getenv("NATS_ROUTES")
-	}
-	if routeStr != "" {
-		for _, r := range strings.Split(routeStr, ",") {
-			if r = strings.TrimSpace(r); r != "" {
-				finalRoutes = append(finalRoutes, r)
-			}
-		}
-	}
-
 	finalJoinURL := *joinURL
 	if finalJoinURL == "" {
 		finalJoinURL = os.Getenv("JOIN_URL")
@@ -249,9 +220,6 @@ func loadConfigOnce() *Config {
 		NATSStore:     finalNATSStore,
 		DataDir:       finalDataDir,
 		Replicas:      finalReplicas,
-		ClusterName:   finalClusterName,
-		ClusterPort:   finalClusterPort,
-		Routes:        finalRoutes,
 		JoinURL:       finalJoinURL,
 		AdvertiseHost: finalAdvertiseHost,
 

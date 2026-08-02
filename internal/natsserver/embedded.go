@@ -15,18 +15,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server"
 )
 
-// {ClusterUsername, cluster.secret} for coordinator 2 coordinator gossip layer
-const ClusterUsername = "cluster"
-
-// ClusterConfig holds optional intra-cluster settings.
-type ClusterConfig struct {
-	Name   string   // must match the cluster name of other nodes
-	Port   int      // coordinator own port to connect to
-	Secret string   // cluster.secret shared across all coordinators
-	Routes []string // seed URLs
-}
-
-// NodeCred is a username/password pair for one approved node's client connection (opts.Users) — the client layer, separate from the route layer's shared ClusterUsername/Secret.
+// NodeCred is a username/password pair for one approved node's client connection (opts.Users).
 type NodeCred struct {
 	Username string
 	Password string
@@ -39,19 +28,17 @@ type EmbeddedServer struct {
 	advertiseHost string          // externally-reachable host, if configured; raw, no port
 }
 
-// Start launches an embedded NATS server with JetStream enabled.
+// Start launches an embedded NATS server with JetStream enabled, always standalone.
 // coordCred is the coordinator's own NATS credential (always allowed).
-// cluster is optional; if Routes is non-empty the server joins a cluster.
 // advertiseHost, if set, is what this server tells clients/peers to use
 func Start(
-	port int, 
-	storeDir string, 
-	coordCred NodeCred, 
-	cluster ClusterConfig, 
-	advertiseHost, 
+	port int,
+	storeDir string,
+	coordCred NodeCred,
+	advertiseHost,
 	serverName, logFile string,
 ) (*EmbeddedServer, error) {
-	opts := buildOpts(port, storeDir, coordCred, cluster, advertiseHost, serverName, nil)
+	opts := buildOpts(port, storeDir, coordCred, advertiseHost, serverName, nil)
 	if logFile != "" {
 		opts.LogFile = logFile
 	}
@@ -69,12 +56,8 @@ func Start(
 	}
 
 	log.Printf("embedded NATS server started on port %d (store: %s)", port, storeDir)
-	if len(cluster.Routes) > 0 {
-		log.Printf("NATS cluster %q listening on port %d for inbound routes", opts.Cluster.Name, opts.Cluster.Port)
-		log.Printf("NATS cluster %q joining routes: %v", cluster.Name, cluster.Routes)
-	} else {
-		log.Printf("running standalone (no cluster routes) — JetStream runs in single-node mode")
-	}
+
+	log.Printf("running standalone (no cluster routes) — JetStream runs in single-node mode")
 
 	return &EmbeddedServer{ns: ns, baseOpts: opts, advertiseHost: advertiseHost}, nil
 }
@@ -134,11 +117,14 @@ func (e *EmbeddedServer) ClientURL() string {
 	return u
 }
 
+// buildOpts always builds standalone options — coordinators never cluster
+// their NATS servers (see docs/coordinator-peer-mesh-plan.md). JetStream KV's
+// meta layer is Raft (CP); EdgeGrid needs each coordinator to stay
+// independently useful (AP), so no Cluster options are ever set.
 func buildOpts(
 	port int,
 	storeDir string,
 	coordCred NodeCred,
-	cluster ClusterConfig,
 	advertiseHost, serverName string,
 	extraUsers []*server.User,
 ) *server.Options {
@@ -157,45 +143,7 @@ func buildOpts(
 		Users:      users,
 	}
 	if advertiseHost != "" { // when set, tells workers (connect to this address)
-		opts.ClientAdvertise = advertiseHost // applies even without clustering
-	}
-
-	// Cluster.Port==0 is what nats-server's standAloneMode() checks — only
-	// set it when there's an actual peer to route to. JetStream refuses to
-	// do anything useful (including R1 stream/KV creation) once clustered
-	// with zero real peers: a route pointing at yourself satisfies the
-	// static "configuredRoutes() > 0" check but nats-server always closes
-	// a self-route as a duplicate at runtime, so routing (and JetStream)
-	// never stabilizes. A lone coordinator must stay standalone.
-	if len(cluster.Routes) > 0 {
-		clusterPort := cluster.Port
-		if clusterPort == 0 {
-			clusterPort = 6222
-		}
-		clusterName := cluster.Name
-		if clusterName == "" {
-			clusterName = "edgegrid"
-		}
-		opts.Cluster = server.ClusterOpts{
-			Name:     clusterName,
-			Port:     clusterPort,
-			Username: ClusterUsername,
-			Password: cluster.Secret,
-		}
-		if advertiseHost != "" {
-			opts.Cluster.Advertise = advertiseHost // what other coordinators should connect to on exchange of INFO
-		}
-
-		routes := make([]*url.URL, 0, len(cluster.Routes))
-		for _, r := range cluster.Routes {
-			u, err := url.Parse(r)
-			if err != nil {
-				log.Printf("NATS: invalid route URL %q, skipping: %v", r, err)
-				continue
-			}
-			routes = append(routes, u)
-		}
-		opts.Routes = routes // initial seed routes for cluster discovery
+		opts.ClientAdvertise = advertiseHost
 	}
 
 	return opts
@@ -205,7 +153,7 @@ func buildOpts(
 func credsToUsers(coordCred NodeCred, nodeCreds []NodeCred) []*server.User {
 	users := []*server.User{
 		{
-			Username: coordCred.Username, 
+			Username: coordCred.Username,
 			Password: coordCred.Password,
 		},
 	}

@@ -74,10 +74,6 @@ func (m settingsModel) load() settingsModel {
 	if natsPort == 0 {
 		natsPort = 4222
 	}
-	clusterPort := s.ClusterPort
-	if clusterPort == 0 {
-		clusterPort = 6222
-	}
 	apiPort := strings.TrimPrefix(s.APIPort, ":")
 	if apiPort == "" {
 		apiPort = "8080"
@@ -90,10 +86,6 @@ func (m settingsModel) load() settingsModel {
 	if s.RequireApproval != nil && *s.RequireApproval {
 		req = "true"
 	}
-	clusterName := s.ClusterName
-	if clusterName == "" {
-		clusterName = "edgegrid"
-	}
 	host := s.TailscaleHostname
 	if host == "" {
 		host, _ = os.Hostname()
@@ -103,8 +95,6 @@ func (m settingsModel) load() settingsModel {
 	m.vals = map[string]string{
 		"API Port":           apiPort,
 		"NATS Port":          strconv.Itoa(natsPort),
-		"Cluster Port":       strconv.Itoa(clusterPort),
-		"Cluster Name":       clusterName,
 		"Executor":           exec,
 		"Require Approval":   req,
 		"Join URL":           join,
@@ -127,10 +117,10 @@ func (m settingsModel) load() settingsModel {
 		// re-requests join approval on every startup using it (see
 		// wizard.go's coordinatorChosenMsg), so it has to be editable if it
 		// was never captured (old profiles) or the coordinator moved.
-		m.fields = []string{"API Port", "NATS Port", "Cluster Port", "Cluster Name", "Join URL", "Executor", "Require Approval", "Tailscale Hostname"}
+		m.fields = []string{"API Port", "NATS Port","Join URL", "Executor", "Require Approval", "Tailscale Hostname"}
 	default:
 		// primary / unknown — ports + executor, no Join URL (primary never joins anyone)
-		m.fields = []string{"API Port", "NATS Port", "Cluster Port", "Cluster Name", "Executor", "Require Approval", "Tailscale Hostname"}
+		m.fields = []string{"API Port", "NATS Port","Executor", "Require Approval", "Tailscale Hostname"}
 	}
 	if m.isPrimary {
 		for _, name := range []string{"Tailscale API Client ID", "Tailscale API Client Secret", "Tailscale API Tailnet", "Tailscale API Tag"} {
@@ -359,18 +349,8 @@ func (m settingsModel) persist() error {
 		}
 		s.NATSPort = n
 	}
-	if v := get("Cluster Port"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return fmt.Errorf("Cluster Port: %w", err)
-		}
-		s.ClusterPort = n
-	}
 	if v := get("API Port"); v != "" {
 		s.APIPort = v
-	}
-	if v := get("Cluster Name"); v != "" {
-		s.ClusterName = v
 	}
 	if v := get("Executor"); v != "" {
 		if config.NormalizeExecutor(strings.ToLower(v)) == "" {
