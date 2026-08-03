@@ -16,7 +16,7 @@ import (
 )
 
 // buildCoordinator constructs (not starts) the Coordinator if server role is enabled; else no-op.
-func buildCoordinator(cfg *config.Config, nc *nats.Conn, embeddedNATS *natsserver.EmbeddedServer, ts *tsnet.Server) (*coordinator.Coordinator, error) {
+func buildCoordinator(cfg *config.Config, nc *nats.Conn, embeddedNATS *natsserver.EmbeddedServer, ts *tsnet.Server, ident *nodeident.Identity) (*coordinator.Coordinator, error) {
 	if !cfg.Server.Enabled {
 		return nil, nil
 	}
@@ -28,6 +28,13 @@ func buildCoordinator(cfg *config.Config, nc *nats.Conn, embeddedNATS *natsserve
 	}
 	coord.SetDataDir(cfg.DataDir)
 	coord.SetTsnetServer(ts)
+
+	// generates self http endpoint from AdvertiseHost if set, else empty (unresolvable)
+	selfHTTPURL := ""
+	if cfg.AdvertiseHost != "" {
+		selfHTTPURL = fmt.Sprintf("http://%s%s", cfg.AdvertiseHost, cfg.Server.Port)
+	}
+	coord.SetSelfIdentity(ident.NodeID, selfHTTPURL, cfg.JoinURL)
 
 	// load/generate admin token (guards admin HTTP endpoints)
 	adminToken := nodeident.LoadToken(cfg.DataDir, "admin.token")

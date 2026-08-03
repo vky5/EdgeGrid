@@ -13,6 +13,8 @@ import (
 	"github.com/edgegrid/edgegrid/internal/broker"
 	"github.com/edgegrid/edgegrid/internal/coordinator/jobsapi"
 	"github.com/edgegrid/edgegrid/internal/coordinator/joinapi"
+	"github.com/edgegrid/edgegrid/internal/coordinator/peerapi"
+	"github.com/edgegrid/edgegrid/internal/coordinator/peermgr"
 	"github.com/edgegrid/edgegrid/internal/coordinator/tokenapi"
 	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 	"github.com/edgegrid/edgegrid/internal/coordinator/workersapi"
@@ -83,6 +85,16 @@ func isOpenPath(r *http.Request) bool {
 	if r.Method == http.MethodGet && strings.HasPrefix(p, "/join/") {
 		return true
 	}
+	// POST /peer/announce — an approved coordinator announces its dial
+	// details. Authenticated by its join nonce, not the backend token.
+	if p == "/peer/announce" && r.Method == http.MethodPost {
+		return true
+	}
+	// GET /peer/roster — a peer coordinator pulls this node's roster view.
+	// v1 trust model: tailnet membership is the boundary, not the backend token
+	if p == "/peer/roster" && r.Method == http.MethodGet {
+		return true
+	}
 	return false
 }
 
@@ -95,7 +107,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager, jm *joinmgr.Manager, tm *tokenmgr.Manager, ns *natsserver.EmbeddedServer, ts *tsnet.Server, dataDir string, adminToken string) {
+func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.WorkerManager, jm *joinmgr.Manager, tm *tokenmgr.Manager, pm *peermgr.Manager, ns *natsserver.EmbeddedServer, ts *tsnet.Server, dataDir string, adminToken string, selfNodeID string) {
 	backendMux := http.NewServeMux()
 	// tailnetMux carries only the bootstrap routes a joining node needs
 	// (health check + join submit/poll) and is what the tsnet listener
@@ -199,6 +211,24 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 	backendMux.HandleFunc("/join/", joinStatus)
 	tailnetMux.HandleFunc("/join", joinSubmit)
 	tailnetMux.HandleFunc("/join/", joinStatus)
+
+	// POST /peer/announce — an approved peer coordinator pushes its NATS URL
+	// and the credential we should dial it with. Nonce-authenticated, and
+	// reached over the tailnet, so it goes on both muxes like /join.
+	peerAnnounce := func(w http.ResponseWriter, r *http.Request) {
+		switch strings.TrimPrefix(r.URL.Path, "/peer/") {
+		case "announce":
+			peerapi.Announce(w, r, jm, pm, ns, selfNodeID)
+		case "roster":
+			peerapi.GetRoster(w, r, pm)
+		default:
+			http.Error(w, "not a valid path", http.StatusBadRequest)
+		}
+	}
+	backendMux.HandleFunc("/peer/announce", peerAnnounce)
+	backendMux.HandleFunc("/peer/roster", peerAnnounce)
+	tailnetMux.HandleFunc("/peer/announce", peerAnnounce)
+	tailnetMux.HandleFunc("/peer/roster", peerAnnounce)
 
 	// POST /admin/join/{nodeID}/approve|reject
 	// Admin-ness is enforced by the Next.js backend (GitHub session + isAdmin);

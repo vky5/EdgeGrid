@@ -1,8 +1,8 @@
 # Auth architecture
 
 How identity and trust actually flow through EdgeGrid, end to end. There are
-two completely separate trust systems that only touch at one point (node
-approval), and it's easy to conflate them, so this doc keeps them apart.
+three separate trust systems that only touch at specific handoff points, and
+it's easy to conflate them, so this doc keeps them apart.
 
 **System 1 — human identity (GitHub OAuth, via Next.js/NextAuth)**
 Used for: who's allowed into the dashboard, who owns which job, who can
@@ -12,6 +12,10 @@ to submit jobs at all.
 **System 2 — machine identity (NATS username/password)**
 Used for: which processes (coordinator, workers, server peers) are allowed to
 publish/subscribe on the message bus.
+
+**System 3 — transport membership (Tailscale/tsnet)**
+Used for: which devices can reach the private coordinator/NATS addresses at
+all. This is network reachability, not EdgeGrid authorization.
 
 The coordinator's HTTP API sits between them, gated by a third thing (the
 gateway token) that isn't identity at all — it's a single shared secret that
@@ -86,12 +90,23 @@ below).
 
 This is the one place GitHub identity and NATS identity touch.
 
-1. A new node (worker or server) generates a random 128-bit `node.id`
+1. A new node (worker or server) starts `tsnet`. If the operator supplied
+   `--ts-authkey` / `TS_AUTHKEY`, tsnet consumes that Tailscale auth key and
+   joins silently; otherwise it emits an interactive Tailscale login URL. The
+   Tailscale step only gets the device onto the private network. It does not
+   approve the EdgeGrid node or grant NATS credentials.
+2. The node generates a random 128-bit `node.id`
    (`internal/nodeident/ident.go:22`) on first boot and persists it locally.
-2. It `POST /join`s with `{node_id, role, hostname}` — open endpoint, stored
-   in the `join_requests` JetStream KV bucket (`internal/joinmgr/joinmgr.go`)
-   with status `pending`.
-3. The node operator opens `/claim/{nodeID}` in a browser
+   It also generates a local `node.nonce`; later polling must present this as
+   `X-Node-Nonce` so knowing a node ID is not enough to fetch its
+   approval result.
+3. It `POST /join`s with `{node_id, role, hostname, nonce, auth_key_hash, ip}`
+   — open endpoint, stored in the `join_requests` JetStream KV bucket
+   (`internal/joinmgr/joinmgr.go`) with status `pending`. `auth_key_hash` is
+   only present when the node used a minted Tailscale auth key; it lets the
+   Tokens tab correlate "this key was activated by this node" without storing
+   the raw key.
+4. The node operator opens `/claim/{nodeID}` in a browser
    (`web/app/claim/[nodeID]/page.tsx`), signs in with GitHub if not already,
    and the page fires `POST /api/claim/{nodeID}`
    (`web/app/api/claim/[nodeID]/route.ts`) — this Next.js route requires a
@@ -101,7 +116,7 @@ This is the one place GitHub identity and NATS identity touch.
    node — `joinmgr.Claim()` just stores the username as metadata on the join
    request. It's bookkeeping ("this human says this node is theirs"), not a
    credential.
-4. An admin (checked via `isAdmin` in the Next.js route,
+5. An admin (checked via `isAdmin` in the Next.js route,
    `web/app/api/admin/join/[nodeID]/[action]/route.ts`) approves the request.
    This calls the coordinator's `POST /admin/join/{nodeID}/approve`
    (`internal/coordinator/joinapi/joinapi.go:70`, `joinapi.Approve`), which:
@@ -113,8 +128,8 @@ This is the one place GitHub identity and NATS identity touch.
      `{Username: nodeID, Password: token}` (`natsserver.AddUser`),
    - if the node is joining as a `server` (cluster peer, not just a worker),
      also attaches `cluster.secret` and route URLs.
-5. The node, which has been polling `GET /join/{nodeID}` (open endpoint) all
-   along, sees `status: approved` and receives its token/cluster secret in
+6. The node, which has been polling `GET /join/{nodeID}` with `X-Node-Nonce`
+   all along, sees `status: approved` and receives its token/cluster secret in
    that same response. It saves them locally (`data/node.token`,
    `data/cluster.secret`) and reconnects to NATS using them.
 
@@ -152,6 +167,28 @@ This is deliberately a separate KV from `join_requests`/`node_auth`, not a deriv
   a much bigger trust grant than a worker's client credential (see
   `token-inventory.md`).
 
+## 6. Transport membership: Tailscale/tsnet
+
+Every `Agent` brings up a userspace Tailscale node with `tsnet.Server`
+(`internal/agent/agent.go`). Its state lives under `data/tsnet/`, and the
+node's Tailscale IPv4 is saved as `data/tailscale.ip` for later dashboard
+startup and operator display.
+
+There are two ways for a device to join the tailnet:
+
+- **Interactive login** — no auth key is supplied, so tsnet prints a
+  Tailscale login URL. The onboarding TUI surfaces that URL.
+- **Minted auth key** — a primary coordinator with Tailscale OAuth credentials
+  configured can call `POST /admin/tokens/mint`. EdgeGrid asks the Tailscale
+  API for a single-use, pre-authorized, tagged auth key, shows the raw key
+  exactly once, and stores only a hash/metadata record in `minted_tokens`.
+
+The Tokens tab is therefore about network admission, not EdgeGrid permission.
+Revoking an unused minted key stops another device from consuming it, but a
+device that already joined still needs to be removed through Tailscale itself.
+Separately, the EdgeGrid admin must approve the node join before it receives a
+NATS `node.token` or server `cluster.secret`.
+
 ## Summary picture
 
 ```
@@ -172,4 +209,8 @@ Coordinator internals (joinmgr, node_auth KV, embedded NATS)
    │  - issues per-node NATS username/password on approval
    ▼
 NATS (workers, server peers) — plain username/password auth, no GitHub identity at all
+
+Tailscale/tsnet sits beside this path as the private network layer:
+joining devices first need tailnet reachability, then EdgeGrid join approval,
+then NATS credentials.
 ```

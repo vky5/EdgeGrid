@@ -22,8 +22,7 @@ const (
 	WorkerBusy = "busy"
 )
 
-// FinishedJob is one job this process finished in the current session
-// (success or failure) — for the TUI overview, not durable history.
+// FinishedJob is one job this process finished in the current session (for TUI stats not persistent)
 type FinishedJob struct {
 	ID      string
 	Success bool
@@ -45,7 +44,13 @@ type Worker struct {
 }
 
 // Create a worker object with the connection
-func NewWorkerWithConn(nc *nats.Conn, workerID string, exec executor.Executor, replicas int, requireApproval bool) (*Worker, error) {
+func NewWorkerWithConn(
+	nc *nats.Conn, 
+	workerID string, 
+	exec executor.Executor, 
+	replicas int, 
+	requireApproval bool,
+) (*Worker, error) {
 	if workerID == "" {
 		workerID = generateWorkerID()
 	}
@@ -94,7 +99,6 @@ func (w *Worker) IsBusy() bool {
 }
 
 // ActiveJobIDs returns job IDs that currently have a cancel handle registered
-// (i.e. jobs this process is executing). Order is not meaningful.
 func (w *Worker) ActiveJobIDs() []string {
 	if w == nil {
 		return nil
@@ -131,8 +135,7 @@ func (w *Worker) RecordFinished(jobID string, success bool) {
 	}
 }
 
-// SessionStats returns how many jobs this process finished this session and
-// the most recent ones (newest last).
+// SessionStats returns how many jobs this process finished this session
 func (w *Worker) SessionStats() (doneOK, doneFail int, recent []FinishedJob) {
 	if w == nil {
 		return 0, 0, nil
