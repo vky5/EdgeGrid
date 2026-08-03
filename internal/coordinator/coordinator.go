@@ -27,6 +27,7 @@ type Coordinator struct {
 	adminToken  string
 	nodeID      string // this coordinator's own node ID
 	joinURL     string // HTTP address of the coordinator this one joined; empty on a primary
+	selfHTTPURL string // this coordinator's own HTTP address, as reachable by peers; empty if unresolvable
 }
 
 func NewCoordinatorWithConn(nc *nats.Conn, replicas int, ns *natsserver.EmbeddedServer) (*Coordinator, error) {
@@ -69,10 +70,14 @@ func (c *Coordinator) SetDataDir(dir string) {
 	c.dataDir = dir
 }
 
-// SetSelfIdentity records this coordinator's own node ID and, for a secondary,
-// the HTTP address of the coordinator it joined (empty on a primary).
-func (c *Coordinator) SetSelfIdentity(nodeID, joinURL string) {
+// SetSelfIdentity records this coordinator's own node ID, its own HTTP
+// address as other coordinators should reach it (selfHTTPURL — used to
+// populate RosterEntry.HttpURL when announcing, so peers learn how to repair
+// with this node), and, for a secondary, the HTTP address of the coordinator
+// it joined (joinURL, empty on a primary).
+func (c *Coordinator) SetSelfIdentity(nodeID, selfHTTPURL, joinURL string) {
 	c.nodeID = nodeID
+	c.selfHTTPURL = selfHTTPURL
 	c.joinURL = joinURL
 }
 
@@ -84,7 +89,7 @@ func (c *Coordinator) SetTsnetServer(ts *tsnet.Server) {
 	c.tsnetServer = ts
 }
 
-// AdminToken returns the bearer token guarding this coordinator's admin HTTP endpoints. 
+// AdminToken returns the bearer token guarding this coordinator's admin HTTP endpoints.
 func (c *Coordinator) AdminToken() string {
 	return c.adminToken
 }
@@ -130,6 +135,11 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 
 	// Secondary only: complete the peer pair with the coordinator we joined.
 	go c.announceToPrimary()
+
+	// Periodic anti-entropy repair with every peer we have an HTTP address
+	// for — runs on primaries and secondaries alike (docs/coordinator-peer-mesh-plan.md,
+	// "Propagation" / "Repair pull").
+	go c.runRepairLoop(ctx)
 
 	<-ctx.Done()
 	log.Println("shutting down coordinator")

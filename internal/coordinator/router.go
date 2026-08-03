@@ -90,6 +90,11 @@ func isOpenPath(r *http.Request) bool {
 	if p == "/peer/announce" && r.Method == http.MethodPost {
 		return true
 	}
+	// GET /peer/roster — a peer coordinator pulls this node's roster view.
+	// v1 trust model: tailnet membership is the boundary, not the backend token
+	if p == "/peer/roster" && r.Method == http.MethodGet {
+		return true
+	}
 	return false
 }
 
@@ -211,14 +216,19 @@ func StartHTTPServer(addr string, jsBroker *broker.Broker, manager *workerman.Wo
 	// and the credential we should dial it with. Nonce-authenticated, and
 	// reached over the tailnet, so it goes on both muxes like /join.
 	peerAnnounce := func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
+		switch strings.TrimPrefix(r.URL.Path, "/peer/") {
+		case "announce":
+			peerapi.Announce(w, r, jm, pm, ns, selfNodeID)
+		case "roster":
+			peerapi.GetRoster(w, r, pm)
+		default:
+			http.Error(w, "not a valid path", http.StatusBadRequest)
 		}
-		peerapi.Announce(w, r, jm, pm, ns, selfNodeID)
 	}
 	backendMux.HandleFunc("/peer/announce", peerAnnounce)
+	backendMux.HandleFunc("/peer/roster", peerAnnounce)
 	tailnetMux.HandleFunc("/peer/announce", peerAnnounce)
+	tailnetMux.HandleFunc("/peer/roster", peerAnnounce)
 
 	// POST /admin/join/{nodeID}/approve|reject
 	// Admin-ness is enforced by the Next.js backend (GitHub session + isAdmin);

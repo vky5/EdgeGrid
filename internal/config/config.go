@@ -2,6 +2,7 @@ package config
 
 import (
 	"flag"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,13 +14,13 @@ import (
 
 type Config struct {
 	NatsURL       string
-	EmbedNATS     bool     // true when coordinator should start the embedded NATS server
-	NATSPort      int      // port for embedded NATS (default 4222)
-	NATSStore     string   // JetStream persistence directory for embedded NATS
-	DataDir       string   // directory for node identity and token files (default ./data)
-	Replicas      int      // NATS JetStream replication factor: 1=dev, 3=prod
-	JoinURL       string   // coordinator HTTP URL to send a join request to (non-primary nodes)
-	AdvertiseHost string   // externally-reachable host for this coordinator's embedded NATS (optional)
+	EmbedNATS     bool   // true when coordinator should start the embedded NATS server
+	NATSPort      int    // port for embedded NATS (default 4222)
+	NATSStore     string // JetStream persistence directory for embedded NATS
+	DataDir       string // directory for node identity and token files (default ./data)
+	Replicas      int    // NATS JetStream replication factor: 1=dev, 3=prod
+	JoinURL       string // coordinator HTTP URL to send a join request to (non-primary nodes)
+	AdvertiseHost string // externally-reachable host for this coordinator's embedded NATS (optional)
 
 	TailscaleAuthKey  string // tsnet auth key for joining the tailnet (optional; falls back to interactive login)
 	TailscaleHostname string // hostname this node presents on the tailnet (default: os.Hostname())
@@ -186,7 +187,12 @@ func loadConfigOnce() *Config {
 	if finalReplicas == 0 {
 		finalReplicas = envInt("NATS_REPLICAS", 1)
 	}
-	if finalReplicas < 1 {
+	if finalReplicas != 1 {
+		// Coordinators never cluster (docs/coordinator-peer-mesh-plan.md) — a
+		// standalone JetStream server cannot place a second replica, so any
+		// value but 1 breaks bucket creation at startup rather than doing
+		// anything useful.
+		log.Printf("NATS_REPLICAS=%d is not supported (coordinators never cluster) — pinning to 1", finalReplicas)
 		finalReplicas = 1
 	}
 

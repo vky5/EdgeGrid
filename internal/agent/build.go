@@ -29,9 +29,12 @@ func buildCoordinator(cfg *config.Config, nc *nats.Conn, embeddedNATS *natsserve
 	coord.SetDataDir(cfg.DataDir)
 	coord.SetTsnetServer(ts)
 
-	// cfg.JoinURL is set only on a secondary — the coordinator it joined, and
-	// the one it announces itself to once started.
-	coord.SetSelfIdentity(ident.NodeID, cfg.JoinURL)
+	// generates self http endpoint from AdvertiseHost if set, else empty (unresolvable)
+	selfHTTPURL := ""
+	if cfg.AdvertiseHost != "" {
+		selfHTTPURL = fmt.Sprintf("http://%s%s", cfg.AdvertiseHost, cfg.Server.Port)
+	}
+	coord.SetSelfIdentity(ident.NodeID, selfHTTPURL, cfg.JoinURL)
 
 	// load/generate admin token (guards admin HTTP endpoints)
 	adminToken := nodeident.LoadToken(cfg.DataDir, "admin.token")
