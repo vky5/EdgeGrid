@@ -18,12 +18,13 @@ func Path(dataDir string) string {
 	return filepath.Join(dataDir, filename)
 }
 
-// Setup makes the standard log package write to both stdout (unchanged
-// behavior) and dataDir's log file, so every existing log.Printf call in
-// the codebase — tsnet status, NATS connects, join events — is persisted
-// without any of those call sites changing. Returns a close func to flush
-// the file on shutdown.
-func Setup(dataDir string) (closeFn func() error, err error) {
+// Setup makes the standard log package write to dataDir's log file, so every
+// existing log.Printf call in the codebase — tsnet status, NATS connects, join
+// events — is persisted without any of those call sites changing. In headless
+// mode logs are also mirrored to stdout; in TUI mode they stay file-only so
+// Bubble Tea can own the terminal. Returns a close func to flush the file on
+// shutdown.
+func Setup(dataDir string, tuiMode bool) (closeFn func() error, err error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, err
 	}
@@ -31,7 +32,12 @@ func Setup(dataDir string) (closeFn func() error, err error) {
 	if err != nil {
 		return nil, err
 	}
-	log.SetOutput(io.MultiWriter(os.Stdout, f))
+	if tuiMode {
+		// In TUI mode, we do NOT want logs written to os.Stdout because it corrupts the Bubble Tea screen.
+		log.SetOutput(f) // set go's output to log file, not stdout
+	} else {
+		log.SetOutput(io.MultiWriter(os.Stdout, f))
+	}
 	return f.Close, nil
 }
 

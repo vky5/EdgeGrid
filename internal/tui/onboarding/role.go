@@ -107,8 +107,6 @@ type roleModel struct {
 	confirmMode     bool
 	confirmYes      bool
 	tempNatsPort    string
-	tempClusterPort string
-	tempClusterName string
 	tempJoinURL     string
 	tempExecutor    string
 	tempReqApproval bool
@@ -139,9 +137,9 @@ func (m roleModel) currentFields() []string {
 	role := roleOptions[m.cursor].role
 	switch role {
 	case RolePrimaryCoordinator:
-		return []string{"NATS Port", "Gossip Port", "Cluster Name", "Tailscale Hostname"}
+		return []string{"NATS Port", "Tailscale Hostname"}
 	case RoleSecondaryCoordinator:
-		return []string{"Join URL", "Gossip Port", "Tailscale Hostname"}
+		return []string{"Join URL", "Tailscale Hostname"}
 	case RoleWorker:
 		return []string{"Join URL", "Executor", "Require Approval (true/false)", "Tailscale Hostname"}
 	}
@@ -154,8 +152,6 @@ func (m roleModel) enterEditMode() roleModel {
 	m.confirmMode = false
 
 	m.tempNatsPort = strconv.Itoa(m.config.NATSPort)
-	m.tempClusterPort = strconv.Itoa(m.config.ClusterPort)
-	m.tempClusterName = m.config.ClusterName
 	m.tempJoinURL = m.config.JoinURL
 	m.tempExecutor = m.config.Client.Executor
 	m.tempReqApproval = m.config.Client.RequireApproval
@@ -185,10 +181,6 @@ func (m roleModel) setupInputForField() roleModel {
 	switch fieldName {
 	case "NATS Port":
 		val = m.tempNatsPort
-	case "Gossip Port":
-		val = m.tempClusterPort
-	case "Cluster Name":
-		val = m.tempClusterName
 	case "Tailscale Hostname":
 		val = m.tempTSHostname
 	case "Join URL":
@@ -220,10 +212,6 @@ func (m roleModel) saveCurrentField() roleModel {
 	switch fieldName {
 	case "NATS Port":
 		m.tempNatsPort = val
-	case "Gossip Port":
-		m.tempClusterPort = val
-	case "Cluster Name":
-		m.tempClusterName = val
 	case "Tailscale Hostname":
 		m.tempTSHostname = val
 	case "Join URL":
@@ -243,16 +231,9 @@ func (m roleModel) applyTempConfig() roleModel {
 		if p, err := strconv.Atoi(m.tempNatsPort); err == nil {
 			m.config.NATSPort = p
 		}
-		if p, err := strconv.Atoi(m.tempClusterPort); err == nil {
-			m.config.ClusterPort = p
-		}
-		m.config.ClusterName = m.tempClusterName
 		m.config.TailscaleHostname = m.tempTSHostname
 	case RoleSecondaryCoordinator:
 		m.config.JoinURL = m.tempJoinURL
-		if p, err := strconv.Atoi(m.tempClusterPort); err == nil {
-			m.config.ClusterPort = p
-		}
 		m.config.TailscaleHostname = m.tempTSHostname
 	case RoleWorker:
 		m.config.JoinURL = m.tempJoinURL
@@ -676,10 +657,6 @@ func (m roleModel) View() string {
 			switch field {
 			case "NATS Port":
 				val = m.tempNatsPort
-			case "Gossip Port":
-				val = m.tempClusterPort
-			case "Cluster Name":
-				val = m.tempClusterName
 			case "Tailscale Hostname":
 				val = m.tempTSHostname
 			case "Join URL":
@@ -716,12 +693,6 @@ func (m roleModel) View() string {
 			case "NATS Port":
 				orig = strconv.Itoa(m.config.NATSPort)
 				temp = m.tempNatsPort
-			case "Gossip Port":
-				orig = strconv.Itoa(m.config.ClusterPort)
-				temp = m.tempClusterPort
-			case "Cluster Name":
-				orig = m.config.ClusterName
-				temp = m.tempClusterName
 			case "Tailscale Hostname":
 				orig = m.config.TailscaleHostname
 				temp = m.tempTSHostname
@@ -767,10 +738,6 @@ func (m roleModel) View() string {
 			switch field {
 			case "NATS Port":
 				val = strconv.Itoa(m.config.NATSPort)
-			case "Gossip Port":
-				val = strconv.Itoa(m.config.ClusterPort)
-			case "Cluster Name":
-				val = m.config.ClusterName
 			case "Tailscale Hostname":
 				val = m.config.TailscaleHostname
 			case "Join URL":

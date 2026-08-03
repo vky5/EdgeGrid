@@ -21,9 +21,7 @@ type ProfileSettings struct {
 	// Role is a hint for the settings UI: "primary", "secondary", "worker", or "".
 	Role string `json:"role,omitempty"`
 
-	NATSPort    int    `json:"nats_port,omitempty"`
-	ClusterPort int    `json:"cluster_port,omitempty"`
-	ClusterName string `json:"cluster_name,omitempty"`
+	NATSPort int `json:"nats_port,omitempty"`
 	// APIPort is the coordinator HTTP listen port, with or without leading ":".
 	APIPort string `json:"api_port,omitempty"`
 
@@ -80,9 +78,6 @@ func (s ProfileSettings) Validate() error {
 	if s.NATSPort != 0 && (s.NATSPort < 1 || s.NATSPort > 65535) {
 		return fmt.Errorf("nats_port must be 1–65535")
 	}
-	if s.ClusterPort != 0 && (s.ClusterPort < 1 || s.ClusterPort > 65535) {
-		return fmt.Errorf("cluster_port must be 1–65535")
-	}
 	if s.APIPort != "" {
 		p := strings.TrimPrefix(s.APIPort, ":")
 		n, err := strconv.Atoi(p)
@@ -108,12 +103,6 @@ func (s ProfileSettings) Apply(cfg *Config) {
 	}
 	if s.NATSPort > 0 {
 		cfg.NATSPort = s.NATSPort
-	}
-	if s.ClusterPort > 0 {
-		cfg.ClusterPort = s.ClusterPort
-	}
-	if s.ClusterName != "" {
-		cfg.ClusterName = s.ClusterName
 	}
 	if s.APIPort != "" {
 		p := s.APIPort
@@ -158,8 +147,6 @@ func SnapshotFromConfig(cfg *Config, role string) ProfileSettings {
 	return ProfileSettings{
 		Role:              role,
 		NATSPort:          cfg.NATSPort,
-		ClusterPort:       cfg.ClusterPort,
-		ClusterName:       cfg.ClusterName,
 		APIPort:           cfg.Server.Port,
 		Executor:          cfg.Client.Executor,
 		RequireApproval:   &req,

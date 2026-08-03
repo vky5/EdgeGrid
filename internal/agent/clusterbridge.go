@@ -1,12 +1,10 @@
 package agent
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"net/url"
 	"sync"
 
 	"tailscale.com/tsnet"
@@ -46,53 +44,6 @@ func bridgeInboundPort(ts *tsnet.Server, port int) {
 			}()
 		}
 	}()
-}
-
-// bridgeOutboundRoutes takes this node's cluster seed routes (real remote
-// tsnet addresses, e.g. from a join/approve response) and, for each one,
-// starts a local proxy that dials the remote peer via ts.Dial. It returns
-// the rewritten route list pointing at those local proxies — what actually
-// gets handed to nats-server, which never learns tsnet was involved.
-func bridgeOutboundRoutes(ctx context.Context, ts *tsnet.Server, routes []string) []string {
-	rewritten := make([]string, 0, len(routes))
-	for _, r := range routes {
-		u, err := url.Parse(r)
-		if err != nil {
-			log.Printf("cluster bridge: invalid route URL %q, skipping: %v", r, err)
-			continue
-		}
-		remoteAddr := u.Host
-
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			log.Printf("cluster bridge: local listen for route %s failed: %v", r, err)
-			continue
-		}
-		localAddr := ln.Addr().String()
-		log.Printf("cluster bridge: relaying %s -> tsnet %s", localAddr, remoteAddr)
-
-		go func(ln net.Listener, remoteAddr string) {
-			for {
-				conn, err := ln.Accept()
-				if err != nil {
-					log.Printf("cluster bridge: accept on %s failed: %v", ln.Addr(), err)
-					return
-				}
-				go func() {
-					remote, err := ts.Dial(ctx, "tcp", remoteAddr)
-					if err != nil {
-						log.Printf("cluster bridge: tsnet dial %s failed: %v", remoteAddr, err)
-						conn.Close()
-						return
-					}
-					relay(conn, remote)
-				}()
-			}
-		}(ln, remoteAddr)
-
-		rewritten = append(rewritten, "nats://"+localAddr)
-	}
-	return rewritten
 }
 
 // relay pipes bytes both directions between two already-established

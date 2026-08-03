@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"github.com/edgegrid/edgegrid/internal/broker"
+	"github.com/edgegrid/edgegrid/internal/coordinator/peermgr"
 	"github.com/edgegrid/edgegrid/internal/coordinator/workerman"
 	"github.com/edgegrid/edgegrid/internal/joinmgr"
 	"github.com/edgegrid/edgegrid/internal/natsserver"
@@ -19,10 +20,14 @@ type Coordinator struct {
 	manager     *workerman.WorkerManager // nats KV store
 	joinMgr     *joinmgr.Manager
 	tokenMgr    *tokenmgr.Manager
+	peerMgr     *peermgr.Manager
 	natsServer  *natsserver.EmbeddedServer
 	tsnetServer *tsnet.Server
 	dataDir     string
 	adminToken  string
+	nodeID      string // this coordinator's own node ID
+	joinURL     string // HTTP address of the coordinator this one joined; empty on a primary
+	selfHTTPURL string // this coordinator's own HTTP address, as reachable by peers; empty if unresolvable
 }
 
 func NewCoordinatorWithConn(nc *nats.Conn, replicas int, ns *natsserver.EmbeddedServer) (*Coordinator, error) {
@@ -46,17 +51,34 @@ func NewCoordinatorWithConn(nc *nats.Conn, replicas int, ns *natsserver.Embedded
 		return nil, fmt.Errorf("failed to initialize token manager: %w", err)
 	}
 
+	pm, err := peermgr.New(jsBroker)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize peer manager: %w", err)
+	}
+
 	return &Coordinator{
 		jsBroker:   jsBroker,
 		manager:    manager,
 		joinMgr:    jm,
 		tokenMgr:   tm,
+		peerMgr:    pm,
 		natsServer: ns,
 	}, nil
 }
 
 func (c *Coordinator) SetDataDir(dir string) {
 	c.dataDir = dir
+}
+
+// SetSelfIdentity records this coordinator's own node ID, its own HTTP
+// address as other coordinators should reach it (selfHTTPURL — used to
+// populate RosterEntry.HttpURL when announcing, so peers learn how to repair
+// with this node), and, for a secondary, the HTTP address of the coordinator
+// it joined (joinURL, empty on a primary).
+func (c *Coordinator) SetSelfIdentity(nodeID, selfHTTPURL, joinURL string) {
+	c.nodeID = nodeID
+	c.selfHTTPURL = selfHTTPURL
+	c.joinURL = joinURL
 }
 
 func (c *Coordinator) SetAdminToken(token string) {
@@ -67,10 +89,7 @@ func (c *Coordinator) SetTsnetServer(ts *tsnet.Server) {
 	c.tsnetServer = ts
 }
 
-// AdminToken returns the bearer token guarding this coordinator's admin
-// HTTP endpoints — needed by callers (like the onboarding TUI) that want
-// to show it to the operator instead of it only ever reaching a raw
-// console print or the admin.token file on disk.
+// AdminToken returns the bearer token guarding this coordinator's admin HTTP endpoints.
 func (c *Coordinator) AdminToken() string {
 	return c.adminToken
 }
@@ -112,7 +131,15 @@ func (c *Coordinator) Start(ctx context.Context, apiAddr string) error {
 	}
 
 	go c.StartStaleJobRecovery(ctx)
-	go StartHTTPServer(apiAddr, c.jsBroker, c.manager, c.joinMgr, c.tokenMgr, c.natsServer, c.tsnetServer, c.dataDir, c.adminToken)
+	go StartHTTPServer(apiAddr, c.jsBroker, c.manager, c.joinMgr, c.tokenMgr, c.peerMgr, c.natsServer, c.tsnetServer, c.dataDir, c.adminToken, c.nodeID)
+
+	// Secondary only: complete the peer pair with the coordinator we joined.
+	go c.announceToPrimary()
+
+	// Periodic anti-entropy repair with every peer we have an HTTP address
+	// for — runs on primaries and secondaries alike (docs/coordinator-peer-mesh-plan.md,
+	// "Propagation" / "Repair pull").
+	go c.runRepairLoop(ctx)
 
 	<-ctx.Done()
 	log.Println("shutting down coordinator")

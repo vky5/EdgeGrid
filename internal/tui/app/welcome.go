@@ -833,10 +833,6 @@ func (m *welcomeModel) openProfileSettings() {
 	if natsPort == 0 {
 		natsPort = 4222
 	}
-	clusterPort := s.ClusterPort
-	if clusterPort == 0 {
-		clusterPort = 6222
-	}
 	apiPort := strings.TrimPrefix(s.APIPort, ":")
 	if apiPort == "" {
 		apiPort = "8080"
@@ -849,10 +845,6 @@ func (m *welcomeModel) openProfileSettings() {
 	if s.RequireApproval != nil && *s.RequireApproval {
 		req = "true"
 	}
-	clusterName := s.ClusterName
-	if clusterName == "" {
-		clusterName = "edgegrid"
-	}
 	join := s.JoinURL
 	host := s.TailscaleHostname
 	if host == "" {
@@ -860,13 +852,11 @@ func (m *welcomeModel) openProfileSettings() {
 	}
 
 	m.settingsVals = map[string]string{
-		"NATS Port":         strconv.Itoa(natsPort),
-		"Cluster Port":      strconv.Itoa(clusterPort),
-		"API Port":          apiPort,
-		"Cluster Name":      clusterName,
-		"Executor":          exec,
-		"Require Approval":  req,
-		"Join URL":          join,
+		"NATS Port":          strconv.Itoa(natsPort),
+		"API Port":           apiPort,
+		"Executor":           exec,
+		"Require Approval":   req,
+		"Join URL":           join,
 		"Tailscale Hostname": host,
 	}
 
@@ -875,9 +865,9 @@ func (m *welcomeModel) openProfileSettings() {
 		m.settingsFields = []string{"Executor", "Require Approval", "Join URL", "Tailscale Hostname"}
 	case "primary", "secondary":
 		// Coordinators: ports + optional executor if they also run jobs
-		m.settingsFields = []string{"API Port", "NATS Port", "Cluster Port", "Cluster Name", "Executor", "Require Approval", "Tailscale Hostname"}
+		m.settingsFields = []string{"API Port", "NATS Port", "Executor", "Require Approval", "Tailscale Hostname"}
 	default:
-		m.settingsFields = []string{"API Port", "NATS Port", "Cluster Port", "Cluster Name", "Executor", "Require Approval", "Join URL", "Tailscale Hostname"}
+		m.settingsFields = []string{"API Port", "NATS Port", "Executor", "Require Approval", "Join URL", "Tailscale Hostname"}
 	}
 	m.settingsIdx = 0
 	m.settingsStatus = ""
@@ -903,18 +893,8 @@ func (m welcomeModel) persistProfileSettings() error {
 		}
 		s.NATSPort = n
 	}
-	if v := get("Cluster Port"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return fmt.Errorf("Cluster Port: %w", err)
-		}
-		s.ClusterPort = n
-	}
 	if v := get("API Port"); v != "" {
 		s.APIPort = v
-	}
-	if v := get("Cluster Name"); v != "" {
-		s.ClusterName = v
 	}
 	if v := get("Executor"); v != "" {
 		v = strings.ToLower(v)

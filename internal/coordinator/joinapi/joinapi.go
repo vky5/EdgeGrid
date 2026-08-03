@@ -1,11 +1,9 @@
 // Package joinapi: HTTP handlers for join/approval — submit, poll, approve/reject.
-// See docs/access-control.md and docs/grid-access.md for the full flow.
 package joinapi
 
 import (
 	"crypto/subtle"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -63,18 +61,15 @@ func Status(w http.ResponseWriter, r *http.Request, nodeID string, jm *joinmgr.M
 		return
 	}
 	req.PollNonce = ""
-	// Only include the token/secrets when approved so pending nodes can't fish for them.
+	// Only include the token when approved so pending nodes can't fish for it.
 	if req.Status != joinmgr.StatusApproved {
 		req.Token = ""
-		req.ClusterSecret = ""
-		req.ClusterRoutes = nil
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(req)
 }
 
 // Approve mints a token, adds it to NATS, and stores it in node_auth.
-// TODO only admin check and if it leaks then anyone can autoapprove a node
 func Approve(
 	w http.ResponseWriter,
 	r *http.Request, nodeID string,
@@ -106,42 +101,14 @@ func Approve(
 		_, _ = kv.Put(nodeID, []byte(token))
 	}
 
-	// NATS credential propagation happens via each coordinator's own node_auth
-	// watcher (coordinator.go: watchApprovedNodes), reacting to the kv.Put
-	// above — not a direct AddUser call here — so it applies uniformly across
-	// every embedding coordinator in the cluster, not just this one ofc including this one as well (if running embedded server)
-	// coordURL: the client address, needed by any approved node (worker or server) to connect.
-	// host is read back from the embedded server itself (single source of
-	// truth — see EmbeddedServer.AdvertiseHost) so this can never drift from
-	// what the server actually advertises in its own INFO messages. Falls
-	// back to localhost if unconfigured, or if this coordinator has no
-	// embedded server at all (external NATS — known gap, see
-	// docs/security/known-gaps.md).
-	host := "localhost"
-	natsPort := 4222
-	clusterPort := 6222
+	// The client URL this node should dial us on. A joining coordinator also
+	// keeps this as its peer record for us (see peerapi.Announce).
+	coordURL := "nats://localhost:4222"
 	if ns != nil {
-		if h := ns.AdvertiseHost(); h != "" {
-			host = h
-		}
-		if p := ns.ClientPort(); p != 0 {
-			natsPort = p
-		}
-		if p := ns.ClusterPort(); p != 0 {
-			clusterPort = p
-		}
-	}
-	coordURL := fmt.Sprintf("nats://%s:%d", host, natsPort) // client connections, Pub/Sub protocol
-
-	// clusterSecret/Routes: the route-peer address, only needed by a non-primary coordinator.
-	var clusterSecret string
-	var clusterRoutes []string
-	if req.Role == joinmgr.RoleServer {
-		clusterSecret = nodeident.LoadToken(dataDir, "cluster.secret")
-		clusterRoutes = []string{fmt.Sprintf("nats://%s:%d", host, clusterPort)} // server-to-server route protocol
+		coordURL = ns.AdvertisedClientURL()
 	}
 
-	if err := jm.Approve(nodeID, token, clusterSecret, coordURL, clusterRoutes); err != nil {
+	if err := jm.Approve(nodeID, token, coordURL); err != nil {
 		http.Error(w, "failed to approve join request", http.StatusInternalServerError)
 		return
 	}
