@@ -1,4 +1,4 @@
-package config
+package node
 
 import (
 	"flag"
@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/edgegrid/edgegrid/internal/profile"
 )
 
 type Config struct {
@@ -69,7 +67,7 @@ func ResolveDataDir(flagVal string) string {
 	if v := os.Getenv("DATA_DIR"); v != "" {
 		return v
 	}
-	if dir := profile.Dir(); dir != "" {
+	if dir := ProfileDir(); dir != "" {
 		return dir
 	}
 	return "./data"

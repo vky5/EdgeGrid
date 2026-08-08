@@ -1,7 +1,7 @@
 // Package nodeident generates and persists a stable node identity (UUID-style
 // hex ID and an optional secret token). Both are stored in the node's data
 // directory and reused across restarts.
-package nodeident
+package node
 
 import (
 	"crypto/rand"
@@ -20,7 +20,7 @@ type Identity struct {
 }
 
 // LoadOrCreate reads data/node.id, or generates and persists node ID (same for coordinator + worker)
-func LoadOrCreate(dataDir string) (*Identity, error) {
+func LoadOrCreateIdentity(dataDir string) (*Identity, error) {
 	if raw := LoadToken(dataDir, identFile); raw != "" {
 		var id Identity
 		if json.Unmarshal([]byte(raw), &id) == nil && id.NodeID != "" {

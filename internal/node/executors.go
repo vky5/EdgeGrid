@@ -1,4 +1,4 @@
-package config
+package node
 
 // KnownExecutors is the closed list of worker executor backends.
 // UI pickers should cycle this list instead of free-text entry.

@@ -3,7 +3,7 @@
 // instead of an arbitrary --data-dir path. Exactly one profile is "active"
 // at a time (tracked in ~/.edgegrid/app.json) and is used as the default
 // data dir when no --data-dir flag or DATA_DIR env var is given.
-package profile
+package node
 
 import (
 	"encoding/json"
@@ -18,7 +18,7 @@ type appConfig struct {
 }
 
 // Root returns ~/.edgegrid, creating it if it doesn't exist yet.
-func Root() (string, error) {
+func ProfileRoot() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
@@ -34,8 +34,8 @@ func appJSONPath(root string) string { return filepath.Join(root, "app.json") }
 
 // Active returns the currently active profile name, or "" if none has been
 // set (e.g. fresh install, or the profile system is simply unused).
-func Active() string {
-	root, err := Root()
+func ActiveProfile() string {
+	root, err := ProfileRoot()
 	if err != nil {
 		return ""
 	}
@@ -53,12 +53,12 @@ func Active() string {
 // Dir returns the data directory for the active profile, or "" if no
 // profile is active — callers fall back to their own default (./data) in
 // that case, same as if the profile system didn't exist.
-func Dir() string {
-	name := Active()
+func ProfileDir() string {
+	name := ActiveProfile()
 	if name == "" {
 		return ""
 	}
-	root, err := Root()
+	root, err := ProfileRoot()
 	if err != nil {
 		return ""
 	}
@@ -66,11 +66,11 @@ func Dir() string {
 }
 
 // Use makes name the active profile, creating its data dir if it's new.
-func Use(name string) error {
+func UseProfile(name string) error {
 	if name == "" {
 		return fmt.Errorf("profile name required")
 	}
-	root, err := Root()
+	root, err := ProfileRoot()
 	if err != nil {
 		return err
 	}
@@ -86,8 +86,8 @@ func Use(name string) error {
 
 // List returns all known profile names (subdirectories of the profile
 // root), sorted alphabetically.
-func List() ([]string, error) {
-	root, err := Root()
+func ListProfiles() ([]string, error) {
+	root, err := ProfileRoot()
 	if err != nil {
 		return nil, err
 	}
@@ -106,11 +106,11 @@ func List() ([]string, error) {
 }
 
 // Delete removes the profile's data directory and resets active if it was deleted.
-func Delete(name string) error {
+func DeleteProfile(name string) error {
 	if name == "" {
 		return fmt.Errorf("profile name required")
 	}
-	root, err := Root()
+	root, err := ProfileRoot()
 	if err != nil {
 		return err
 	}
@@ -118,7 +118,7 @@ func Delete(name string) error {
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("delete profile dir: %w", err)
 	}
-	if Active() == name {
+	if ActiveProfile() == name {
 		data, err := json.MarshalIndent(appConfig{Active: ""}, "", "  ")
 		if err == nil {
 			_ = os.WriteFile(appJSONPath(root), data, 0600)
