@@ -7,11 +7,16 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/joho/godotenv"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/edgegrid/edgegrid/internal/node"
+	"github.com/edgegrid/edgegrid/internal/tailscaleapi"
+	"github.com/edgegrid/edgegrid/internal/tui/app"
 )
 
 func main() {
@@ -28,6 +33,9 @@ func main() {
 		case "up":
 			runNode()
 			return
+		case "dashboard":
+			runDashboard()
+			return
 		case "-h", "--help", "help":
 			usage()
 			return
@@ -42,10 +50,11 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: edgegrid <up|logs|profile> [args]")
-	fmt.Fprintln(os.Stderr, "  up       bring this node onto the tailnet and block until interrupted")
-	fmt.Fprintln(os.Stderr, "  logs     tail this node's log file")
-	fmt.Fprintln(os.Stderr, "  profile  list | use <name> | current")
+	fmt.Fprintln(os.Stderr, "usage: edgegrid <up|dashboard|logs|profile> [args]")
+	fmt.Fprintln(os.Stderr, "  up         bring this node onto the tailnet and block until interrupted")
+	fmt.Fprintln(os.Stderr, "  dashboard  bring this node up and open the terminal dashboard")
+	fmt.Fprintln(os.Stderr, "  logs       tail this node's log file")
+	fmt.Fprintln(os.Stderr, "  profile    list | use <name> | current")
 }
 
 // runNode brings the node up on the tailnet and blocks until interrupted.
@@ -81,6 +90,87 @@ func runForeground(ctx context.Context, nodeAgent *node.Node) {
 	case <-ctx.Done():
 		log.Println("received shutdown signal")
 	}
+}
+
+// runDashboard brings the node up on the tailnet (same as runNode) and
+// hands the terminal to the TUI instead of blocking headlessly. Logs go
+// file-only while the TUI owns the screen (node.NewWithLogging's tuiMode)
+// — see internal/node/log.go.
+func runDashboard() {
+	cfg := node.LoadConfig()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	nodeAgent, closeLog, err := node.NewWithLogging(ctx, cfg, nil, true)
+	if err != nil {
+		log.Fatalf("failed to initialize EdgeGrid node: %v", err)
+	}
+	defer closeLog()
+	defer nodeAgent.Close()
+
+	tsClient := tailscaleapi.LoadCredentials(cfg.DataDir)
+	a := app.New(nodeAgent.NodeID(), nodeAgent.TailscaleIP(), cfg.DataDir, tsClient)
+
+	p := tea.NewProgram(a, tea.WithAltScreen())
+	finalModel, err := p.Run()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tui error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if finalApp, ok := finalModel.(app.App); ok {
+		if profileName, restart := finalApp.WantsRestart(); restart {
+			execRestart(profileName)
+			return // only reached if the exec itself failed
+		}
+	}
+}
+
+// execRestart re-execs the process into `edgegrid dashboard` after
+// "/profile <name>" switches the active profile — the node identity,
+// tsnet session, and log file are all already bound to the old data dir,
+// so an in-place switch isn't possible, only a real restart is. args is
+// stripped of --data-dir so the new process re-resolves via the profile
+// just set instead of the explicit flag winning again and silently
+// undoing the switch (see node.ResolveDataDir's precedence).
+func execRestart(profileName string) {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "restart for profile %q failed: %v\n", profileName, err)
+		return
+	}
+
+	cleanArgs := stripFlag(os.Args[2:], "--data-dir")
+	newArgv := append([]string{exe, "dashboard"}, cleanArgs...)
+
+	var newEnv []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "DATA_DIR=") {
+			newEnv = append(newEnv, kv)
+		}
+	}
+
+	if err := syscall.Exec(exe, newArgv, newEnv); err != nil {
+		fmt.Fprintf(os.Stderr, "restart for profile %q failed: %v\n", profileName, err)
+	}
+}
+
+// stripFlag removes a "--flag value" or "--flag=value" pair from args.
+func stripFlag(args []string, flag string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == flag {
+			i++ // skip its value
+			continue
+		}
+		if strings.HasPrefix(a, flag+"=") {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // runProfile implements `edgegrid profile list|use <name>|current`.
