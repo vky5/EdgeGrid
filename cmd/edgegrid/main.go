@@ -97,16 +97,47 @@ func runForeground(ctx context.Context, nodeAgent *node.Node) {
 // file-only while the TUI owns the screen (node.NewWithLogging's tuiMode)
 // — see internal/node/log.go.
 func runDashboard() {
+	// Welcome runs first, before LoadConfig, so picking a profile still gets
+	// to decide which data dir tsnet binds to. Once the node is up that
+	// choice costs a full process restart (see execRestart), which is what
+	// the old in-dashboard welcome screen had to do on every switch.
+	choice, err := app.RunWelcome()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "welcome screen: %v\n", err)
+		os.Exit(1)
+	}
+	switch choice.Action {
+	case app.WelcomeQuit:
+		return
+	case app.WelcomeLogs:
+		runLogs(nil)
+		return
+	}
+
 	cfg := node.LoadConfig()
+
+	// An auth key typed on the join screen has to be in place before bring-up:
+	// tsnet reads AuthKey inside lb.Start, partway through Up, so there is no
+	// way to supply one once boot is under way. An explicit --ts-authkey or
+	// TS_AUTHKEY still wins — the screen only fills a gap, it doesn't override
+	// what the operator asked for on the command line.
+	if choice.AuthKey != "" && cfg.TailscaleAuthKey == "" {
+		cfg.TailscaleAuthKey = choice.AuthKey
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	nodeAgent, closeLog, err := node.NewWithLogging(ctx, cfg, nil, true)
+	nodeAgent, closeLog, err := app.RunBoot(ctx, cfg)
 	if err != nil {
 		log.Fatalf("failed to initialize EdgeGrid node: %v", err)
 	}
-	defer closeLog()
+	if nodeAgent == nil {
+		return // cancelled from the boot screen
+	}
+	if closeLog != nil {
+		defer closeLog()
+	}
 	defer nodeAgent.Close()
 
 	tsClient := tailscaleapi.LoadCredentials(cfg.DataDir)
