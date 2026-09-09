@@ -1,13 +1,14 @@
 // Package logsview is the log viewer overlay opened by the "/logs" command
-// from either onboarding or the dashboard — one screen, reused by both, so
-// there's exactly one place that knows how logs get rendered in the TUI.
+// from the dashboard — reads through node.TailLog, the same function the
+// plain `edgegrid logs` subcommand uses, so there's one place that knows
+// where a node's logs live and how they're tailed.
 package logsview
 
 import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/edgegrid/edgegrid/internal/nodelog"
+	"github.com/edgegrid/edgegrid/internal/node"
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
@@ -20,11 +21,10 @@ type Model struct {
 	viewport viewport.Model
 }
 
-// New loads the current tail of dataDir's log file via the same
-// nodelog.Tail function `edgegrid logs` uses.
+// New loads the current tail of dataDir's log file via node.TailLog.
 func New(dataDir string, width, height int) Model {
 	vp := viewport.New(width, height)
-	content, err := nodelog.Tail(dataDir, maxLines)
+	content, err := node.TailLog(dataDir, maxLines)
 	if err != nil {
 		content = style.ErrorText.Render("reading logs: " + err.Error())
 	}

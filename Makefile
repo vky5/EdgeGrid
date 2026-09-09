@@ -1,8 +1,3 @@
-PROTOC        := protoc
-PROTOC_GEN_GO := $(shell which protoc-gen-go)
-
-PROTO_DIR    := internal/proto
-PROTO_FILES  := $(shell find $(PROTO_DIR) -name '*.proto')
 BINARY       := edgegrid
 IMAGE        := edgegrid:latest
 COMPOSE_FILE := docker-compose/docker-compose.yml
@@ -12,24 +7,11 @@ DIST_DIR     := dist
 VERSION      := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS      := -ldflags "-s -w -X main.version=$(VERSION)"
 
-.PHONY: all proto clean build build-all run test docker-build compose-config compose-up compose-down compose-logs compose-ps run-compose
+.PHONY: all clean build build-all run test docker-build compose-config compose-up compose-down compose-logs compose-ps run-compose
 
-all: proto test build
-
-proto:
-ifndef PROTOC_GEN_GO
-	$(error "protoc-gen-go not found. Please install with: go install google.golang.org/protobuf/cmd/protoc-gen-go@latest")
-endif
-	@echo "Generating Go code from proto files..."
-	@for file in $(PROTO_FILES); do \
-		$(PROTOC) -I=internal/proto \
-			--go_out=paths=source_relative:internal/proto \
-			$$file || exit 1; \
-	done
+all: test build
 
 clean:
-	@echo "Cleaning generated files..."
-	@find $(PROTO_DIR) -name "*.pb.go" -type f -delete
 	@rm -f $(BINARY)
 	@rm -rf $(DIST_DIR)
 

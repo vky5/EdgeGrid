@@ -17,30 +17,43 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/edgegrid/edgegrid/internal/config"
-	"github.com/edgegrid/edgegrid/internal/profile"
+	"github.com/edgegrid/edgegrid/internal/node"
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
-type welcomeRestartMsg struct {
-	profileName string
-	onboard     bool
-	noAgent     bool
-}
+// WelcomeAction is what the user picked before the welcome screen exited.
+// Welcome runs as its own bubbletea program *before* node.LoadConfig, so the
+// choice it returns still gets to decide which data dir the node comes up on
+// — that's why there's no "restart" action here. The old welcome lived inside
+// App, after tsnet was already bound to a data dir, so every profile switch
+// had to exec-restart the process (see execRestart in main.go). Choosing
+// first removes that round trip for the initial pick; execRestart still
+// exists for the "/profile" cmdbar switch mid-session, which genuinely can't
+// avoid it.
+type WelcomeAction int
 
-type welcomeStartActiveMsg struct {
-	profileName string
-}
-
-type welcomeConnectMsg struct{}
-
-type welcomeLogsMsg struct{}
+const (
+	// WelcomeQuit means the user pressed q/ctrl+c — do nothing further.
+	WelcomeQuit WelcomeAction = iota
+	// WelcomeStart means boot the node and hand over to the dashboard.
+	WelcomeStart
+	// WelcomeLogs means print this profile's log tail instead of booting.
+	WelcomeLogs
+)
 
 type welcomeBenchmarkTickMsg struct{}
 
 type welcomeAnimTickMsg struct{}
 
-type welcomeBackMsg struct{}
+// settingsStatusExpiredMsg clears the settings save/error line after a few
+// seconds. It carries the seq of the message it was scheduled for, so a save
+// made while an earlier tick is still in flight doesn't get wiped early by it
+// — and pressing ctrl+s twice re-shows the line instead of leaving a stale one
+// on screen with no way to tell the second save happened.
+type settingsStatusExpiredMsg struct{ seq int }
+
+// settingsStatusTTL is how long a save confirmation or error stays up.
+const settingsStatusTTL = 4 * time.Second
 
 func randomProfileName() string {
 	b := make([]byte, 2)
@@ -48,21 +61,19 @@ func randomProfileName() string {
 	return "cluster-" + hex.EncodeToString(b)
 }
 
-func isProfileOnboarded(name string) bool {
+// profileDataDir resolves a profile name to its data dir without consulting
+// the *active* profile — the settings form edits whichever profile the cursor
+// is on, which is usually not the active one. "" is the default ./data dir,
+// matching node.ResolveDataDir's last fallback.
+func profileDataDir(name string) string {
 	if name == "" {
-		// default local ./data folder
-		_, err1 := os.Stat("data/admin.token")
-		_, err2 := os.Stat("data/node.token")
-		return err1 == nil || err2 == nil
+		return "./data"
 	}
-	root, err := profile.Root()
+	root, err := node.ProfileRoot()
 	if err != nil {
-		return false
+		return "./data"
 	}
-	dir := filepath.Join(root, name)
-	_, err1 := os.Stat(filepath.Join(dir, "admin.token"))
-	_, err2 := os.Stat(filepath.Join(dir, "node.token"))
-	return err1 == nil || err2 == nil
+	return filepath.Join(root, name)
 }
 
 func tickBenchmark() tea.Cmd {
@@ -352,22 +363,30 @@ func renderLeftPanel(width, height int, activeNode int, angleA, angleB float64) 
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, content)
 }
 
-// welcomeModel is the new VSCode-like Home/Welcome screen.
+// welcomeModel is the pre-boot Home/Welcome screen.
 type welcomeModel struct {
-	width, height       int
-	selectedIdx         int      // 0 = Setup new node, 1 = Choose previous profile, 2 = Connect remote, 3 = Diagnostics, 4 = Logs
+	width, height int
+	selectedIdx   int // 0 = Choose previous profile, 1 = Diagnostics, 2 = Logs
 	// subMode: 0 main, 1 profiles, 2 new name, 3 profile submenu, 4 benchmark,
-	// 5 delete confirm, 6 profile settings editor
+	// 5 delete confirm, 6 profile settings editor, 7 network role, 8 auth key
 	subMode             int
 	profiles            []string // loaded list of profiles
 	profileCursor       int      // cursor for profile list
 	profileOffset       int      // scrolling viewport offset for profile list
 	selectedProfileName string   // selected profile for submenu option
 	submenuIdx          int      // cursor for submenu options
+	statusMsg           string   // error surfaced on the create-profile / submenu screens
 	input               textinput.Model
 	activeNode          int
 	angleA, angleB      float64
-	fromDashboard       bool
+
+	// What the user chose, read by Welcome's caller after the program exits.
+	action      WelcomeAction
+	profileName string
+	authKey     string // tsnet auth key typed on the join screen; "" means interactive login
+
+	// Network-role screen (subMode 7) and auth-key entry (subMode 8).
+	roleIdx int
 
 	// Benchmark fields
 	benchmarkProgress float64
@@ -380,9 +399,40 @@ type welcomeModel struct {
 	settingsVals   map[string]string
 	settingsStatus string
 	settingsDir    string
-	settingsRole   string
+	// settingsStatusSeq rises on every new status line so a pending expiry
+	// tick can tell whether it still refers to the message on screen.
+	settingsStatusSeq int
 }
 
+// RunWelcome shows the landing page and blocks until the user picks
+// something. It must run before node.LoadConfig: choosing a profile here sets
+// the active profile (or DATA_DIR for the default entry), and LoadConfig
+// resolves the data dir exactly once per process.
+//
+// profileName is "" for the default ./data entry or when the user quit.
+// authKey is "" unless the user pasted one on the join screen, in which case
+// it must reach tsnet before Up — see node.Config.TailscaleAuthKey.
+func RunWelcome() (choice WelcomeChoice, err error) {
+	final, err := tea.NewProgram(newWelcomeModel(), tea.WithAltScreen()).Run()
+	if err != nil {
+		return WelcomeChoice{}, err
+	}
+	w, ok := final.(welcomeModel)
+	if !ok {
+		return WelcomeChoice{}, nil
+	}
+	return w.Result(), nil
+}
+
+// WelcomeChoice is what the landing page decided.
+type WelcomeChoice struct {
+	Action      WelcomeAction
+	ProfileName string
+	AuthKey     string
+}
+
+// newWelcomeModel builds the welcome screen. It touches no node state, so it
+// is safe to construct before node.LoadConfig.
 func newWelcomeModel() welcomeModel {
 	ti := textinput.New()
 	ti.Placeholder = "cluster-name"
@@ -394,11 +444,42 @@ func newWelcomeModel() welcomeModel {
 	return welcomeModel{input: ti}
 }
 
+// Result reports what the user chose. ProfileName is "" when they picked the
+// default ./data entry or quit without choosing.
+func (m welcomeModel) Result() WelcomeChoice {
+	return WelcomeChoice{Action: m.action, ProfileName: m.profileName, AuthKey: m.authKey}
+}
+
 func (m welcomeModel) Init() tea.Cmd {
 	return tickWelcomeAnim()
 }
 
-func (m welcomeModel) Update(msg tea.Msg) (welcomeModel, tea.Cmd) {
+func (m welcomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	nm, cmd := m.update(msg)
+	return nm, cmd
+}
+
+func (m welcomeModel) update(msg tea.Msg) (welcomeModel, tea.Cmd) {
+	if wm, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = wm.Width, wm.Height
+		return m, nil
+	}
+
+	// Global quit. Guarded on the text-entry submodes so typing "q" into a
+	// profile name or an API token doesn't kill the program mid-word.
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "ctrl+c":
+			m.action = WelcomeQuit
+			return m, tea.Quit
+		case "q":
+			if m.subMode != 2 && m.subMode != 6 && m.subMode != 8 {
+				m.action = WelcomeQuit
+				return m, tea.Quit
+			}
+		}
+	}
+
 	if _, ok := msg.(welcomeAnimTickMsg); ok {
 		m.activeNode = (m.activeNode + 1) % 5
 		m.angleA += 0.08
@@ -447,23 +528,21 @@ func (m welcomeModel) Update(msg tea.Msg) (welcomeModel, tea.Cmd) {
 		if key, ok := msg.(tea.KeyMsg); ok {
 			switch key.String() {
 			case "esc":
-				if m.fromDashboard || m.selectedIdx == 1 {
-					m.subMode = 1
-				} else {
-					m.subMode = 0
-				}
+				m.subMode = 1
 				return m, nil
 			case "enter":
 				val := strings.TrimSpace(m.input.Value())
 				if val != "" {
-					_ = profile.Use(val)
-					return m, func() tea.Msg {
-						return welcomeRestartMsg{
-							profileName: val,
-							onboard:     true,
-							noAgent:     false,
-						}
+					// UseProfile creates the dir, so a brand-new name is
+					// usable immediately — there's no onboarding wizard left
+					// to run between naming it and booting into it.
+					if err := node.UseProfile(val); err != nil {
+						m.statusMsg = "could not create profile: " + err.Error()
+						return m, nil
 					}
+					m.profileName = val
+					m.action = WelcomeStart
+					return m, tea.Quit
 				}
 			}
 		}
@@ -483,25 +562,16 @@ func (m welcomeModel) Update(msg tea.Msg) (welcomeModel, tea.Cmd) {
 			case "3":
 				m.selectedIdx = 2
 				return m, m.triggerSelection()
-			case "4":
-				m.selectedIdx = 3
-				return m, m.triggerSelection()
-			case "5":
-				m.selectedIdx = 4
-				return m, m.triggerSelection()
 			case "up", "k":
-				m.selectedIdx = (m.selectedIdx - 1 + 5) % 5
+				m.selectedIdx = (m.selectedIdx - 1 + len(mainMenuOptions)) % len(mainMenuOptions)
 			case "down", "j":
-				m.selectedIdx = (m.selectedIdx + 1) % 5
+				m.selectedIdx = (m.selectedIdx + 1) % len(mainMenuOptions)
 			case "enter":
 				return m, m.triggerSelection()
 			}
 		} else if m.subMode == 1 {
 			switch key.String() {
 			case "esc", "backspace":
-				if m.fromDashboard {
-					return m, func() tea.Msg { return welcomeBackMsg{} }
-				}
 				m.subMode = 0
 			case "up", "k":
 				m.profileCursor--
@@ -557,20 +627,15 @@ func (m welcomeModel) Update(msg tea.Msg) (welcomeModel, tea.Cmd) {
 					}
 				}
 
-				if isProfileOnboarded(selected) {
-					m.selectedProfileName = selected
-					m.subMode = 3
-					m.submenuIdx = 0
-				} else {
-					_ = profile.Use(selected)
-					return m, func() tea.Msg {
-						return welcomeRestartMsg{
-							profileName: selected,
-							onboard:     true,
-							noAgent:     false,
-						}
-					}
-				}
+				// Always the submenu now. The old code branched here on
+				// whether the profile had been through the onboarding wizard,
+				// sending un-onboarded ones straight into it — that wizard
+				// (internal/tui/onboarding) was deleted in 22acea4, so there
+				// is no second path left to take.
+				m.selectedProfileName = selected
+				m.statusMsg = ""
+				m.subMode = 3
+				m.submenuIdx = 0
 			}
 		} else if m.subMode == 3 {
 			switch key.String() {
@@ -585,21 +650,20 @@ func (m welcomeModel) Update(msg tea.Msg) (welcomeModel, tea.Cmd) {
 			case "3":
 				m.submenuIdx = 2
 				return m, m.triggerSubmenu()
-			case "4":
-				m.submenuIdx = 3
-				return m, m.triggerSubmenu()
 			case "up", "k":
-				m.submenuIdx = (m.submenuIdx - 1 + 4) % 4
+				m.submenuIdx = (m.submenuIdx - 1 + len(submenuOptions)) % len(submenuOptions)
 			case "down", "j":
-				m.submenuIdx = (m.submenuIdx + 1) % 4
+				m.submenuIdx = (m.submenuIdx + 1) % len(submenuOptions)
 			case "enter":
 				return m, m.triggerSubmenu()
 			}
 		} else if m.subMode == 5 {
 			switch key.String() {
 			case "y", "Y", "enter":
-				_ = profile.Delete(m.selectedProfileName)
-				m.profiles, _ = profile.List()
+				if err := node.DeleteProfile(m.selectedProfileName); err != nil {
+					m.statusMsg = "delete failed: " + err.Error()
+				}
+				m.profiles, _ = node.ListProfiles()
 				if m.profileCursor > len(m.profiles) {
 					m.profileCursor = len(m.profiles)
 				}
@@ -612,19 +676,127 @@ func (m welcomeModel) Update(msg tea.Msg) (welcomeModel, tea.Cmd) {
 			}
 		} else if m.subMode == 6 {
 			return m.updateProfileSettings(msg)
+		} else if m.subMode == 7 {
+			switch key.String() {
+			case "esc":
+				m.subMode = 3
+			case "1":
+				m.roleIdx = 0
+				return m, m.triggerRole()
+			case "2":
+				m.roleIdx = 1
+				return m, m.triggerRole()
+			case "up", "k":
+				m.roleIdx = (m.roleIdx - 1 + len(networkRoleOptions)) % len(networkRoleOptions)
+			case "down", "j":
+				m.roleIdx = (m.roleIdx + 1) % len(networkRoleOptions)
+			case "enter":
+				return m, m.triggerRole()
+			}
+		} else if m.subMode == 8 {
+			switch key.String() {
+			case "esc":
+				m.subMode = 7
+				return m, nil
+			case "enter":
+				// Blank is allowed and meaningful: tsnet falls back to
+				// interactive login, which is the same path the first node
+				// takes. Better than refusing to proceed when someone has a
+				// browser open and no key to hand.
+				m.authKey = strings.TrimSpace(m.input.Value())
+				m.action = WelcomeStart
+				return m, tea.Quit
+			}
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		} else if m.subMode == 9 {
+			switch key.String() {
+			case "esc":
+				m.subMode = 7
+			case "s":
+				m.openProfileSettings()
+				return m, textinput.Blink
+			case "enter":
+				m.action = WelcomeStart
+				return m, tea.Quit
+			}
 		}
+	}
+
+	// The dispatch above only runs for key presses, so the settings screen
+	// needs its non-key messages routed here: the status-expiry tick, and the
+	// blink that makes its text cursor visible at all.
+	if m.subMode == 6 {
+		return m.updateProfileSettings(msg)
 	}
 	return m, nil
 }
 
+// settingsFieldFiles maps each settings-form label to the file it persists
+// to inside the profile's data dir. Every field gets its own 0600 file —
+// the convention tailscaleapi.LoadCredentials already reads. There is
+// deliberately no settings.json: the old ProfileSettings struct carried an
+// Apply() that wrote cfg.NATSPort / cfg.Server.Port / cfg.Client.Executor,
+// none of which exist on node.Config any more, and a schema that can drift
+// out of sync with the struct it configures is worse than no schema.
+var settingsFieldFiles = map[string]string{
+	"Tailscale API Client ID":     "ts_api_client_id",
+	"Tailscale API Client Secret": "ts_api_client_secret",
+	"Tailscale API Tailnet":       "ts_api_tailnet",
+	"Tailscale API Tag":           "ts_api_tag",
+	"API Port":                    "api_port",
+	"Require Approval":            "require_approval",
+}
+
+// settingsFieldOrder is the form's display order. The ts_api_* fields lead
+// because they are the only ones with a live consumer: setting Client ID,
+// Client Secret and Tailnet together is what makes
+// tailscaleapi.LoadCredentials return non-nil, which is what puts the Tokens
+// tab in the dashboard. Nothing else writes those files, so before this form
+// existed the only way to enable Tokens was to create them by hand.
+var settingsFieldOrder = []string{
+	"Tailscale API Client ID",
+	"Tailscale API Client Secret",
+	"Tailscale API Tailnet",
+	"Tailscale API Tag",
+	"API Port",
+	"Require Approval",
+}
+
+// inertSettingsFields save and reload correctly but are read by nothing: the
+// coordinator HTTP server "API Port" configured and the join-approval flow
+// behind "Require Approval" were both deleted in 22acea4. They are marked as
+// such in the UI rather than rendered like working knobs — a form that
+// silently accepts a setting nothing honours produces a bug report months
+// later with no failing code path to find.
+var inertSettingsFields = map[string]bool{
+	"API Port":         true,
+	"Require Approval": true,
+}
+
+// secretSettingsFields are masked when not being edited.
+var secretSettingsFields = map[string]bool{
+	"Tailscale API Client Secret": true,
+}
+
+// isChoiceField reports whether a field is picked from a list rather than
+// typed, so key handling routes to the selector instead of the text input.
+func isChoiceField(name string) bool { return name == "Require Approval" }
+
 func (m welcomeModel) updateProfileSettings(msg tea.Msg) (welcomeModel, tea.Cmd) {
+	if exp, ok := msg.(settingsStatusExpiredMsg); ok {
+		// Only the newest scheduled tick may clear the line; older ones belong
+		// to messages that have already been replaced.
+		if exp.seq == m.settingsStatusSeq {
+			m.settingsStatus = ""
+		}
+		return m, nil
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
-		if len(m.settingsFields) > 0 {
-			f := m.settingsFields[m.settingsIdx]
-			if f == "Executor" || f == "Require Approval" {
-				return m, nil
-			}
+		if len(m.settingsFields) > 0 && isChoiceField(m.settingsFields[m.settingsIdx]) {
+			return m, nil
 		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
@@ -640,127 +812,37 @@ func (m welcomeModel) updateProfileSettings(msg tea.Msg) (welcomeModel, tea.Cmd)
 		m.settingsStatus = ""
 		return m, nil
 	case "up", "k":
-		if field == "Executor" {
-			i := config.ExecutorIndex(m.settingsVals["Executor"])
-			if i > 0 {
-				m.settingsVals["Executor"] = config.KnownExecutors[i-1]
-				return m, nil
-			}
-			// top of list → previous field
-			m = m.saveSettingsField()
-			if m.settingsIdx > 0 {
-				m.settingsIdx--
-			} else {
-				m.settingsIdx = len(m.settingsFields) - 1
-			}
-			m = m.focusSettingsField()
-			return m, textinput.Blink
+		if field == "Require Approval" && !strings.EqualFold(m.settingsVals[field], "true") {
+			m.settingsVals[field] = "true"
+			return m, nil
 		}
-		if field == "Require Approval" {
-			if !strings.EqualFold(m.settingsVals["Require Approval"], "true") {
-				m.settingsVals["Require Approval"] = "true"
-				return m, nil
-			}
-			m = m.saveSettingsField()
-			if m.settingsIdx > 0 {
-				m.settingsIdx--
-			} else {
-				m.settingsIdx = len(m.settingsFields) - 1
-			}
-			m = m.focusSettingsField()
-			return m, textinput.Blink
-		}
-		m = m.saveSettingsField()
-		if m.settingsIdx > 0 {
-			m.settingsIdx--
-		} else {
-			m.settingsIdx = len(m.settingsFields) - 1
-		}
-		m = m.focusSettingsField()
-		return m, textinput.Blink
+		return m.moveSettingsField(-1)
 	case "down", "j":
-		if field == "Executor" {
-			i := config.ExecutorIndex(m.settingsVals["Executor"])
-			if i < len(config.KnownExecutors)-1 {
-				m.settingsVals["Executor"] = config.KnownExecutors[i+1]
-				return m, nil
-			}
-			// bottom of list → next field
-			m = m.saveSettingsField()
-			if m.settingsIdx < len(m.settingsFields)-1 {
-				m.settingsIdx++
-			} else {
-				m.settingsIdx = 0
-			}
-			m = m.focusSettingsField()
-			return m, textinput.Blink
+		if field == "Require Approval" && strings.EqualFold(m.settingsVals[field], "true") {
+			m.settingsVals[field] = "false"
+			return m, nil
 		}
-		if field == "Require Approval" {
-			if strings.EqualFold(m.settingsVals["Require Approval"], "true") {
-				m.settingsVals["Require Approval"] = "false"
-				return m, nil
-			}
-			m = m.saveSettingsField()
-			if m.settingsIdx < len(m.settingsFields)-1 {
-				m.settingsIdx++
-			} else {
-				m.settingsIdx = 0
-			}
-			m = m.focusSettingsField()
-			return m, textinput.Blink
-		}
-		m = m.saveSettingsField()
-		if m.settingsIdx < len(m.settingsFields)-1 {
-			m.settingsIdx++
-		} else {
-			m.settingsIdx = 0
-		}
-		m = m.focusSettingsField()
-		return m, textinput.Blink
+		return m.moveSettingsField(1)
 	case "left", "h":
 		if field == "Require Approval" {
-			m.settingsVals["Require Approval"] = "false"
-			return m, nil
+			m.settingsVals[field] = "false"
 		}
-		if field == "Executor" {
-			i := config.ExecutorIndex(m.settingsVals["Executor"])
-			if i > 0 {
-				m.settingsVals["Executor"] = config.KnownExecutors[i-1]
-			}
-			return m, nil
-		}
+		return m, nil
 	case "right", "l":
 		if field == "Require Approval" {
-			m.settingsVals["Require Approval"] = "true"
-			return m, nil
+			m.settingsVals[field] = "true"
 		}
-		if field == "Executor" {
-			i := config.ExecutorIndex(m.settingsVals["Executor"])
-			if i < len(config.KnownExecutors)-1 {
-				m.settingsVals["Executor"] = config.KnownExecutors[i+1]
-			}
-			return m, nil
-		}
+		return m, nil
 	case " ", "space":
 		if field == "Require Approval" {
-			if strings.EqualFold(m.settingsVals["Require Approval"], "true") {
-				m.settingsVals["Require Approval"] = "false"
-			} else {
-				m.settingsVals["Require Approval"] = "true"
-			}
+			m.settingsVals[field] = toggleWelcomeBool(m.settingsVals[field])
 			return m, nil
 		}
 	case "ctrl+s":
 		m = m.saveSettingsField()
-		if err := m.persistProfileSettings(); err != nil {
-			m.settingsStatus = "save failed: " + err.Error()
-		} else {
-			m.settingsStatus = "saved · Start Local Agent to apply ports/executor"
-		}
-		return m, nil
+		return m.finishSettings()
 	case "enter":
-		// Confirm current selection and go to next field — never flip true/false or executor.
-		if field != "Executor" && field != "Require Approval" {
+		if !isChoiceField(field) {
 			m = m.saveSettingsField()
 		}
 		if m.settingsIdx < len(m.settingsFields)-1 {
@@ -768,19 +850,45 @@ func (m welcomeModel) updateProfileSettings(msg tea.Msg) (welcomeModel, tea.Cmd)
 			m = m.focusSettingsField()
 			return m, textinput.Blink
 		}
-		if err := m.persistProfileSettings(); err != nil {
-			m.settingsStatus = "save failed: " + err.Error()
-		} else {
-			m.settingsStatus = "saved · Start Local Agent to apply ports/executor"
-		}
-		return m, nil
+		return m.finishSettings()
 	}
-	if field == "Executor" || field == "Require Approval" {
+	if isChoiceField(field) {
 		return m, nil
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// moveSettingsField commits the field being edited and moves the cursor by
+// delta, wrapping at both ends.
+func (m welcomeModel) moveSettingsField(delta int) (welcomeModel, tea.Cmd) {
+	m = m.saveSettingsField()
+	n := len(m.settingsFields)
+	if n == 0 {
+		return m, nil
+	}
+	m.settingsIdx = (m.settingsIdx + delta%n + n) % n
+	m = m.focusSettingsField()
+	return m, textinput.Blink
+}
+
+// setSettingsStatus shows a status line and schedules it to clear itself.
+func (m welcomeModel) setSettingsStatus(text string) (welcomeModel, tea.Cmd) {
+	m.settingsStatus = text
+	m.settingsStatusSeq++
+	seq := m.settingsStatusSeq
+	return m, tea.Tick(settingsStatusTTL, func(time.Time) tea.Msg {
+		return settingsStatusExpiredMsg{seq: seq}
+	})
+}
+
+// finishSettings writes the form and reports the outcome in the status line.
+func (m welcomeModel) finishSettings() (welcomeModel, tea.Cmd) {
+	if err := m.persistProfileSettings(); err != nil {
+		return m.setSettingsStatus("save failed: " + err.Error())
+	}
+	return m.setSettingsStatus("saved to " + m.settingsDir)
 }
 
 func toggleWelcomeBool(s string) string {
@@ -798,7 +906,7 @@ func (m welcomeModel) saveSettingsField() welcomeModel {
 		return m
 	}
 	name := m.settingsFields[m.settingsIdx]
-	if name == "Executor" || name == "Require Approval" {
+	if isChoiceField(name) {
 		return m
 	}
 	m.settingsVals[name] = strings.TrimSpace(m.input.Value())
@@ -810,10 +918,13 @@ func (m welcomeModel) focusSettingsField() welcomeModel {
 		return m
 	}
 	name := m.settingsFields[m.settingsIdx]
-	if name == "Executor" || name == "Require Approval" {
+	if isChoiceField(name) {
 		m.input.Blur()
 		return m
 	}
+	// The secret is echoed normally while it has focus — you cannot verify a
+	// pasted OAuth secret you cannot see, and it is masked again the moment
+	// the cursor leaves the field.
 	val := m.settingsVals[name]
 	m.input.SetValue(val)
 	m.input.SetCursor(len(val))
@@ -822,58 +933,21 @@ func (m welcomeModel) focusSettingsField() welcomeModel {
 }
 
 func (m *welcomeModel) openProfileSettings() {
-	root, _ := profile.Root()
-	dir := filepath.Join(root, m.selectedProfileName)
+	dir := profileDataDir(m.selectedProfileName)
 	m.settingsDir = dir
-	m.settingsRole = config.DetectRoleHint(dir)
-	s, _ := config.LoadProfileSettings(dir)
-
-	// Defaults from file or sensible fallbacks
-	natsPort := s.NATSPort
-	if natsPort == 0 {
-		natsPort = 4222
+	m.settingsFields = settingsFieldOrder
+	m.settingsVals = make(map[string]string, len(settingsFieldOrder))
+	for _, name := range settingsFieldOrder {
+		m.settingsVals[name] = node.LoadToken(dir, settingsFieldFiles[name])
 	}
-	apiPort := strings.TrimPrefix(s.APIPort, ":")
-	if apiPort == "" {
-		apiPort = "8080"
-	}
-	exec := s.Executor
-	if exec == "" {
-		exec = "training"
-	}
-	req := "false"
-	if s.RequireApproval != nil && *s.RequireApproval {
-		req = "true"
-	}
-	join := s.JoinURL
-	host := s.TailscaleHostname
-	if host == "" {
-		host, _ = os.Hostname()
-	}
-
-	m.settingsVals = map[string]string{
-		"NATS Port":          strconv.Itoa(natsPort),
-		"API Port":           apiPort,
-		"Executor":           exec,
-		"Require Approval":   req,
-		"Join URL":           join,
-		"Tailscale Hostname": host,
-	}
-
-	switch m.settingsRole {
-	case "worker":
-		m.settingsFields = []string{"Executor", "Require Approval", "Join URL", "Tailscale Hostname"}
-	case "primary", "secondary":
-		// Coordinators: ports + optional executor if they also run jobs
-		m.settingsFields = []string{"API Port", "NATS Port", "Executor", "Require Approval", "Tailscale Hostname"}
-	default:
-		m.settingsFields = []string{"API Port", "NATS Port", "Executor", "Require Approval", "Join URL", "Tailscale Hostname"}
+	if m.settingsVals["Require Approval"] == "" {
+		m.settingsVals["Require Approval"] = "false"
 	}
 	m.settingsIdx = 0
 	m.settingsStatus = ""
 	m.input = textinput.New()
-	m.input.CharLimit = 128
-	m.input.Width = 28
+	m.input.CharLimit = 256
+	m.input.Width = 34
 	m.input.Prompt = ""
 	m.input.PromptStyle = lipgloss.NewStyle().Foreground(style.Accent)
 	m.input.TextStyle = lipgloss.NewStyle().Foreground(style.Accent).Bold(true)
@@ -881,100 +955,186 @@ func (m *welcomeModel) openProfileSettings() {
 	m.subMode = 6
 }
 
+// persistProfileSettings writes every field to its own file under the
+// profile dir. Clearing a field removes its file rather than leaving an empty
+// one: LoadToken treats missing and empty the same, but a zero-byte
+// ts_api_client_secret on disk reads as a live credential that happens to be
+// blank, which is a worse thing to find in a data dir than nothing at all.
+// Callers commit the focused field with saveSettingsField first; this
+// deliberately does not, so it writes exactly what settingsVals holds rather
+// than silently folding in whatever the text input happens to contain.
 func (m welcomeModel) persistProfileSettings() error {
-	m = m.saveSettingsField()
-	get := func(k string) string { return strings.TrimSpace(m.settingsVals[k]) }
+	if v := strings.TrimSpace(m.settingsVals["API Port"]); v != "" {
+		n, err := strconv.Atoi(strings.TrimPrefix(v, ":"))
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("API Port must be 1-65535")
+		}
+	}
 
-	s := config.ProfileSettings{Role: m.settingsRole}
-	if v := get("NATS Port"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return fmt.Errorf("NATS Port: %w", err)
+	for _, name := range m.settingsFields {
+		file := settingsFieldFiles[name]
+		v := strings.TrimSpace(m.settingsVals[name])
+		if v == "" {
+			if err := os.Remove(filepath.Join(m.settingsDir, file)); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+			continue
 		}
-		s.NATSPort = n
-	}
-	if v := get("API Port"); v != "" {
-		s.APIPort = v
-	}
-	if v := get("Executor"); v != "" {
-		v = strings.ToLower(v)
-		if config.NormalizeExecutor(v) == "" {
-			return fmt.Errorf("executor must be one of: %s", strings.Join(config.KnownExecutors, ", "))
+		if err := node.SaveToken(m.settingsDir, file, v); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
 		}
-		s.Executor = v
 	}
-	if v := get("Require Approval"); v != "" {
-		b := strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "yes")
-		s.RequireApproval = &b
-	}
-	if v := get("Join URL"); v != "" {
-		s.JoinURL = v
-	}
-	if v := get("Tailscale Hostname"); v != "" {
-		s.TailscaleHostname = v
-	}
-	return config.SaveProfileSettings(m.settingsDir, s)
+	return nil
+}
+
+// profileHasJoined reports whether this profile has ever completed a tailnet
+// bring-up. tailscale.ip is written only after ts.Up returns a valid address
+// (see node.New), which makes it a truthful "this node is already a member"
+// marker — unlike tsnet/tailscaled.state, which exists from the first attempt
+// whether or not authentication ever succeeded.
+func profileHasJoined(name string) bool {
+	return node.LoadToken(profileDataDir(name), "tailscale.ip") != ""
+}
+
+// profileHasTailscaleAPI reports whether this profile can mint join keys —
+// the same three files tailscaleapi.LoadCredentials requires.
+func profileHasTailscaleAPI(name string) bool {
+	dir := profileDataDir(name)
+	return node.LoadToken(dir, "ts_api_client_id") != "" &&
+		node.LoadToken(dir, "ts_api_client_secret") != "" &&
+		node.LoadToken(dir, "ts_api_tailnet") != ""
+}
+
+// networkRoleOptions is the fork shown before a node's first bring-up. The two
+// differ in one real, already-implemented way: the first node holds the
+// Tailscale API credentials and mints join keys for everyone else, which is
+// exactly what puts the Tokens tab on its dashboard. Deliberately not called
+// "cluster" or "coordinator" — both name subsystems this branch deleted, and
+// would read as a control-plane role that no longer exists.
+var networkRoleOptions = []struct {
+	name string
+	desc string
+}{
+	{"Start a new network", "This node mints the join keys the others use. Needs Tailscale API credentials."},
+	{"Join an existing network", "Paste an auth key minted by the first node."},
+}
+
+// mainMenuOptions is the landing menu. "Setup New Node (Onboarding Wizard)"
+// and "Connect to Remote Coordinator" used to sit at the top of this list;
+// both are gone because the packages behind them (internal/tui/onboarding,
+// internal/tui/app/connect.go) were deleted in 22acea4 along with the
+// coordinator they talked to. What survives is everything that only needs a
+// local data dir.
+var mainMenuOptions = []struct {
+	name string
+	desc string
+}{
+	{"Choose Profile", "Pick a data dir, then boot this node into it"},
+	{"Run Hardware Diagnostics", "Benchmark local CPU, memory, and FLOPS"},
+	{"View System Logs", "Tail this profile's log file"},
 }
 
 func (m *welcomeModel) triggerSelection() tea.Cmd {
 	switch m.selectedIdx {
 	case 0:
-		m.input = textinput.New()
-		m.input.Placeholder = "cluster-name"
-		m.input.CharLimit = 64
-		m.input.Width = 25
-		m.input.PromptStyle = lipgloss.NewStyle().Foreground(style.Accent)
-		m.input.TextStyle = lipgloss.NewStyle().Foreground(style.Accent).Bold(true)
-		m.input.SetValue(randomProfileName())
-		m.input.Focus()
-		m.subMode = 2
-		return textinput.Blink
-	case 1:
-		m.profiles, _ = profile.List()
+		m.profiles, _ = node.ListProfiles()
 		m.profileCursor = 0
+		m.profileOffset = 0
+		m.statusMsg = ""
 		m.subMode = 1
 		return nil
-	case 2:
-		return func() tea.Msg { return welcomeConnectMsg{} }
-	case 3:
+	case 1:
 		m.benchmarkProgress = 0.0
 		m.benchmarkActive = true
 		m.benchmarkLogs = []string{"> Initializing EdgeGrid diagnostics..."}
 		m.subMode = 4
 		return tickBenchmark()
-	case 4:
-		return func() tea.Msg { return welcomeLogsMsg{} }
+	case 2:
+		m.action = WelcomeLogs
+		return tea.Quit
 	}
 	return nil
 }
 
+// submenuOptions is what you can do with the profile under the cursor.
+// "Open Dashboard (Monitor Only)" is absent for the same reason as the two
+// missing main-menu entries: it connected a read-only client to a remote
+// coordinator over HTTP, and there is no coordinator to connect to.
+var submenuOptions = []struct {
+	name string
+	desc string
+}{
+	{"Start Node & Open Dashboard", "Bring this node onto the tailnet and load the dashboard"},
+	{"Configure Settings", "Tailscale API credentials and profile knobs"},
+	{"Back to Profiles List", "Return to the profiles selector"},
+}
+
 func (m *welcomeModel) triggerSubmenu() tea.Cmd {
-	_ = profile.Use(m.selectedProfileName)
 	switch m.submenuIdx {
 	case 0:
-		return func() tea.Msg {
-			return welcomeRestartMsg{
-				profileName: m.selectedProfileName,
-				onboard:     false,
-				noAgent:     false,
+		// The empty name is the default ./data entry, which UseProfile
+		// rejects outright ("profile name required"). Rather than silently
+		// leaving whatever profile was already active — which is what the old
+		// code did, so picking "default" quietly booted the wrong data dir —
+		// say so through DATA_DIR, which node.ResolveDataDir honours ahead of
+		// the active profile but still behind an explicit --data-dir flag.
+		if m.selectedProfileName == "" {
+			if err := os.Setenv("DATA_DIR", "./data"); err != nil {
+				m.statusMsg = "could not select default data dir: " + err.Error()
+				return nil
 			}
+		} else if err := node.UseProfile(m.selectedProfileName); err != nil {
+			m.statusMsg = "could not switch profile: " + err.Error()
+			return nil
 		}
+		m.profileName = m.selectedProfileName
+
+		// A profile that already reached the tailnet skips the role screen
+		// entirely: neither "new network" nor "join" describes a node that is
+		// already a member, and tsnet ignores an auth key once its state store
+		// holds a node anyway (see tsnet.Server.AuthKey's doc).
+		if profileHasJoined(m.selectedProfileName) {
+			m.action = WelcomeStart
+			return tea.Quit
+		}
+		m.roleIdx = 0
+		m.statusMsg = ""
+		m.subMode = 7
+		return nil
 	case 1:
-		return func() tea.Msg {
-			return welcomeRestartMsg{
-				profileName: m.selectedProfileName,
-				onboard:     false,
-				noAgent:     true,
-			}
-		}
-	case 2:
-		// In-place profile settings (settings.json) — not full re-onboard.
 		m.openProfileSettings()
 		return textinput.Blink
-	case 3:
+	case 2:
 		m.subMode = 1
 	}
 	return nil
+}
+
+// triggerRole acts on the network-role choice. "New network" only warns when
+// the API credentials are missing — it does not block, because a node can
+// perfectly well come up first and be given credentials afterwards; it just
+// cannot mint keys for anyone until it has them.
+func (m *welcomeModel) triggerRole() tea.Cmd {
+	if m.roleIdx == 0 {
+		if !profileHasTailscaleAPI(m.selectedProfileName) {
+			m.subMode = 9
+			return nil
+		}
+		m.action = WelcomeStart
+		return tea.Quit
+	}
+
+	m.input = textinput.New()
+	m.input.Placeholder = "tskey-auth-..."
+	m.input.EchoMode = textinput.EchoPassword
+	m.input.CharLimit = 256
+	m.input.Width = 44
+	m.input.Prompt = ""
+	m.input.PromptStyle = lipgloss.NewStyle().Foreground(style.Accent)
+	m.input.TextStyle = lipgloss.NewStyle().Foreground(style.Accent).Bold(true)
+	m.input.Focus()
+	m.subMode = 8
+	return textinput.Blink
 }
 
 func renderMainMenu(m welcomeModel, width int) string {
@@ -984,18 +1144,7 @@ func renderMainMenu(m welcomeModel, width int) string {
 		"",
 	)
 	
-	options := []struct {
-		name string
-		desc string
-	}{
-		{"Setup New Node (Onboarding Wizard)", "Bootstrap local cluster or join as worker"},
-		{"Choose Previous Profile", "Switch config profiles and auto-start node"},
-		{"Connect to Remote Coordinator", "Monitor a coordinator running elsewhere"},
-		{"Run Hardware Diagnostics", "Benchmark local CPU, memory, and FLOPS"},
-		{"View System Logs", "Diagnose startup and network issues"},
-	}
-	
-	for i, opt := range options {
+	for i, opt := range mainMenuOptions {
 		if i > 0 {
 			lines = append(lines, "", "  "+style.Help.Render(strings.Repeat("┄", width-8)), "")
 		} else {
@@ -1059,21 +1208,33 @@ func renderProfileSelect(m welcomeModel, width int) string {
 			title = item
 		}
 
-		var dirPath string
+		name := item
 		if i == 0 {
-			dirPath = "./data"
-		} else {
-			root, _ := profile.Root()
-			dirPath = filepath.Join(root, item)
+			name = ""
 		}
-		onboardedStr := "[not onboarded]"
-		if isProfileOnboarded(item) {
-			onboardedStr = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("[onboarded]")
+		dirPath := profileDataDir(name)
+
+		// Replaces the old "[onboarded]" marker, which keyed off admin.token
+		// / node.token — coordinator credentials that nothing issues any more,
+		// so every profile would read as not-onboarded forever. These two say
+		// something still true: whether the dir has a node identity, and
+		// whether Configure Settings has been filled in far enough for the
+		// dashboard's Tokens tab to appear.
+		var tags []string
+		if node.LoadToken(dirPath, "node.id") != "" {
+			tags = append(tags, lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("[node id]"))
+		} else {
+			tags = append(tags, style.Help.Render("[new]"))
+		}
+		if node.LoadToken(dirPath, "ts_api_client_id") != "" &&
+			node.LoadToken(dirPath, "ts_api_client_secret") != "" &&
+			node.LoadToken(dirPath, "ts_api_tailnet") != "" {
+			tags = append(tags, lipgloss.NewStyle().Foreground(style.Accent).Render("[ts api]"))
 		}
 
 		lines = append(lines,
 			prefix+title,
-			fmt.Sprintf("    %s  %s", style.Help.Render(dirPath), onboardedStr),
+			fmt.Sprintf("    %s  %s", style.Help.Render(dirPath), strings.Join(tags, " ")),
 		)
 	}
 
@@ -1100,39 +1261,44 @@ func renderCreateCluster(m welcomeModel, width int) string {
 		style.Help.Render("> Press enter to accept suggestion"),
 		style.Help.Render("> Press esc to go back"),
 	)
+	if m.statusMsg != "" {
+		lines = append(lines, "", style.ErrorText.Render(m.statusMsg))
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
 func renderProfileSettings(m welcomeModel, width int) string {
-	role := m.settingsRole
-	if role == "" {
-		role = "unknown"
+	name := m.selectedProfileName
+	if name == "" {
+		name = "default"
 	}
 	var lines []string
 	lines = append(lines,
-		style.Title.Render("PROFILE SETTINGS: "+m.selectedProfileName),
-		style.Help.Render("role hint: "+role+"  ·  saved to settings.json"),
+		style.Title.Render("PROFILE SETTINGS: "+name),
+		style.Help.Render(m.settingsDir+"  ·  one 0600 file per field"),
 		"",
-		style.Help.Render("↑/↓ field (Executor: scroll list)   ←/→ Approval   enter next   ctrl+s save   esc"),
+		style.Help.Render("↑/↓ field   ←/→ Approval   enter next   ctrl+s save   esc back"),
 		"",
 	)
 	for i, field := range m.settingsFields {
 		focused := i == m.settingsIdx
-		if focused {
-			lines = append(lines, style.Selected.Render("› "+field))
-		} else {
-			lines = append(lines, style.Help.Render("  "+field))
+		label := field
+		if inertSettingsFields[field] {
+			label += "  (not wired)"
 		}
-		switch field {
-		case "Executor":
-			lines = append(lines, renderWelcomeExecutorList(m.settingsVals["Executor"], focused), "")
-		case "Require Approval":
-			on := strings.EqualFold(m.settingsVals["Require Approval"], "true") || m.settingsVals["Require Approval"] == "1"
+		if focused {
+			lines = append(lines, style.Selected.Render("› "+label))
+		} else {
+			lines = append(lines, style.Help.Render("  "+label))
+		}
+
+		if field == "Require Approval" {
+			on := strings.EqualFold(m.settingsVals[field], "true") || m.settingsVals[field] == "1"
 			for _, o := range []struct{ val, title, desc string }{
-				{"true", "true", "pause each job until a human approves on the worker"},
-				{"false", "false", "start jobs immediately when assigned (no prompt)"},
+				{"true", "true", "stored, but nothing reads it yet"},
+				{"false", "false", "stored, but nothing reads it yet"},
 			} {
-				sel := (o.val == "true" && on) || (o.val == "false" && !on)
+				sel := (o.val == "true") == on
 				prefix := "    "
 				body := fmt.Sprintf("%-6s  %s", o.title, o.desc)
 				switch {
@@ -1151,57 +1317,40 @@ func renderProfileSettings(m welcomeModel, width int) string {
 				lines = append(lines, style.Help.Render("    ↑ true   ↓ false   enter next field"))
 			}
 			lines = append(lines, "")
+			continue
+		}
+
+		switch {
+		case focused:
+			lines = append(lines, "  "+m.input.View(), "")
+		case m.settingsVals[field] == "":
+			lines = append(lines, "  "+style.Help.Render("(unset)"), "")
+		case secretSettingsFields[field]:
+			lines = append(lines, "  "+lipgloss.NewStyle().Bold(true).Render(maskSecret(m.settingsVals[field])), "")
 		default:
-			if focused {
-				lines = append(lines, "  "+m.input.View(), "")
-			} else {
-				lines = append(lines, "  "+lipgloss.NewStyle().Bold(true).Render(m.settingsVals[field]), "")
-			}
+			lines = append(lines, "  "+lipgloss.NewStyle().Bold(true).Render(m.settingsVals[field]), "")
 		}
 	}
 	if m.settingsStatus != "" {
-		st := style.Help
+		st := lipgloss.NewStyle().Foreground(style.Accent)
 		if strings.HasPrefix(m.settingsStatus, "save failed") {
 			st = style.ErrorText
-		} else {
-			st = lipgloss.NewStyle().Foreground(style.Accent)
 		}
 		lines = append(lines, st.Render(m.settingsStatus))
 	} else {
-		lines = append(lines, style.Help.Render("No restart prompt here — use Start Local Agent after save."))
+		lines = append(lines, style.Help.Render("Client ID + Secret + Tailnet together enable the dashboard's Tokens tab."))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
-func renderWelcomeExecutorList(current string, focused bool) string {
-	var lines []string
-	for _, e := range config.KnownExecutors {
-		desc := ""
-		switch e {
-		case "training":
-			desc = "run real Python; stream job logs"
-		case "mock":
-			desc = "fake short run; script not executed"
-		}
-		body := fmt.Sprintf("%-10s  %s", e, desc)
-		selected := e == current
-		prefix := "    "
-		switch {
-		case selected && focused:
-			prefix = "  › "
-			body = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(style.Accent).Render(" " + body + " ")
-		case selected:
-			prefix = "  • "
-			body = lipgloss.NewStyle().Bold(true).Foreground(style.Accent).Render(body)
-		default:
-			body = style.Help.Render(body)
-		}
-		lines = append(lines, prefix+body)
+// maskSecret shows only the tail of a stored credential — enough to tell two
+// secrets apart when checking which one a profile holds, not enough to be
+// worth shoulder-surfing.
+func maskSecret(s string) string {
+	if len(s) <= 4 {
+		return strings.Repeat("•", len(s))
 	}
-	if focused {
-		lines = append(lines, style.Help.Render("    ↑/↓ choose   enter next field"))
-	}
-	return strings.Join(lines, "\n")
+	return strings.Repeat("•", 8) + s[len(s)-4:]
 }
 
 func renderDeleteConfirm(m welcomeModel, width int) string {
@@ -1233,16 +1382,6 @@ func renderProfileSubmenu(m welcomeModel, width int) string {
 		"",
 	)
 	
-	submenuOptions := []struct {
-		name string
-		desc string
-	}{
-		{"Start Local Agent & Open Dashboard", "Boot local agent and load cluster"},
-		{"Open Dashboard (Monitor Only)", "Skip agent startup, client-only connect"},
-		{"Configure Settings", "Edit ports, executor, and other profile knobs"},
-		{"Back to Profiles List", "Return to the profiles selector"},
-	}
-
 	for i, opt := range submenuOptions {
 		if i > 0 {
 			lines = append(lines, "", "  "+style.Help.Render(strings.Repeat("┄", width-8)), "")
@@ -1263,6 +1402,70 @@ func renderProfileSubmenu(m welcomeModel, width int) string {
 			fmt.Sprintf("%s%s", prefix, title),
 			fmt.Sprintf("    %s", style.Help.Render(opt.desc)),
 		)
+	}
+	if m.statusMsg != "" {
+		lines = append(lines, "", style.ErrorText.Render(m.statusMsg))
+	}
+	lines = append(lines, "", style.Help.Render(" esc: Back"))
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+func renderNetworkRole(m welcomeModel, width int) string {
+	name := m.selectedProfileName
+	if name == "" {
+		name = "default"
+	}
+	lines := []string{
+		style.Title.Render("SET UP: " + name),
+		style.Help.Render("this node has not joined a tailnet yet"),
+	}
+	for i, opt := range networkRoleOptions {
+		if i > 0 {
+			lines = append(lines, "", "  "+style.Help.Render(strings.Repeat("┄", max(width-8, 8))), "")
+		} else {
+			lines = append(lines, "")
+		}
+		prefix, title := style.Help.Render("  "), opt.name
+		if m.roleIdx == i {
+			prefix, title = style.Selected.Render("› "), style.Selected.Render(opt.name)
+		}
+		lines = append(lines, prefix+title, "    "+style.Help.Render(opt.desc))
+	}
+	lines = append(lines, "", style.Help.Render(" enter: continue   esc: back"))
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+func renderAuthKeyEntry(m welcomeModel, width int) string {
+	lines := []string{
+		style.Title.Render("JOIN AN EXISTING NETWORK"),
+		"",
+		"Paste a Tailscale auth key minted by the first node:",
+		"",
+		"  " + m.input.View(),
+		"",
+		style.Help.Render("The first node mints these from its dashboard's Tokens tab (m)."),
+		style.Help.Render("Leave blank to log in through the browser instead."),
+		"",
+		style.Help.Render(" enter: start node   esc: back"),
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+func renderNeedsSettings(m welcomeModel, width int) string {
+	lines := []string{
+		style.Title.Render("CONFIGURE SETTINGS FIRST"),
+		"",
+		"Starting a new network means this node mints the join keys",
+		"the other nodes use — and that needs Tailscale API credentials,",
+		"which this profile does not have yet.",
+		"",
+		style.Help.Render("Configure Settings holds the four values; see the OAuth client"),
+		style.Help.Render("in the Tailscale admin console for where they come from."),
+		"",
+		style.Help.Render("You can also start now and add them later — the node comes up"),
+		style.Help.Render("either way, it just cannot mint keys until it has them."),
+		"",
+		style.Help.Render(" s: open settings   enter: start anyway   esc: back"),
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
@@ -1366,6 +1569,12 @@ func (m welcomeModel) View() string {
 		rightContent = renderDeleteConfirm(m, colWidth)
 	case 6:
 		rightContent = renderProfileSettings(m, colWidth)
+	case 7:
+		rightContent = renderNetworkRole(m, colWidth)
+	case 8:
+		rightContent = renderAuthKeyEntry(m, colWidth)
+	case 9:
+		rightContent = renderNeedsSettings(m, colWidth)
 	}
 		
 	rightLines := strings.Split(lipgloss.Place(colWidth, bodyHeight, lipgloss.Center, lipgloss.Center, rightContent), "\n")

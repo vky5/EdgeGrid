@@ -7,10 +7,6 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/joho/godotenv v1.5.1
-	github.com/nats-io/nats-server/v2 v2.10.22
-	github.com/nats-io/nats.go v1.39.0
-	golang.org/x/sys v0.40.0
-	google.golang.org/protobuf v1.36.11
 	tailscale.com v1.96.2
 )
 
@@ -62,14 +58,10 @@ require (
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect
 	github.com/mdlayher/socket v0.5.0 // indirect
-	github.com/minio/highwayhash v1.0.3 // indirect
 	github.com/mitchellh/go-ps v1.0.0 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
-	github.com/nats-io/jwt/v2 v2.5.8 // indirect
-	github.com/nats-io/nkeys v0.4.15 // indirect
-	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/pires/go-proxyproto v0.8.1 // indirect
 	github.com/prometheus-community/pro-bing v0.4.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
@@ -89,6 +81,7 @@ require (
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/oauth2 v0.33.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/sys v0.40.0 // indirect
 	golang.org/x/term v0.39.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 	golang.org/x/time v0.12.0 // indirect

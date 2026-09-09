@@ -12,3 +12,5 @@ internal/worker/executor/.venv/
 internal/worker/executor/__pycache__/
 internal/worker/executor/hf_cache/
 internal/worker/executor/*.sock
+# Claude Code local state and worktrees
+.claude/

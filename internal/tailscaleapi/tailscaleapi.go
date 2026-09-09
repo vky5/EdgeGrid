@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/edgegrid/edgegrid/internal/nodeident"
+	"github.com/edgegrid/edgegrid/internal/node"
 )
 
 const apiBase = "https://api.tailscale.com/api/v2"
@@ -38,7 +38,7 @@ type Client struct {
 // LoadCredentials reads the OAuth client id/secret + tailnet name from
 // dataDir, written once by the operator into ts_api_client_id,
 // ts_api_client_secret, and ts_api_tailnet — same 0600-file convention as
-// every other credential in this directory (see nodeident.SaveToken).
+// every other credential in this directory (see node.SaveToken).
 // Returns nil if not configured; minting is opt-in, not required to run a
 // coordinator.
 //
@@ -46,9 +46,9 @@ type Client struct {
 // missing tag only blocks CreateKey (Tailscale requires a tag-scoped OAuth
 // client's keys to carry that tag), not RevokeKey, which needs no tag.
 func LoadCredentials(dataDir string) *Client {
-	id := nodeident.LoadToken(dataDir, "ts_api_client_id")
-	secret := nodeident.LoadToken(dataDir, "ts_api_client_secret")
-	tailnet := nodeident.LoadToken(dataDir, "ts_api_tailnet")
+	id := node.LoadToken(dataDir, "ts_api_client_id")
+	secret := node.LoadToken(dataDir, "ts_api_client_secret")
+	tailnet := node.LoadToken(dataDir, "ts_api_tailnet")
 	if id == "" || secret == "" || tailnet == "" {
 		return nil
 	}
@@ -56,7 +56,7 @@ func LoadCredentials(dataDir string) *Client {
 		tailnet:      tailnet,
 		clientID:     id,
 		clientSecret: secret,
-		tag:          nodeident.LoadToken(dataDir, "ts_api_tag"),
+		tag:          node.LoadToken(dataDir, "ts_api_tag"),
 		httpClient:   &http.Client{Timeout: 15 * time.Second},
 	}
 }

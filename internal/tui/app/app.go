@@ -1,17 +1,16 @@
-// Package app is the single unified TUI program: one bubbletea root Model
-// that owns the "/" command bar, the logs overlay, and the global quit
-// key, and switches between the dashboard and onboarding content depending
-// on which command was run — instead of those being two separately
-// launched programs with their own copies of that chrome.
+// Package app is the TUI root bubbletea Model: the "/" command bar, the
+// logs overlay, and the global quit key, wrapped around dashboard.Dashboard
+// — the only content this program ever shows, since there's no onboarding
+// wizard or role picker anymore. A node's identity and tailnet membership
+// are resolved once at process start (node.New, driven by flags/env), not
+// interactively, so the TUI has nothing left to onboard: it opens straight
+// into the dashboard.
 package app
 
 import (
 	"bufio"
-	"context"
 	"fmt"
-	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -19,170 +18,59 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/edgegrid/edgegrid/internal/agent"
-	"github.com/edgegrid/edgegrid/internal/config"
-	"github.com/edgegrid/edgegrid/internal/nodeident"
-	"github.com/edgegrid/edgegrid/internal/profile"
-	"github.com/edgegrid/edgegrid/internal/tui/client"
+	"github.com/edgegrid/edgegrid/internal/node"
+	"github.com/edgegrid/edgegrid/internal/tailscaleapi"
 	"github.com/edgegrid/edgegrid/internal/tui/cmdbar"
 	"github.com/edgegrid/edgegrid/internal/tui/dashboard"
 	"github.com/edgegrid/edgegrid/internal/tui/logsview"
-	"github.com/edgegrid/edgegrid/internal/tui/onboarding"
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
-type mode int
-
-const (
-	modeDashboard mode = iota
-	modeOnboarding
-	modeWelcome
-)
-
-// commands is the fixed list the "/" bar autocompletes against. Add new
-// ones here as they're wired up.
-var commands = []string{"onboard", "logs", "connect", "profile"}
+// commands is the fixed list the "/" bar autocompletes against.
+var commands = []string{"logs", "profile"}
 
 // App is the root bubbletea Model — the only thing cmd/edgegrid ever hands
 // to tea.NewProgram.
 type App struct {
-	mode mode
-
-	ctx     context.Context
 	dataDir string
 
-	// connected is whether the dashboard has a real coordinator behind it.
-	// isWorker only affects which message is shown while !connected — a
-	// worker has no coordinator of its own to default to, which is
-	// different from "just hasn't connected to one yet."
-	connected bool
-	isWorker  bool
-	// isPrimary is true only for the coordinator that never joined anyone
-	// else (has admin.token but no node.token — see runTUI) — the only role
-	// that can hold Tailscale API credentials, so the only one that gets a
-	// Tokens tab.
-	isPrimary bool
-
-	// displayCoord is the address shown in the header for the operator to
-	// share — the node's real Tailscale IP, when known. Deliberately not
-	// the same value as dashboard.Coord()/the client's base URL: the
-	// dashboard's own HTTP client must stay on loopback (only backendMux
-	// serves /admin, /workers, /jobs — the tsnet listener reachable via the
-	// Tailscale IP only carries /health and /join), so the address worth
-	// dialing and the address worth showing are genuinely different things.
-	// Empty falls back to dashboard.Coord() in subtitle().
-	displayCoord string
-
 	dashboard dashboard.Dashboard
-	wizard    onboarding.Wizard
-	welcome   welcomeModel
-
-	// runningAgent is the single node agent running in this process, if
-	// any — the one source of truth for "is a node already up" that
-	// main.go and the onboarding wizard both read/replace instead of each
-	// silently spawning their own. nil until one is started (either
-	// pre-existing at TUI launch, passed in via New, or newly built by a
-	// completed wizard run).
-	runningAgent *agent.Agent
-
-	cmdbar      cmdbar.Model
-	logs        logsview.Model
-	showLogs    bool
-	connect     connectModel
-	showConnect bool
+	cmdbar    cmdbar.Model
+	logs      logsview.Model
+	showLogs  bool
 
 	// restartProfile is set once "/profile <name>" switches the active
 	// profile — data dir is fixed at process startup, so main.go restarts
 	// the whole process rather than trying to hot-swap it in place.
 	restartProfile string
-	restartOnboard bool
-	restartNoAgent bool
-
-	previousMode mode
 
 	width, height int
 }
 
-// New builds the App starting in dashboard mode. connected reports whether
-// c is a real client already pointed at a coordinator (vs. the canned
-// Stub) — the dashboard shows a "not connected" state instead of Stub's
-// fake data until /connect (or a real client passed in here) changes that.
-func New(ctx context.Context, dataDir string, c client.Client, coord string, connected, isWorker bool, runningAgent *agent.Agent) App {
-	var nodeID string
-	if ident, err := nodeident.LoadOrCreate(dataDir); err == nil {
-		nodeID = ident.NodeID
-	}
-	natsURL := nodeident.LoadToken(dataDir, "nats.url")
-	isPrimary := config.DetectRoleHint(dataDir) == "primary"
-
+// New builds the App around a node already up on the tailnet. tsClient is
+// nil when this node has no Tailscale API credentials configured — see
+// tailscaleapi.LoadCredentials — in which case the dashboard simply has no
+// Tokens tab.
+func New(nodeID, tailscaleIP, dataDir string, tsClient *tailscaleapi.Client) App {
 	return App{
-		ctx:          ctx,
-		dataDir:      dataDir,
-		mode:         modeDashboard,
-		connected:    connected,
-		isWorker:     isWorker,
-		isPrimary:    isPrimary,
-		displayCoord: displayCoordFor(dataDir, coord),
-		dashboard:    dashboard.New(c, coord, isWorker, isPrimary, nodeID, natsURL, dataDir),
-		cmdbar:       cmdbar.New(commands...),
-		runningAgent: runningAgent,
+		dataDir:   dataDir,
+		dashboard: dashboard.New(nodeID, tailscaleIP, dataDir, tsClient),
+		cmdbar:    cmdbar.New(commands...),
 	}
-}
-
-// StartInOnboarding switches the initial screen to onboarding — used by
-// `edgegrid onboard` as a direct entry point into the same unified
-// program, not a separate one. Reachable from dashboard mode afterward via
-// "/onboard" either way.
-func (a App) StartInOnboarding() App {
-	a.previousMode = a.mode
-	a.mode = modeOnboarding
-	a.wizard = onboarding.NewWizard(a.ctx, a.dataDir, a.runningAgent)
-	return a
-}
-
-// StartInWelcome switches the initial screen to the VSCode-style welcome menu.
-func (a App) StartInWelcome() App {
-	a.previousMode = a.mode
-	a.mode = modeWelcome
-	a.welcome = newWelcomeModel()
-	return a
-}
-
-// WizardResult forwards to the onboarding wizard's Result — for main.go to
-// act on after the program exits, regardless of whether onboarding was the
-// starting mode or was reached later via "/onboard".
-func (a App) WizardResult() (role onboarding.Role, confirmed bool, startedAgent *agent.Agent, cfg *config.Config, err error) {
-	return a.wizard.Result()
 }
 
 // WantsRestart reports whether "/profile <name>" switched the active
-// profile — main.go must exec a fresh process for the switch to take
-// effect (see runCommand).
-func (a App) WantsRestart() (profileName string, onboard bool, noAgent bool, ok bool) {
-	return a.restartProfile, a.restartOnboard, a.restartNoAgent, a.restartProfile != ""
+// profile.
+func (a App) WantsRestart() (profileName string, ok bool) {
+	return a.restartProfile, a.restartProfile != ""
 }
 
 func (a App) Init() tea.Cmd {
-	var cmds []tea.Cmd
-	cmds = append(cmds, a.dashboard.Init(), tickSystemStats())
-	if a.mode == modeOnboarding {
-		cmds = append(cmds, a.wizard.Init())
-	}
-	if a.mode == modeWelcome {
-		cmds = append(cmds, a.welcome.Init())
-	}
-	return tea.Batch(cmds...)
+	return tea.Batch(a.dashboard.Init(), tickSystemStats())
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(systemStatsTickMsg); ok {
-		// Overview (worker + coordinator): live agent tasks when this process runs a worker loop.
-		if a.runningAgent != nil {
-			snap := a.runningAgent.WorkerRuntime()
-			a.dashboard.WithWorkerRuntime(snap.Up, snap.Busy, snap.Active, snap.DoneOK, snap.DoneFail, snap.Recent)
-		} else {
-			a.dashboard.WithWorkerRuntime(false, false, nil, 0, 0, nil)
-		}
 		return a, tickSystemStats()
 	}
 
@@ -190,6 +78,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 	}
 
+	// Self-rescheduling tick — must always reach the dashboard, even while
+	// an overlay is open, or the reschedule never happens and the local
+	// stats poll dies for good instead of just pausing.
 	if _, ok := msg.(dashboard.RefreshMsg); ok {
 		var cmd tea.Cmd
 		a.dashboard, cmd = a.dashboard.Update(msg)
@@ -198,99 +89,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	if wm, ok := msg.(tea.WindowSizeMsg); ok {
 		a.width, a.height = wm.Width, wm.Height
-		var cmd1, cmd2, cmd3 tea.Cmd
+		var cmd1, cmd2 tea.Cmd
 		if a.cmdbar.Active() {
 			a.dashboard, cmd1 = a.dashboard.Update(tea.WindowSizeMsg{Width: wm.Width, Height: wm.Height - 5})
 		} else {
 			a.dashboard, cmd1 = a.dashboard.Update(wm)
 		}
 		a.cmdbar, cmd2 = a.cmdbar.Update(wm)
-		a.wizard, cmd3 = a.wizard.Update(wm)
-		a.connect = a.connect.WithSize(wm.Width, wm.Height)
-		a.welcome.width, a.welcome.height = wm.Width, wm.Height
-		return a, tea.Batch(cmd1, cmd2, cmd3)
-	}
-
-	if a.mode == modeWelcome {
-		if _, ok := msg.(welcomeBackMsg); ok {
-			a.mode = a.previousMode
-			return a, nil
-		}
-		if _, ok := msg.(welcomeConnectMsg); ok {
-			a.showConnect = true
-			a.connect = newConnectModel()
-			return a, a.connect.Init()
-		}
-		if _, ok := msg.(welcomeLogsMsg); ok {
-			a.showLogs = true
-			a.logs = logsview.New(a.dataDir, a.width, max(a.height-3, 3))
-			return a, nil
-		}
-		if sub, ok := msg.(welcomeRestartMsg); ok {
-			a.restartProfile = sub.profileName
-			a.restartOnboard = sub.onboard
-			a.restartNoAgent = sub.noAgent
-			return a, tea.Quit
-		}
-		if act, ok := msg.(welcomeStartActiveMsg); ok {
-			if act.profileName == "" {
-				if a.dataDir == "./data" || a.dataDir == "data" {
-					if isProfileOnboarded("") {
-						a.mode = modeDashboard
-					} else {
-						a.previousMode = modeWelcome
-						a.mode = modeOnboarding
-						a.wizard = onboarding.NewWizard(a.ctx, a.dataDir, a.runningAgent)
-						a.wizard = a.wizard.WithSize(a.width, a.height)
-					}
-					return a, nil
-				}
-			} else {
-				root, _ := profile.Root()
-				targetDir := filepath.Join(root, act.profileName)
-				if a.dataDir == targetDir {
-					if isProfileOnboarded(act.profileName) {
-						a.mode = modeDashboard
-					} else {
-						a.previousMode = modeWelcome
-						a.mode = modeOnboarding
-						a.wizard = onboarding.NewWizard(a.ctx, a.dataDir, a.runningAgent)
-						a.wizard = a.wizard.WithSize(a.width, a.height)
-					}
-					return a, nil
-				}
-			}
-			a.restartProfile = act.profileName
-			return a, tea.Quit
-		}
-		var cmd tea.Cmd
-		a.welcome, cmd = a.welcome.Update(msg)
-		return a, cmd
-	}
-
-	// Settings saved from the running coordinator tab → restart process so
-	// ports/executor apply (same exec path as profile switch).
-	if _, ok := msg.(dashboard.SettingsRestartMsg); ok {
-		name := profile.Active()
-		if name == "" {
-			// Fallback: last path segment of dataDir when profile system unused.
-			name = filepath.Base(a.dataDir)
-		}
-		a.restartProfile = name
-		a.restartOnboard = false
-		a.restartNoAgent = false
-		return a, tea.Quit
-	}
-
-	// Always let this reach the dashboard, regardless of mode or which
-	// overlay (if any) is open — it's a self-rescheduling tick, and unlike
-	// one-shot messages, if any of the blocks below ever swallowed it
-	// without forwarding, the reschedule would never happen and the
-	// Workers tab's live poll would die permanently, not just pause.
-	if _, ok := msg.(dashboard.RefreshMsg); ok {
-		var cmd tea.Cmd
-		a.dashboard, cmd = a.dashboard.Update(msg)
-		return a, cmd
+		return a, tea.Batch(cmd1, cmd2)
 	}
 
 	if a.showLogs {
@@ -303,46 +109,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	}
 
-	if a.showConnect {
-		if key, ok := msg.(tea.KeyMsg); ok && key.String() == "esc" {
-			a.showConnect = false
-			return a, nil
-		}
-		if sub, ok := msg.(connectSubmitMsg); ok {
-			c := client.NewHTTP(sub.coord, sub.adminToken)
-			var nodeID string
-			if ident, err := nodeident.LoadOrCreate(a.dataDir); err == nil {
-				nodeID = ident.NodeID
-			}
-			natsURL := nodeident.LoadToken(a.dataDir, "nats.url")
-			a.dashboard = dashboard.New(c, sub.coord, a.isWorker, a.isPrimary, nodeID, natsURL, a.dataDir)
-			a.connected = true
-			a.showConnect = false
-			// sub.coord is whatever the operator typed in directly — no
-			// separate "share address" to prefer over it, unlike the
-			// co-located-agent cases where displayCoord differs from the
-			// loopback address actually dialed.
-			a.displayCoord = ""
-			return a, nil
-		}
-		var cmd tea.Cmd
-		a.connect, cmd = a.connect.Update(msg)
-		return a, cmd
-	}
-
 	if sub, ok := msg.(cmdbar.SubmitMsg); ok {
-		// restore dashboard height before running
 		a.dashboard, _ = a.dashboard.Update(tea.WindowSizeMsg{Width: a.width, Height: a.height})
 		return a.runCommand(sub.Command)
-	}
-
-	if _, ok := msg.(onboarding.BackToDashboardMsg); ok {
-		if !isProfileOnboarded(profile.Active()) || a.previousMode == modeWelcome {
-			a.mode = modeWelcome
-		} else {
-			a.mode = modeDashboard
-		}
-		return a, nil
 	}
 
 	if a.cmdbar.Active() {
@@ -356,18 +125,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if key, ok := msg.(tea.KeyMsg); ok {
-		// Same rule as onboarding's coordinator field: while a free-form
-		// text input has focus, "/" and "q" are literal keystrokes, not
-		// global shortcuts (paths like /home/... need the slash).
-		typing := (a.mode == modeOnboarding && a.wizard.CapturesTextInput()) ||
-			(a.mode == modeDashboard && a.dashboard.CapturesTextInput())
+		// Same rule everywhere a free-form field could have focus: "/" and
+		// "q" are literal keystrokes there, not global shortcuts.
+		typing := a.dashboard.CapturesTextInput()
 		switch key.String() {
-		case "ctrl+c":
-			// Always an emergency exit, even while typing — unlike "q" and
-			// "/", a text field would never want to consume ctrl+c as
-			// literal input, so there's no case where suppressing it here
-			// helps.
-			return a, tea.Quit
 		case "q":
 			if !typing {
 				return a, tea.Quit
@@ -378,96 +139,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			var cmd tea.Cmd
 			a.cmdbar, cmd = a.cmdbar.Activate()
-			// resize dashboard height down to leave room for the cmdbar box
 			a.dashboard, _ = a.dashboard.Update(tea.WindowSizeMsg{Width: a.width, Height: a.height - 5})
 			return a, cmd
 		}
 	}
 
-	if a.mode == modeOnboarding {
-		if _, ok := msg.(onboarding.StartConfirmedMsg); ok {
-			// Update the wizard's state first, capturing its command
-			var wizardCmd tea.Cmd
-			a.wizard, wizardCmd = a.wizard.Update(msg)
-
-			_, confirmed, nodeAgent, cfg, startErr := a.wizard.Result()
-			if confirmed {
-				if startErr == nil && nodeAgent != nil {
-					// The wizard already closed whatever agent used to be
-					// running here (see Wizard.closeExisting) before it
-					// built this one — this is where App takes ownership of
-					// its replacement.
-					a.runningAgent = nodeAgent
-					go func() {
-						_ = nodeAgent.Start(a.ctx)
-					}()
-				}
-
-				// Initialize dashboard client pointing to local agent — always
-				// loopback. Only the coordinator's real host listener
-				// (backendMux) serves /admin, /workers, /jobs; the tsnet
-				// listener reachable via the Tailscale IP only carries
-				// /health and /join (see router.go's tailnetMux), so an
-				// admin-facing client pointed at the Tailscale IP 404s on
-				// everything it needs. The Tailscale IP is still worth
-				// showing the operator for sharing — that's displayCoord,
-				// kept separate from the address actually dialed.
-				port := "8080"
-				if cfg != nil && cfg.Server.Port != "" {
-					port = strings.TrimPrefix(cfg.Server.Port, ":")
-				}
-				coord := "http://127.0.0.1:" + port
-				a.displayCoord = ""
-				if nodeAgent != nil && nodeAgent.TailscaleIP() != "" {
-					a.displayCoord = "http://" + nodeAgent.TailscaleIP() + ":" + port
-				}
-				adminToken := nodeident.LoadToken(a.dataDir, "admin.token")
-				role := config.DetectRoleHint(a.dataDir)
-				isWorker := role == "worker"
-				isPrimary := role == "primary"
-				var nodeID string
-				if ident, err := nodeident.LoadOrCreate(a.dataDir); err == nil {
-					nodeID = ident.NodeID
-				}
-				natsURL := nodeident.LoadToken(a.dataDir, "nats.url")
-				if adminToken != "" {
-					c := client.NewHTTP(coord, adminToken)
-					a.dashboard = dashboard.New(c, coord, isWorker, isPrimary, nodeID, natsURL, a.dataDir)
-					a.connected = true
-				} else {
-					a.dashboard = dashboard.New(client.New(), "", isWorker, isPrimary, nodeID, natsURL, a.dataDir)
-					a.connected = false
-					a.isWorker = isWorker
-				}
-				a.isPrimary = isPrimary
-
-				a.mode = modeDashboard
-				a.dashboard, _ = a.dashboard.Update(tea.WindowSizeMsg{Width: a.width, Height: a.height})
-				return a, a.dashboard.Init()
-			}
-
-			// If not confirmed (meaning it's the first enter and starting bootstrap),
-			// propagate the wizard's startNode cmd so that the starting screen runs!
-			return a, wizardCmd
-		}
-	}
-
 	var cmd tea.Cmd
-	switch a.mode {
-	case modeDashboard:
-		a.dashboard, cmd = a.dashboard.Update(msg)
-	case modeOnboarding:
-		a.wizard, cmd = a.wizard.Update(msg)
-	}
+	a.dashboard, cmd = a.dashboard.Update(msg)
 	return a, cmd
 }
 
-// runCommand handles a submitted /command.
 func (a App) runCommand(command string) (tea.Model, tea.Cmd) {
 	command = strings.TrimPrefix(command, "/")
 
 	if name, ok := strings.CutPrefix(command, "profile "); ok {
-		if name = strings.TrimSpace(name); name != "" && profile.Use(name) == nil {
+		if name = strings.TrimSpace(name); name != "" && node.UseProfile(name) == nil {
 			a.restartProfile = name
 			return a, tea.Quit
 		}
@@ -475,86 +161,13 @@ func (a App) runCommand(command string) (tea.Model, tea.Cmd) {
 	}
 
 	switch command {
-	case "onboard":
-		a.mode = modeOnboarding
-		a.wizard = onboarding.NewWizard(a.ctx, a.dataDir, a.runningAgent)
-		a.wizard = a.wizard.WithSize(a.width, a.height)
-		return a, a.wizard.Init()
 	case "logs":
 		a.showLogs = true
 		a.logs = logsview.New(a.dataDir, a.width, max(a.height-3, 3))
-	case "connect":
-		a.showConnect = true
-		a.connect = newConnectModel()
-		return a, a.connect.Init()
-	case "profile":
-		a.previousMode = a.mode
-		a.mode = modeWelcome
-		a.welcome = newWelcomeModel()
-		a.welcome.fromDashboard = true
-		a.welcome.profiles, _ = profile.List()
-		a.welcome.profileCursor = 0
-		a.welcome.profileOffset = 0
-		a.welcome.subMode = 1
-		a.welcome.width, a.welcome.height = a.width, a.height
-		return a, nil
 	}
 	return a, nil
 }
 
-// notConnectedView is shown instead of dashboard content until a real
-// coordinator is connected — replaces silently showing Stub's fake data.
-// Pure workers never hit this path (they get the worker-only dashboard
-// message instead); this is for coordinator profiles without HTTP yet.
-func (a App) notConnectedView() string {
-	return style.Title.Render("Not connected") + "\n\n" +
-		style.Help.Render("No coordinator connected yet.") + "\n" +
-		style.Help.Render("Use /connect to connect to one.")
-}
-
-// displayCoordFor builds the address worth showing the operator to share —
-// this node's persisted Tailscale IP plus coord's port — falling back to
-// coord itself (typically loopback) if no Tailscale IP has been persisted
-// yet. Never used for the dashboard's actual client transport; see
-// App.displayCoord's doc comment for why that has to stay loopback.
-func displayCoordFor(dataDir, coord string) string {
-	ip := nodeident.LoadToken(dataDir, "tailscale.ip")
-	if ip == "" || coord == "" {
-		return ""
-	}
-	if u, err := url.Parse(coord); err == nil && u.Port() != "" {
-		return "http://" + ip + ":" + u.Port()
-	}
-	return ""
-}
-
-// subtitle is the text after the blue EDGEGRID badge in the top bar.
-func (a App) subtitle() string {
-	switch {
-	case a.showLogs:
-		return "Logs"
-	case a.showConnect:
-		return "Connect"
-	case a.mode == modeWelcome:
-		return "Launcher"
-	case a.mode == modeOnboarding:
-		return "Setup"
-	default:
-		s := "Dashboard"
-		c := a.displayCoord
-		if c == "" {
-			c = a.dashboard.Coord()
-		}
-		if c != "" {
-			s += "  ·  " + c
-		}
-		return s
-	}
-}
-
-// renderHeader is the top chrome for every screen: blue EDGEGRID badge + context.
-// Same brand bar on welcome, onboarding, dashboard tabs, logs, and connect —
-// not only the dashboard body.
 func (a App) renderHeader() string {
 	w := max(a.width, 0)
 	badge := lipgloss.NewStyle().
@@ -562,15 +175,15 @@ func (a App) renderHeader() string {
 		Foreground(lipgloss.Color("255")).
 		Bold(true).
 		Render(" EDGEGRID ")
+	subtitle := "Dashboard"
+	if a.showLogs {
+		subtitle = "Logs"
+	}
 	rest := lipgloss.NewStyle().
 		Background(style.Accent).
 		Foreground(lipgloss.Color("255")).
-		Render("  " + a.subtitle() + " ")
+		Render("  " + subtitle + " ")
 	bar := lipgloss.JoinHorizontal(lipgloss.Top, badge, rest)
-	if a.mode == modeOnboarding && a.wizard.StepLabel() != "" && !a.showLogs && !a.showConnect {
-		bar = lipgloss.JoinHorizontal(lipgloss.Top, bar, style.StepLabel.Render(a.wizard.StepLabel()))
-	}
-	// Stretch blue background across the full terminal width.
 	pad := w - lipgloss.Width(bar)
 	if pad > 0 {
 		bar = bar + lipgloss.NewStyle().Background(style.Accent).Render(strings.Repeat(" ", pad))
@@ -578,47 +191,46 @@ func (a App) renderHeader() string {
 	return bar
 }
 
+func (a App) renderFooter() string {
+	profileName := node.ActiveProfile()
+	if profileName == "" {
+		profileName = "default"
+	}
+	timeStr := time.Now().Format("15:04:05")
+	cpu := getCPUUsage()
+	mem := getMemUsage()
+	cpuStr := fmt.Sprintf("CPU: %5.1f%%", cpu*100)
+	memStr := fmt.Sprintf("RAM: %5.1f%%", mem*100)
+	cpuMeter := renderSingleCharMeter(cpu)
+	memMeter := renderSingleCharMeter(mem)
+
+	helpKeys := a.dashboard.HelpText()
+	if a.cmdbar.Active() {
+		helpKeys = "enter run  esc cancel"
+	} else if a.showLogs {
+		helpKeys = "esc back"
+	}
+
+	left := style.FooterBar.Render(fmt.Sprintf("%s  %s%s  %s%s  %s", profileName, cpuStr, cpuMeter, memStr, memMeter, timeStr))
+	right := style.FooterBar.Render(helpKeys)
+	pad := max(a.width-lipgloss.Width(left)-lipgloss.Width(right), 1)
+	return left + strings.Repeat(" ", pad) + right
+}
+
 func (a App) View() string {
-	if a.showLogs {
-		header := a.renderHeader()
-		footer := a.renderSystemFooter()
-		bodyHeight := max(a.height-lipgloss.Height(header)-lipgloss.Height(footer), 1)
-		placedBody := lipgloss.Place(a.width, bodyHeight, lipgloss.Center, lipgloss.Center, a.logs.View())
-		return lipgloss.JoinVertical(lipgloss.Left, header, placedBody, footer)
-	}
-
-	if a.showConnect {
-		header := a.renderHeader()
-		footer := a.renderSystemFooter()
-		a.connect = a.connect.WithSize(a.width, a.height)
-		bodyHeight := max(a.height-lipgloss.Height(header)-lipgloss.Height(footer), 1)
-		placedBody := lipgloss.Place(a.width, bodyHeight, lipgloss.Center, lipgloss.Center, a.connect.View())
-		return lipgloss.JoinVertical(lipgloss.Left, header, placedBody, footer)
-	}
-
-	if a.mode == modeWelcome {
-		header := a.renderHeader()
-		footer := a.renderSystemFooter()
-		bodyHeight := max(a.height-lipgloss.Height(header)-lipgloss.Height(footer), 1)
-		placedBody := lipgloss.Place(a.width, bodyHeight, lipgloss.Center, lipgloss.Center, a.welcome.View())
-		return lipgloss.JoinVertical(lipgloss.Left, header, placedBody, footer)
-	}
-
 	header := a.renderHeader()
 
 	var footer string
 	if a.cmdbar.Active() {
 		footer = a.cmdbar.View()
 	} else {
-		footer = a.renderSystemFooter()
+		footer = a.renderFooter()
 	}
 
 	var body string
 	switch {
-	case a.mode == modeOnboarding:
-		body = a.wizard.View()
-	case !a.connected && !a.isWorker:
-		body = a.notConnectedView()
+	case a.showLogs:
+		body = a.logs.View()
 	default:
 		body = a.dashboard.View()
 	}
@@ -626,28 +238,18 @@ func (a App) View() string {
 	if a.width <= 0 || a.height <= 0 {
 		return header + "\n\n" + body + "\n\n" + footer
 	}
-
 	bodyHeight := max(a.height-lipgloss.Height(header)-lipgloss.Height(footer), 1)
-	vAlign := lipgloss.Center
-	if a.mode == modeDashboard {
-		vAlign = lipgloss.Top
-	}
-	placedBody := lipgloss.Place(a.width, bodyHeight, lipgloss.Center, vAlign, body)
-
+	placedBody := lipgloss.Place(a.width, bodyHeight, lipgloss.Center, lipgloss.Top, body)
 	return lipgloss.JoinVertical(lipgloss.Left, header, placedBody, footer)
 }
 
 type systemStatsTickMsg struct{}
 
 func tickSystemStats() tea.Cmd {
-	return tea.Tick(time.Second, func(time.Time) tea.Msg {
-		return systemStatsTickMsg{}
-	})
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return systemStatsTickMsg{} })
 }
 
-var (
-	prevIdle, prevTotal uint64
-)
+var prevIdle, prevTotal uint64
 
 func getCPUUsage() float64 {
 	f, err := os.Open("/proc/stat")
@@ -655,18 +257,16 @@ func getCPUUsage() float64 {
 		return 0.05
 	}
 	defer f.Close()
-
 	scanner := bufio.NewScanner(f)
 	if scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) >= 5 && fields[0] == "cpu" {
-			var total uint64
-			var idle uint64
+			var total, idle uint64
 			for i := 1; i < len(fields); i++ {
-				val, _ := strconv.ParseUint(fields[i], 10, 64)
-				total += val
+				v, _ := strconv.ParseUint(fields[i], 10, 64)
+				total += v
 				if i == 4 {
-					idle = val
+					idle = v
 				}
 			}
 			diffIdle := idle - prevIdle
@@ -687,20 +287,17 @@ func getMemUsage() float64 {
 		return 0.15
 	}
 	defer f.Close()
-
 	var total, available float64
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "MemTotal:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
+			if fields := strings.Fields(line); len(fields) >= 2 {
 				total, _ = strconv.ParseFloat(fields[1], 64)
 			}
 		}
 		if strings.HasPrefix(line, "MemAvailable:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
+			if fields := strings.Fields(line); len(fields) >= 2 {
 				available, _ = strconv.ParseFloat(fields[1], 64)
 			}
 		}
@@ -712,7 +309,6 @@ func getMemUsage() float64 {
 }
 
 func renderSingleCharMeter(val float64) string {
-	// Unicode vertical block elements for single-char resolution: empty to full
 	bars := []rune{' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
 	idx := int(val * float64(len(bars)))
 	if idx < 0 {
@@ -721,67 +317,11 @@ func renderSingleCharMeter(val float64) string {
 	if idx >= len(bars) {
 		idx = len(bars) - 1
 	}
-
-	color := "42" // green
+	color := "42"
 	if val > 0.8 {
-		color = "196" // red
+		color = "196"
 	} else if val > 0.5 {
-		color = "214" // orange
+		color = "214"
 	}
-
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(string(bars[idx]))
-}
-
-func (a App) renderSystemFooter() string {
-	profileName := profile.Active()
-	if profileName == "" {
-		profileName = "default"
-	}
-
-	timeStr := time.Now().Format("15:04:05")
-
-	cpu := getCPUUsage()
-	mem := getMemUsage()
-
-	// Fixed-width %5.1f%% formatting ensures the string length is always exactly 5 chars, eliminating jitter layout shifts
-	cpuStr := fmt.Sprintf("CPU: %5.1f%%", cpu*100)
-	memStr := fmt.Sprintf("RAM: %5.1f%%", mem*100)
-
-	cpuMeter := renderSingleCharMeter(cpu)
-	memMeter := renderSingleCharMeter(mem)
-
-	var helpKeys string
-	switch {
-	case a.cmdbar.Active():
-		helpKeys = "enter run  esc cancel"
-	case a.mode == modeWelcome:
-		helpKeys = "↑/↓/j/k Nav  enter Select  ctrl+c Quit"
-	case a.mode == modeOnboarding:
-		helpKeys = "esc Back/Cancel  ctrl+c Quit"
-	case !a.connected:
-		helpKeys = "/ Command  q Quit"
-	default:
-		helpKeys = "/ Command  esc Back  q Quit"
-	}
-
-	profileStyle := lipgloss.NewStyle().Foreground(style.Accent).Bold(true)
-	statsStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("86"))
-	timeStyle := lipgloss.NewStyle().Foreground(style.Muted)
-
-	// Footer badge matches the top bar brand (blue Accent), on every screen.
-	edgeBadge := lipgloss.NewStyle().Background(style.Accent).Foreground(lipgloss.Color("255")).Bold(true).Render(" EDGEGRID ")
-	leftSection := fmt.Sprintf(" %s %s ", edgeBadge, profileStyle.Render(" ⧉ profile:"+profileName))
-	middleSection := fmt.Sprintf(" %s %s  %s %s ", cpuMeter, statsStyle.Render(cpuStr), memMeter, statsStyle.Render(memStr))
-	rightSection := fmt.Sprintf(" %s  %s ", timeStyle.Render(timeStr), lipgloss.NewStyle().Background(lipgloss.Color("237")).Foreground(lipgloss.Color("255")).Render(" "+helpKeys+" "))
-
-	totalLen := lipgloss.Width(leftSection) + lipgloss.Width(middleSection) + lipgloss.Width(rightSection)
-	gap := a.width - totalLen
-	if gap < 2 {
-		gap = 2
-	}
-
-	return lipgloss.NewStyle().
-		Background(lipgloss.Color("235")).
-		Width(a.width).
-		Render(leftSection + strings.Repeat(" ", gap-2) + middleSection + " " + rightSection)
 }
