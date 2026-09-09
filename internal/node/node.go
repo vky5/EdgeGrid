@@ -73,10 +73,6 @@ func New(ctx context.Context, cfg *Config, onProgress func(string)) (*Node, erro
 		onProgress(tsnetUpLine) // not a ts.UserLogf() need to send ourself
 	}
 
-	if cfg.AdvertiseHost == "" && ip4.IsValid() {
-		cfg.AdvertiseHost = ip4.String()
-	}
-
 	// Persist tailscale IP for this node
 	if ip4.IsValid() {
 		if err := SaveToken(cfg.DataDir, "tailscale.ip", ip4.String()); err != nil {
