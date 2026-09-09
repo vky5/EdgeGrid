@@ -20,21 +20,27 @@ import (
 // key from the most recent "m", shown once, revocable while it's still on
 // screen, then gone — nothing here is persisted to disk.
 type tokensModel struct {
-	client *tailscaleapi.Client
-	height int
+	client        *tailscaleapi.Client
+	width, height int
 
 	justMinted *tailscaleapi.MintedKey
 	revoked    bool
 	copied     bool
-	err        error
+	// hidden blanks the secret from the screen while keeping justMinted set,
+	// so "r" can still revoke the key it belongs to. Dropping justMinted
+	// outright would clear the display but also strand the key: its ID would
+	// be gone from memory and revoking would mean going to the Tailscale
+	// console instead.
+	hidden bool
+	err    error
 }
 
 func newTokensModel(c *tailscaleapi.Client) tokensModel {
-	return tokensModel{client: c, height: 10}
+	return tokensModel{client: c, width: 80, height: 10}
 }
 
-func (m tokensModel) WithHeight(h int) tokensModel {
-	m.height = h
+func (m tokensModel) WithSize(w, h int) tokensModel {
+	m.width, m.height = w, h
 	return m
 }
 
@@ -57,7 +63,11 @@ func (m tokensModel) Init() tea.Cmd { return nil }
 func (m tokensModel) Update(msg tea.Msg) (tokensModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tokenCopiedMsg:
+		// Hide on copy, not on keypress: this arrives once the OSC 52 sequence
+		// has actually been written, so the secret stays up until the copy has
+		// been attempted rather than vanishing on an keystroke that did nothing.
 		m.copied = true
+		m.hidden = true
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -71,10 +81,17 @@ func (m tokensModel) Update(msg tea.Msg) (tokensModel, tea.Cmd) {
 			m.justMinted = minted
 			m.copied = false
 			m.revoked = false
+			m.hidden = false
 			return m, nil
 		case "c":
-			if m.justMinted != nil && !m.revoked {
+			if m.justMinted != nil && !m.revoked && !m.hidden {
 				return m, copyToClipboard(m.justMinted.Key)
+			}
+		case "esc":
+			// Dismiss without copying — for when the key is already written
+			// down and you just want it off the screen.
+			if m.justMinted != nil && !m.revoked {
+				m.hidden = true
 			}
 		case "r":
 			if m.justMinted != nil && !m.revoked {
@@ -91,35 +108,63 @@ func (m tokensModel) Update(msg tea.Msg) (tokensModel, tea.Cmd) {
 }
 
 func (m tokensModel) View() string {
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	height := m.height
+	if height <= 0 {
+		height = 10
+	}
+
+	// Everything is rendered inside the same full-width pane the Overview tab
+	// uses, so switching tabs changes only what's in the pane — not the shape
+	// of the page or where the nav sits.
+	inner := max(width-6, 20)
+	label := lipgloss.NewStyle().Foreground(style.Muted)
+
 	var body string
 	switch {
+	case m.justMinted != nil && !m.revoked && m.hidden:
+		note := "Token hidden."
+		if m.copied {
+			note = "Token copied to clipboard and hidden."
+		}
+		body = label.Width(inner).Render(
+			note + "\n\nIt is no longer recoverable from this screen — if the paste " +
+				"didn't land, press m for a fresh one.\n\npress r to revoke it, or m to mint another")
 	case m.justMinted == nil:
-		body = style.Title.Render("No token minted this session") + "\n\n" +
-			style.Help.Render("Press m to mint a new Tailscale auth key and share it with whoever's device should join.")
+		body = label.Width(inner).Render(
+			"No token minted this session.\n\n" +
+				"Press m to mint a Tailscale auth key, then share it with whoever's " +
+				"device should join. Each key is single-use and pre-authorized.")
 	case m.revoked:
-		body = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(style.Muted).
-			Padding(0, 1).
-			Render(style.Help.Render("Key revoked — it can no longer be used to join.") + "\n\n" +
-				style.Help.Render("press m to mint another"))
+		body = label.Width(inner).Render(
+			"Key revoked — it can no longer be used to join.\n\npress m to mint another")
 	default:
+		// The key wraps rather than overflowing: auth keys run past 60
+		// characters and a truncated one is worse than useless, since it looks
+		// copyable but isn't.
+		key := lipgloss.NewStyle().
+			Foreground(style.Accent).
+			Bold(true).
+			Width(inner).
+			Render(m.justMinted.Key)
+
 		copyHint := "press c to copy"
 		if m.copied {
-			copyHint = "copied!"
+			copyHint = "copied to clipboard"
 		}
-		body = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(style.Accent).
-			Padding(0, 1).
-			Render(
-				style.Title.Render("NEW TOKEN — shown once, save it now") + "\n\n" +
-					lipgloss.NewStyle().Foreground(style.Accent).Bold(true).Render(m.justMinted.Key) + "\n\n" +
-					style.Help.Render("share this with whoever's device should join   ("+copyHint+")   (r revoke)"),
-			)
+		body = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true).
+			Render("NEW TOKEN — shown once, save it now") + "\n\n" +
+			key + "\n\n" +
+			label.Width(inner).Render("share this with whoever's device should join    ("+copyHint+")")
 	}
+
 	if m.err != nil {
-		body += "\n\n" + style.ErrorText.Render(m.err.Error())
+		body += "\n\n" + style.ErrorText.Width(inner).Render(m.err.Error())
 	}
-	return body
+
+	return lipgloss.NewStyle().MaxHeight(height).MaxWidth(width).
+		Render(renderPane("TOKENS", body, width, height))
 }

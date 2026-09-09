@@ -71,7 +71,7 @@ func (d *Dashboard) resize() {
 	h := max(d.height-chromeLines, 3)
 	d.overview.width = d.width
 	d.overview.height = h
-	d.tokens = d.tokens.WithHeight(h)
+	d.tokens = d.tokens.WithSize(d.width, h)
 }
 
 // CapturesTextInput reports whether the current view is holding focus in a
@@ -83,7 +83,7 @@ func (d Dashboard) CapturesTextInput() bool { return false }
 func (d Dashboard) HelpText() string {
 	switch d.tab {
 	case tabTokens:
-		return "m mint   c copy   r revoke   tab switch   / command   q quit"
+		return "m mint   c copy+hide   esc hide   r revoke   tab switch   / command   q quit"
 	default:
 		if d.hasTokens {
 			return "Tab switch tabs   /logs   / command   q quit"
@@ -136,16 +136,24 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 }
 
 func (d Dashboard) View() string {
+	width := d.width
+	if width <= 0 {
+		width = 80
+	}
+
+	var content string
+	switch d.tab {
+	case tabTokens:
+		content = d.tokens.View()
+	default:
+		content = d.overview.View()
+	}
+
 	names := d.getTabNames()
 	if len(names) <= 1 {
 		// Single tab: no bar, straight to content — same as the old
 		// pure-worker view.
-		switch d.tab {
-		case tabTokens:
-			return d.tokens.View()
-		default:
-			return d.overview.View()
-		}
+		return lipgloss.NewStyle().Width(width).Render(content)
 	}
 
 	var tabParts []string
@@ -162,13 +170,13 @@ func (d Dashboard) View() string {
 	hint := style.Help.Render("   ( press Tab to switch )")
 	bar := lipgloss.JoinHorizontal(lipgloss.Center, tabRow, hint)
 
-	var content string
-	switch d.tab {
-	case tabTokens:
-		content = d.tokens.View()
-	default:
-		content = d.overview.View()
-	}
+	// Pad the bar out to the full width so the joined block is always
+	// full-width and left-aligned. app.View centers the body horizontally,
+	// which is invisible on Overview because it already fills the width — but
+	// a narrower tab used to drag the tab bar into the middle of the screen
+	// along with its content. Anchoring the bar here keeps the nav in the same
+	// place on every tab regardless of how wide that tab's content is.
+	bar = lipgloss.NewStyle().Width(width).Render(bar)
 
 	return lipgloss.JoinVertical(lipgloss.Left, bar, content)
 }
