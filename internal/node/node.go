@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"path/filepath"
 	"sync"
 
@@ -52,6 +53,13 @@ func (a *Node) NodeID() string { return a.nodeID }
 // of reaching into tsnetServer directly, since that field is unexported.
 func (a *Node) LocalClient() (*local.Client, error) {
 	return a.tsnetServer.LocalClient()
+}
+
+// Listen opens a listener reachable only from other tailnet members — see
+// internal/discovery, which uses this for the peer-discovery port. Traffic
+// stays inside the tailnet; tsnet never exposes it to the public internet.
+func (a *Node) Listen(network, addr string) (net.Listener, error) {
+	return a.tsnetServer.Listen(network, addr)
 }
 
 // Build the Node struct and authenticate tsnet
