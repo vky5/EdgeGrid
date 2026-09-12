@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	"tailscale.com/client/local"
 	"tailscale.com/client/tailscale/apitype"
@@ -22,26 +23,33 @@ func IdentifyPeer(ctx context.Context, lc *local.Client, conn net.Conn) (*apityp
 	return lc.WhoIs(ctx, conn.RemoteAddr().String())
 }
 
-// Server accepts connections on a discovery listener and identifies each
-// one via WhoIs.
+// Server accepts connections on a discovery listener, identifies each one
+// via WhoIs, and exchanges a Hello with it.
 type Server struct {
-	ln net.Listener
-	lc *local.Client
+	ln   net.Listener
+	lc   *local.Client
+	self Hello
 
-	// OnPeer is called for each identified connection. The handler owns
-	// conn and must close it. If nil, the connection is closed immediately.
-	OnPeer func(who *apitype.WhoIsResponse, conn net.Conn)
+	// OnPeer is called once a connection is identified and the hello
+	// exchange succeeds. The handler owns conn and must close it. If nil,
+	// the connection is closed immediately after the exchange.
+	OnPeer func(who *apitype.WhoIsResponse, hello Hello, conn net.Conn)
 
 	// Logf defaults to a no-op.
 	Logf func(format string, args ...any)
+
+	// HelloTimeout overrides helloTimeout when non-zero — for tests that
+	// want the "peer never sent hello" path without the production wait.
+	HelloTimeout time.Duration
 }
 
 // NewServer wraps an already-open listener (from node.Node.Listen) and a
-// Tailscale local client (from node.Node.LocalClient). Server does not open
-// the listener itself, so closing ln from the outside is what makes Serve's
-// Accept loop return.
-func NewServer(ln net.Listener, lc *local.Client) *Server {
-	return &Server{ln: ln, lc: lc, Logf: func(string, ...any) {}}
+// Tailscale local client (from node.Node.LocalClient). self is what this
+// node reports during the hello exchange (see Hello), normally
+// node.Node.NodeID(). Server does not open the listener itself, so closing
+// ln from the outside is what makes Serve's Accept loop return.
+func NewServer(ln net.Listener, lc *local.Client, self Hello) *Server {
+	return &Server{ln: ln, lc: lc, self: self, Logf: func(string, ...any) {}}
 }
 
 // Serve accepts connections until ln is closed or ctx is cancelled — both
@@ -83,8 +91,16 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	}
 	s.Logf("discovery: connection from %s (%s)", name, who.Node.StableID)
 
+	hello, err := ExchangeAsListener(conn, s.self, s.HelloTimeout)
+	if err != nil {
+		s.Logf("discovery: hello exchange with %s failed: %v", name, err)
+		conn.Close()
+		return
+	}
+	s.Logf("discovery: %s self-reports node_id=%s", name, hello.NodeID)
+
 	if s.OnPeer != nil {
-		s.OnPeer(who, conn)
+		s.OnPeer(who, hello, conn)
 		return
 	}
 	conn.Close()

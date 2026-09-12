@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,7 +44,7 @@ func (f *fakeWhoIsTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header)}, nil
 }
 
-func testServer(t *testing.T, transport http.RoundTripper) (*Server, net.Listener) {
+func testServer(t *testing.T, transport http.RoundTripper, self Hello) (*Server, net.Listener) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -51,7 +52,7 @@ func testServer(t *testing.T, transport http.RoundTripper) (*Server, net.Listene
 	}
 	t.Cleanup(func() { ln.Close() })
 	lc := &local.Client{Transport: transport}
-	return NewServer(ln, lc), ln
+	return NewServer(ln, lc, self), ln
 }
 
 func TestServerIdentifiesConnectionByItsRealRemoteAddr(t *testing.T) {
@@ -61,11 +62,15 @@ func TestServerIdentifiesConnectionByItsRealRemoteAddr(t *testing.T) {
 		StableID:     "peer-b-id",
 	}}
 	transport := &fakeWhoIsTransport{response: who, gotAddrCh: make(chan string, 1)}
-	srv, ln := testServer(t, transport)
+	srv, ln := testServer(t, transport, Hello{NodeID: "node-b"})
 
-	identified := make(chan *apitype.WhoIsResponse, 1)
-	srv.OnPeer = func(w *apitype.WhoIsResponse, conn net.Conn) {
-		identified <- w
+	type identifiedResult struct {
+		who   *apitype.WhoIsResponse
+		hello Hello
+	}
+	identified := make(chan identifiedResult, 1)
+	srv.OnPeer = func(w *apitype.WhoIsResponse, hello Hello, conn net.Conn) {
+		identified <- identifiedResult{w, hello}
 		conn.Close()
 	}
 
@@ -90,10 +95,21 @@ func TestServerIdentifiesConnectionByItsRealRemoteAddr(t *testing.T) {
 		t.Fatal("timed out waiting for WhoIs to be called")
 	}
 
+	gotHello, err := ExchangeAsDialer(client, Hello{NodeID: "node-a"}, 2*time.Second)
+	if err != nil {
+		t.Fatalf("ExchangeAsDialer: %v", err)
+	}
+	if gotHello.NodeID != "node-b" {
+		t.Errorf("dialer got self-reported node_id %q, want node-b", gotHello.NodeID)
+	}
+
 	select {
-	case w := <-identified:
-		if w.Node.StableID != "peer-b-id" {
-			t.Errorf("OnPeer got StableID %q, want peer-b-id", w.Node.StableID)
+	case r := <-identified:
+		if r.who.Node.StableID != "peer-b-id" {
+			t.Errorf("OnPeer got StableID %q, want peer-b-id", r.who.Node.StableID)
+		}
+		if r.hello.NodeID != "node-a" {
+			t.Errorf("OnPeer got self-reported node_id %q, want node-a", r.hello.NodeID)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for OnPeer")
@@ -113,7 +129,7 @@ func TestServerIdentifiesConnectionByItsRealRemoteAddr(t *testing.T) {
 func TestServerClosesConnectionWhenOnPeerIsNil(t *testing.T) {
 	who := &apitype.WhoIsResponse{Node: &tailcfg.Node{Name: "peer-b", StableID: "peer-b-id"}}
 	transport := &fakeWhoIsTransport{response: who}
-	srv, ln := testServer(t, transport) // OnPeer left nil
+	srv, ln := testServer(t, transport, Hello{NodeID: "node-b"}) // OnPeer left nil
 
 	go srv.Serve(t.Context())
 
@@ -122,6 +138,10 @@ func TestServerClosesConnectionWhenOnPeerIsNil(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	defer client.Close()
+
+	if _, err := ExchangeAsDialer(client, Hello{NodeID: "node-a"}, 2*time.Second); err != nil {
+		t.Fatalf("ExchangeAsDialer: %v", err)
+	}
 
 	client.SetReadDeadline(time.Now().Add(2 * time.Second))
 	buf := make([]byte, 1)
@@ -133,7 +153,7 @@ func TestServerClosesConnectionWhenOnPeerIsNil(t *testing.T) {
 
 func TestServerClosesConnectionWhenPeerNotFound(t *testing.T) {
 	transport := &fakeWhoIsTransport{notFound: true}
-	srv, ln := testServer(t, transport)
+	srv, ln := testServer(t, transport, Hello{NodeID: "node-b"})
 
 	var loggedNotFound bool
 	logDone := make(chan struct{}, 1)
@@ -144,7 +164,7 @@ func TestServerClosesConnectionWhenPeerNotFound(t *testing.T) {
 		default:
 		}
 	}
-	srv.OnPeer = func(w *apitype.WhoIsResponse, conn net.Conn) {
+	srv.OnPeer = func(w *apitype.WhoIsResponse, hello Hello, conn net.Conn) {
 		t.Error("OnPeer should not be called for an unidentifiable connection")
 	}
 
@@ -165,9 +185,51 @@ func TestServerClosesConnectionWhenPeerNotFound(t *testing.T) {
 		t.Error("expected a log line for the unidentifiable connection")
 	}
 
+	// WhoIs failure happens before the hello exchange even starts, so the
+	// server never reads anything the client sends here.
 	client.SetReadDeadline(time.Now().Add(2 * time.Second))
 	buf := make([]byte, 1)
 	if _, err := client.Read(buf); err != io.EOF {
 		t.Errorf("expected connection closed (EOF) after failed identification, got %v", err)
+	}
+}
+
+func TestServerClosesConnectionWhenHelloNeverArrives(t *testing.T) {
+	who := &apitype.WhoIsResponse{Node: &tailcfg.Node{Name: "peer-b", StableID: "peer-b-id"}}
+	transport := &fakeWhoIsTransport{response: who}
+	srv, ln := testServer(t, transport, Hello{NodeID: "node-b"})
+	srv.HelloTimeout = 200 * time.Millisecond // don't wait out the production default
+
+	// atomic, not a plain bool: handle() logs twice on this path, and the
+	// second write races a plain bool against this test's read.
+	var loggedTimeout atomic.Bool
+	logDone := make(chan struct{}, 1)
+	srv.Logf = func(format string, args ...any) {
+		loggedTimeout.Store(true)
+		select {
+		case logDone <- struct{}{}:
+		default:
+		}
+	}
+	srv.OnPeer = func(w *apitype.WhoIsResponse, hello Hello, conn net.Conn) {
+		t.Error("OnPeer should not be called when the peer never sends a hello")
+	}
+
+	go srv.Serve(t.Context())
+
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	// Deliberately send nothing.
+
+	select {
+	case <-logDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the hello-timeout path to log")
+	}
+	if !loggedTimeout.Load() {
+		t.Error("expected a log line for the timed-out hello exchange")
 	}
 }
