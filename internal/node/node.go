@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"tailscale.com/client/local"
 	"tailscale.com/tsnet"
 )
 
@@ -44,6 +45,14 @@ func (a *Node) TailscaleIP() string { return a.tailscaleIP }
 
 // NodeID is this node's persistent identity (see nodeident).
 func (a *Node) NodeID() string { return a.nodeID }
+
+// LocalClient exposes tsnet's local API — Status() for membership/liveness,
+// WhoIs() for attributing an inbound connection to a tailnet peer (used by
+// internal/discovery). Callers outside this package go through this instead
+// of reaching into tsnetServer directly, since that field is unexported.
+func (a *Node) LocalClient() (*local.Client, error) {
+	return a.tsnetServer.LocalClient()
+}
 
 // Build the Node struct and authenticate tsnet
 func New(ctx context.Context, cfg *Config, onProgress func(string)) (*Node, error) {
