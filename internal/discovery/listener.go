@@ -26,16 +26,15 @@ func IdentifyPeer(ctx context.Context, lc *local.Client, conn net.Conn) (*apityp
 // Server accepts connections on a discovery listener, identifies each one
 // via WhoIs, and exchanges a Hello with it.
 type Server struct {
-	ln   net.Listener
-	lc   *local.Client
-	self Hello
+	ln   net.Listener  // to .accept() TCP connection
+	lc   *local.Client // to ask tailscale who peer is (IdentityPeer())
+	self Hello         // message node says about itself
 
 	// OnPeer is called once a connection is identified and the hello
 	// exchange succeeds. The handler owns conn and must close it. If nil,
 	// the connection is closed immediately after the exchange.
 	OnPeer func(who *apitype.WhoIsResponse, hello Hello, conn net.Conn)
 
-	// Logf defaults to a no-op.
 	Logf func(format string, args ...any)
 
 	// HelloTimeout overrides helloTimeout when non-zero — for tests that
@@ -73,7 +72,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			}
 			return fmt.Errorf("discovery: accept: %w", err)
 		}
-		go s.handle(ctx, conn)
+		go s.handle(ctx, conn) // no matter how many conn comes will be handle in multiple goroutine in handle()
 	}
 }
 
