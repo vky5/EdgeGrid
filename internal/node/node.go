@@ -6,9 +6,13 @@ import (
 	"log"
 	"net"
 	"path/filepath"
+	"strconv"
 	"sync"
+	"time"
 
+	"github.com/edgegrid/edgegrid/internal/discovery"
 	"tailscale.com/client/local"
+	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/tsnet"
 )
 
@@ -112,8 +116,66 @@ func New(ctx context.Context, cfg *Config, onProgress func(string)) (*Node, erro
 }
 
 func (a *Node) Start(ctx context.Context) error {
+	lc, err := a.LocalClient()
+	if err != nil {
+		return fmt.Errorf("local client: %w", err)
+	}
+	ln, err := a.Listen("tcp", fmt.Sprintf(":%d", discovery.Port))
+	if err != nil {
+		return fmt.Errorf("discovery listen: %w", err)
+	}
+
+	server := discovery.NewServer(ln, lc, discovery.Hello{NodeID: a.NodeID()})
+	server.Logf = log.Printf
+	server.OnPeer = func(who *apitype.WhoIsResponse, hello discovery.Hello, conn net.Conn) {
+		// TODO record the peer somewhere (could be store or memory)
+		conn.Close()
+	}
+
+	go func() {
+		if err := server.Serve(ctx); err != nil {
+			log.Printf("discovery: serve: %v", err)
+		}
+	}()
+
+	peers, err := discovery.Snapshot(ctx, lc)
+	if err != nil {
+		log.Printf("discovery: snapshot: %v", err)
+	}
+	for _, p := range peers {
+		if !p.Online {
+			continue
+		}
+		go func(p discovery.Peer) {
+			if err := dialAndGreet(ctx, p, discovery.Hello{NodeID: a.NodeID()}); err != nil {
+				log.Printf("discovery: dial %s: %v", p.Hostname, err)
+			}
+		}(p)
+	}
+
 	log.Println("starting EdgeGrid services")
 	<-ctx.Done()
+	return nil
+}
+
+func dialAndGreet(ctx context.Context, peer discovery.Peer, msg discovery.Hello) error {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(peer.IP.String(), strconv.Itoa(discovery.Port)))
+	if err != nil {
+		return err
+	}
+
+	defer conn.Close()
+
+	var rnMsg discovery.Hello
+
+	rnMsg, err = discovery.ExchangeAsDialer(conn, msg, 10*time.Second)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("discovery: %s self-reports node_id=%s", peer.Hostname, rnMsg.NodeID)
+
 	return nil
 }
 
