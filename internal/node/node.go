@@ -51,6 +51,10 @@ func (a *Node) TailscaleIP() string { return a.tailscaleIP }
 // NodeID is this node's persistent identity (see nodeident).
 func (a *Node) NodeID() string { return a.nodeID }
 
+// TailscaleHostname is the hostname this node presents on the tailnet — the
+// name that shows up in peers' Peers tabs and the Tailscale admin console.
+func (a *Node) TailscaleHostname() string { return a.cfg.TailscaleHostname }
+
 // LocalClient exposes tsnet's local API — Status() for membership/liveness,
 // WhoIs() for attributing an inbound connection to a tailnet peer (used by
 // internal/discovery). Callers outside this package go through this instead

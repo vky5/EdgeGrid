@@ -159,7 +159,7 @@ func runDashboard() {
 	// a real race: another EdgeGrid process switching profiles in the gap
 	// between that boot-time read and this one would leave DataDir correct
 	// but this label wrong (see node.resolveDataDir's doc comment).
-	a := app.New(nodeAgent.NodeID(), nodeAgent.TailscaleIP(), cfg.DataDir, cfg.ProfileName, tsClient, lc)
+	a := app.New(nodeAgent.NodeID(), nodeAgent.TailscaleIP(), cfg.DataDir, cfg.ProfileName, nodeAgent.TailscaleHostname(), tsClient, lc)
 
 	p := tea.NewProgram(a, tea.WithAltScreen())
 	finalModel, err := p.Run()
