@@ -140,8 +140,21 @@ func runDashboard() {
 	}
 	defer nodeAgent.Close()
 
+	// Peer discovery (listen + dial known peers) has to actually run for the
+	// dashboard too, not just headless mode — runForeground does this for
+	// runNode, but the dashboard never went through that path.
+	go func() {
+		if err := nodeAgent.Start(ctx); err != nil {
+			log.Printf("discovery: %v", err)
+		}
+	}()
+
 	tsClient := tailscaleapi.LoadCredentials(cfg.DataDir)
-	a := app.New(nodeAgent.NodeID(), nodeAgent.TailscaleIP(), cfg.DataDir, tsClient)
+	lc, err := nodeAgent.LocalClient()
+	if err != nil {
+		log.Printf("warning: tsnet local client unavailable, Peers tab will show an error: %v", err)
+	}
+	a := app.New(nodeAgent.NodeID(), nodeAgent.TailscaleIP(), cfg.DataDir, tsClient, lc)
 
 	p := tea.NewProgram(a, tea.WithAltScreen())
 	finalModel, err := p.Run()

@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"tailscale.com/client/local"
 
 	"github.com/edgegrid/edgegrid/internal/tailscaleapi"
 	"github.com/edgegrid/edgegrid/internal/tui/style"
@@ -32,6 +33,7 @@ type tab int
 
 const (
 	tabOverview tab = iota
+	tabPeers
 	tabTokens
 )
 
@@ -46,6 +48,7 @@ type Dashboard struct {
 	tab       tab
 
 	overview overviewModel
+	peers    peersModel
 	tokens   tokensModel
 
 	width, height int
@@ -53,13 +56,16 @@ type Dashboard struct {
 
 // New builds the dashboard. tsClient is nil when this node has no Tailscale
 // API credentials configured — Tokens tab is simply absent then, same as a
-// pure worker having no fleet tabs in the old dashboard.
-func New(nodeID, tailscaleIP, dataDir string, tsClient *tailscaleapi.Client) Dashboard {
+// pure worker having no fleet tabs in the old dashboard. lc is nil only if
+// tsnet's local client couldn't be obtained — Peers then shows its error
+// state instead of crashing.
+func New(nodeID, tailscaleIP, dataDir string, tsClient *tailscaleapi.Client, lc *local.Client) Dashboard {
 	d := Dashboard{
 		dataDir:   dataDir,
 		hasTokens: tsClient != nil,
 		tab:       tabOverview,
 		overview:  newOverviewModel(nodeID, tailscaleIP),
+		peers:     newPeersModel(lc),
 	}
 	if tsClient != nil {
 		d.tokens = newTokensModel(tsClient)
@@ -71,6 +77,7 @@ func (d *Dashboard) resize() {
 	h := max(d.height-chromeLines, 3)
 	d.overview.width = d.width
 	d.overview.height = h
+	d.peers = d.peers.WithSize(d.width, h)
 	d.tokens = d.tokens.WithSize(d.width, h)
 }
 
@@ -85,22 +92,20 @@ func (d Dashboard) HelpText() string {
 	case tabTokens:
 		return "m mint   c copy+hide   esc hide   r revoke   tab switch   / command   q quit"
 	default:
-		if d.hasTokens {
-			return "Tab switch tabs   /logs   / command   q quit"
-		}
-		return "/logs   / command   q quit"
+		return "Tab switch tabs   /logs   / command   q quit"
 	}
 }
 
 func (d Dashboard) getTabNames() []string {
+	names := []string{"Overview", "Peers"}
 	if d.hasTokens {
-		return []string{"Overview", "Tokens"}
+		names = append(names, "Tokens")
 	}
-	return []string{"Overview"}
+	return names
 }
 
 func (d Dashboard) Init() tea.Cmd {
-	return refreshCmd()
+	return tea.Batch(refreshCmd(), d.peers.Init())
 }
 
 func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
@@ -110,10 +115,18 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 		return d, nil
 	}
 
-	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "tab" && d.hasTokens {
-		if d.tab == tabOverview {
-			d.tab = tabTokens
-		} else {
+	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "tab" {
+		switch d.tab {
+		case tabOverview:
+			d.tab = tabPeers
+		case tabPeers:
+			if d.hasTokens {
+				d.tab = tabTokens
+			} else {
+				d.tab = tabOverview
+				d.overview = d.overview.refreshLocal()
+			}
+		case tabTokens:
 			d.tab = tabOverview
 			d.overview = d.overview.refreshLocal()
 		}
@@ -125,10 +138,22 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 		return d, refreshCmd()
 	}
 
+	// peersRefreshMsg is self-rescheduling like RefreshMsg above, so it has
+	// to be handled here regardless of which tab is active — routing it
+	// only through the tab-switch below would drop the reschedule whenever
+	// Peers isn't the visible tab, killing the ticker for good.
+	if _, ok := msg.(peersRefreshMsg); ok {
+		var cmd tea.Cmd
+		d.peers, cmd = d.peers.Update(msg)
+		return d, cmd
+	}
+
 	var cmd tea.Cmd
 	switch d.tab {
 	case tabTokens:
 		d.tokens, cmd = d.tokens.Update(msg)
+	case tabPeers:
+		d.peers, cmd = d.peers.Update(msg)
 	default:
 		d.overview, cmd = d.overview.Update(msg)
 	}
@@ -145,6 +170,8 @@ func (d Dashboard) View() string {
 	switch d.tab {
 	case tabTokens:
 		content = d.tokens.View()
+	case tabPeers:
+		content = d.peers.View()
 	default:
 		content = d.overview.View()
 	}
@@ -159,7 +186,10 @@ func (d Dashboard) View() string {
 	var tabParts []string
 	for _, name := range names {
 		var s string
-		if (name == "Overview" && d.tab == tabOverview) || (name == "Tokens" && d.tab == tabTokens) {
+		active := (name == "Overview" && d.tab == tabOverview) ||
+			(name == "Peers" && d.tab == tabPeers) ||
+			(name == "Tokens" && d.tab == tabTokens)
+		if active {
 			s = style.TabActive.Render("[ " + strings.ToUpper(name) + " ]")
 		} else {
 			s = style.TabInactive.Render("  " + strings.ToUpper(name) + "  ")
