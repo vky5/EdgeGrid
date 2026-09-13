@@ -17,7 +17,7 @@ import (
 func TestTabsRenderFullWidthSoNavDoesNotMove(t *testing.T) {
 	const w, h = 100, 24
 
-	d := New("88c12417791e89d21aa", "100.92.16.79", "./data", &tailscaleapi.Client{})
+	d := New("88c12417791e89d21aa", "100.92.16.79", "./data", &tailscaleapi.Client{}, nil)
 	d.width, d.height = w, h
 	d.resize()
 	d.tokens.justMinted = &tailscaleapi.MintedKey{
@@ -25,10 +25,10 @@ func TestTabsRenderFullWidthSoNavDoesNotMove(t *testing.T) {
 		Key: "tskey-auth-kSxggEGSD311CNTRL-8fJq2mNpXvZ4tR7wYbC1dEaLgH",
 	}
 
-	navCols := func(view string) (cols [3]int, width int) {
+	navCols := func(view string) (cols [4]int, width int) {
 		bar := strings.SplitN(view, "\n", 2)[0]
 		plain := stripANSI(bar)
-		for i, word := range []string{"OVERVIEW", "TOKENS", "( press"} {
+		for i, word := range []string{"OVERVIEW", "PEERS", "TOKENS", "( press"} {
 			idx := strings.Index(plain, word)
 			if idx < 0 {
 				t.Fatalf("nav item %q missing from tab bar: %q", word, plain)
@@ -40,14 +40,16 @@ func TestTabsRenderFullWidthSoNavDoesNotMove(t *testing.T) {
 
 	d.tab = tabOverview
 	overviewCols, overviewW := navCols(d.View())
+	d.tab = tabPeers
+	peersCols, peersW := navCols(d.View())
 	d.tab = tabTokens
 	tokensCols, tokensW := navCols(d.View())
 
-	if overviewW != w || tokensW != w {
-		t.Errorf("tab bar widths overview=%d tokens=%d, both should be %d", overviewW, tokensW, w)
+	if overviewW != w || peersW != w || tokensW != w {
+		t.Errorf("tab bar widths overview=%d peers=%d tokens=%d, all should be %d", overviewW, peersW, tokensW, w)
 	}
-	if overviewCols != tokensCols {
-		t.Errorf("nav moved between tabs: overview=%v tokens=%v", overviewCols, tokensCols)
+	if overviewCols != peersCols || overviewCols != tokensCols {
+		t.Errorf("nav moved between tabs: overview=%v peers=%v tokens=%v", overviewCols, peersCols, tokensCols)
 	}
 }
 

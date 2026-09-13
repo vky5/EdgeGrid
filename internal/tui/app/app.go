@@ -17,6 +17,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"tailscale.com/client/local"
 
 	"github.com/edgegrid/edgegrid/internal/node"
 	"github.com/edgegrid/edgegrid/internal/tailscaleapi"
@@ -50,11 +51,11 @@ type App struct {
 // New builds the App around a node already up on the tailnet. tsClient is
 // nil when this node has no Tailscale API credentials configured — see
 // tailscaleapi.LoadCredentials — in which case the dashboard simply has no
-// Tokens tab.
-func New(nodeID, tailscaleIP, dataDir string, tsClient *tailscaleapi.Client) App {
+// Tokens tab. lc is the node's tsnet local client, for the Peers tab.
+func New(nodeID, tailscaleIP, dataDir string, tsClient *tailscaleapi.Client, lc *local.Client) App {
 	return App{
 		dataDir:   dataDir,
-		dashboard: dashboard.New(nodeID, tailscaleIP, dataDir, tsClient),
+		dashboard: dashboard.New(nodeID, tailscaleIP, dataDir, tsClient, lc),
 		cmdbar:    cmdbar.New(commands...),
 	}
 }
