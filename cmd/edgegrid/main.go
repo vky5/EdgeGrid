@@ -154,7 +154,12 @@ func runDashboard() {
 	if err != nil {
 		log.Printf("warning: tsnet local client unavailable, Peers tab will show an error: %v", err)
 	}
-	a := app.New(nodeAgent.NodeID(), nodeAgent.TailscaleIP(), cfg.DataDir, tsClient, lc)
+	// cfg.ProfileName was resolved atomically with cfg.DataDir inside
+	// LoadConfig — re-reading node.ActiveProfile() here separately would be
+	// a real race: another EdgeGrid process switching profiles in the gap
+	// between that boot-time read and this one would leave DataDir correct
+	// but this label wrong (see node.resolveDataDir's doc comment).
+	a := app.New(nodeAgent.NodeID(), nodeAgent.TailscaleIP(), cfg.DataDir, cfg.ProfileName, tsClient, lc)
 
 	p := tea.NewProgram(a, tea.WithAltScreen())
 	finalModel, err := p.Run()

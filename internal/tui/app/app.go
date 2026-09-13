@@ -33,7 +33,8 @@ var commands = []string{"logs", "profile"}
 // App is the root bubbletea Model — the only thing cmd/edgegrid ever hands
 // to tea.NewProgram.
 type App struct {
-	dataDir string
+	dataDir     string
+	profileName string // fixed at boot — see New; never re-read live in the footer
 
 	dashboard dashboard.Dashboard
 	cmdbar    cmdbar.Model
@@ -52,11 +53,17 @@ type App struct {
 // nil when this node has no Tailscale API credentials configured — see
 // tailscaleapi.LoadCredentials — in which case the dashboard simply has no
 // Tokens tab. lc is the node's tsnet local client, for the Peers tab.
-func New(nodeID, tailscaleIP, dataDir string, tsClient *tailscaleapi.Client, lc *local.Client) App {
+// profileName is resolved once by the caller (see main.go) — it must not be
+// re-read from node.ActiveProfile() here or in the footer: that file is
+// global to the machine, not scoped to this process, and switching profiles
+// always restarts the whole process (see runCommand's "profile" case), so
+// there is never a legitimate reason for this to change mid-run.
+func New(nodeID, tailscaleIP, dataDir, profileName string, tsClient *tailscaleapi.Client, lc *local.Client) App {
 	return App{
-		dataDir:   dataDir,
-		dashboard: dashboard.New(nodeID, tailscaleIP, dataDir, tsClient, lc),
-		cmdbar:    cmdbar.New(commands...),
+		dataDir:     dataDir,
+		profileName: profileName,
+		dashboard:   dashboard.New(nodeID, tailscaleIP, dataDir, tsClient, lc),
+		cmdbar:      cmdbar.New(commands...),
 	}
 }
 
@@ -193,7 +200,7 @@ func (a App) renderHeader() string {
 }
 
 func (a App) renderFooter() string {
-	profileName := node.ActiveProfile()
+	profileName := a.profileName
 	if profileName == "" {
 		profileName = "default"
 	}
