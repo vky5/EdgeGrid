@@ -534,15 +534,22 @@ func (m welcomeModel) update(msg tea.Msg) (welcomeModel, tea.Cmd) {
 				val := strings.TrimSpace(m.input.Value())
 				if val != "" {
 					// UseProfile creates the dir, so a brand-new name is
-					// usable immediately — there's no onboarding wizard left
-					// to run between naming it and booting into it.
+					// usable immediately — but "usable" means landing on the
+					// same submenu an existing profile does, not skipping
+					// straight to starting. A fresh profile has never joined
+					// a tailnet, so it needs the chance to pick "join an
+					// existing network" and paste a key before tsnet ever
+					// gets a chance to fall back to interactive login.
 					if err := node.UseProfile(val); err != nil {
 						m.statusMsg = "could not create profile: " + err.Error()
 						return m, nil
 					}
 					m.profileName = val
-					m.action = WelcomeStart
-					return m, tea.Quit
+					m.selectedProfileName = val
+					m.statusMsg = ""
+					m.subMode = 3
+					m.submenuIdx = 0
+					return m, nil
 				}
 			}
 		}
