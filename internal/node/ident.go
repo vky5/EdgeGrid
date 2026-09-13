@@ -42,6 +42,15 @@ func LoadOrCreateIdentity(dataDir string) (*Identity, error) {
 	return id, nil
 }
 
+// HasJoined reports whether dataDir's node has ever completed a tailnet
+// bring-up. tailscale.ip is written only after ts.Up returns a valid address
+// (see Node.New), which makes it a truthful "this node is already a member"
+// marker — unlike tsnet/tailscaled.state, which exists from the first
+// attempt whether or not authentication ever succeeded.
+func HasJoined(dataDir string) bool {
+	return LoadToken(dataDir, "tailscale.ip") != ""
+}
+
 // RandomToken returns a cryptographically random hex string (n bytes → 2n hex chars).
 func RandomToken(n int) (string, error) {
 	b := make([]byte, n)

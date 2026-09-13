@@ -995,12 +995,9 @@ func (m welcomeModel) persistProfileSettings() error {
 }
 
 // profileHasJoined reports whether this profile has ever completed a tailnet
-// bring-up. tailscale.ip is written only after ts.Up returns a valid address
-// (see node.New), which makes it a truthful "this node is already a member"
-// marker — unlike tsnet/tailscaled.state, which exists from the first attempt
-// whether or not authentication ever succeeded.
+// bring-up — see node.HasJoined.
 func profileHasJoined(name string) bool {
-	return node.LoadToken(profileDataDir(name), "tailscale.ip") != ""
+	return node.HasJoined(profileDataDir(name))
 }
 
 // profileHasTailscaleAPI reports whether this profile can mint join keys —

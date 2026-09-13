@@ -125,6 +125,28 @@ func runDashboard() {
 		cfg.TailscaleAuthKey = choice.AuthKey
 	}
 
+	// A node starting a brand-new network has no one to hand it a join key —
+	// it's the first one. Without one, tsnet falls back to interactive
+	// browser login, which registers the device under the operator's
+	// personal Tailscale identity with no ACL tag, invisible to every other
+	// node's Snapshot() (Tag lives on the device being looked at, not the
+	// viewer — see docs/peer-discovery.md). If this profile already has
+	// Tailscale API credentials configured (the same ones the Tokens tab
+	// uses), mint this node a key from its own credentials and use that
+	// instead, so it comes up tagged like every node it will later admit.
+	// Best-effort: any failure here just falls back to interactive login,
+	// same as if credentials weren't configured at all — never a hard error.
+	if cfg.TailscaleAuthKey == "" && !node.HasJoined(cfg.DataDir) {
+		if selfClient := tailscaleapi.LoadCredentials(cfg.DataDir); selfClient != nil {
+			minted, err := selfClient.CreateKey()
+			if err != nil {
+				log.Printf("warning: could not mint this node a self-key, falling back to interactive login: %v", err)
+			} else {
+				cfg.TailscaleAuthKey = minted.Key
+			}
+		}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
