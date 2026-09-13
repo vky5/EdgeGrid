@@ -78,43 +78,107 @@ sequenceDiagram
     C-->>A: hello{node_id: C, ...self facts...}
 ```
 
+## Transport: what actually crosses the wire
+
+"`tsnet.Dial`/`tsnet.Listen`" above is doing a lot of hiding. Worth being
+precise about what's underneath it, because two different ports and two
+different network stacks are involved, and conflating them is an easy
+mistake — this section exists because that mistake got made and corrected
+mid-session.
+
+**tsnet is not the OS network stack.** `tsnet.Server` runs Tailscale's own
+userspace TCP/IP implementation (gVisor's netstack) entirely in-process —
+there's no real kernel `tun`/`utun` device, no real interface visible to
+`ip addr`. `discovery.Port` (9797) is a TCP port inside *that* virtual
+stack. It never appears as a port number on the real network — a `tcpdump`
+on the actual NIC would never show it.
+
+**WireGuard's real transport port is a separate, lower layer**, entirely
+outside our code. Tailscale's default is UDP 41641 for a direct
+peer-to-peer path, falling back to DERP relay (over 443) when a direct path
+isn't reachable. We don't configure this, don't read it, and changing
+`discovery.Port` has zero effect on it — they don't interact.
+
+```mermaid
+flowchart TB
+    subgraph App["EdgeGrid (this repo)"]
+        H["WriteHello / ReadHello<br/>writes bytes to a net.Conn"]
+    end
+    subgraph Virtual["tsnet's virtual stack (gVisor netstack)"]
+        T["TCP: segments the byte stream<br/>MSS from the virtual interface's MTU<br/>dials/listens on discovery.Port (9797)"]
+    end
+    subgraph Real["Real OS network"]
+        W["WireGuard: encrypts each IP packet,<br/>wraps it in one UDP datagram<br/>(UDP 41641, or DERP :443 relay)"]
+        N["Physical network path"]
+    end
+    H --> T --> W --> N
+```
+
+**Why TCP segments never threaten WireGuard's UDP budget.** WireGuard adds
+roughly 60 bytes of overhead per packet (UDP header + WireGuard's own
+header/auth tag). If TCP produced segments sized for a full 1500-byte
+Ethernet MTU, the resulting UDP datagram could exceed what some real paths
+can carry — the classic VPN failure mode: ICMP "fragmentation needed" gets
+eaten by a firewall (common), the sender never learns to shrink packets, and
+a connection that handshakes fine hangs the moment real data flows. Tailscale
+avoids this by advertising a conservative MTU (believed to be 1280 bytes,
+matching IPv6's guaranteed minimum — not independently verified against the
+exact vendored version in this build) on tsnet's virtual interface. TCP's
+own MSS negotiation, running entirely inside that virtual stack, then never
+produces a segment large enough to risk it — both ends of a `tsnet`-to-
+`tsnet` connection agree on this independently, so it isn't dependent on
+live path-MTU discovery succeeding.
+
+None of this is a live concern for `Hello` (well under 30 bytes). It becomes
+worth re-checking the day a large payload (artifact transfer, task dispatch
+state) rides this same channel — see the deferred section above.
+
 ## Task breakdown
 
 Ordered so each step is independently testable and the next can't start
 meaningfully without it.
 
-### 1. Membership snapshot
+### 1. Membership snapshot — done
 Read `Status().Peer`, filter to the EdgeGrid tag, expose it as a typed list
 (node ID / public key, tailnet IP, `Online`, `LastSeen`). No networking of
 our own yet — this only proves we can see what Tailscale already knows.
 **Done when:** a `edgegrid dashboard` run against ≥2 joined nodes lists both,
 correctly marking which is online.
 
-### 2. Discovery listener
+### 2. Discovery listener — done
 `tsnet.Listen` on the fixed port. Accept connections, `WhoIs` the remote
 address, log the identified peer. No payload yet — just proves the channel
 opens and identity resolution works.
 **Done when:** node A can `Dial` node B's fixed port and B logs "connection
 from `<A's node ID>`" using `WhoIs`, not a value A sent.
 
-### 3. Hello exchange
+### 3. Hello exchange — done
 Length-prefixed JSON `hello` message, exchanged both directions on connect.
 Payload starts minimal — node ID and little else — since this slice is about
 proving the channel, not the content.
 **Done when:** A and B each print the other's self-reported node ID after
 one connect/exchange/close cycle.
 
-### 4. Wire into node startup
+### 4. Wire into node startup — done
 On `Node.Start` (today just `<-ctx.Done()`), launch the listener and, for
 every peer the membership snapshot reports online, dial and exchange hello.
 **Done when:** starting a third node against two already-running ones causes
 all three to log full pairwise discovery with no manual dialing.
 
-### 5. Surface it in the TUI
-A `Peers` tab in the dashboard (or an addition to Overview) showing the live
-peer list from step 4 — this is what makes the feature visible instead of a
-log line. Explicitly deferred until 1–4 work headlessly; adding UI to an
-unstable wire format is wasted rendering work.
+Landed for both entry points — `edgegrid node` (already had it) and
+`edgegrid dashboard` (didn't; see below). One real gap the "done when"
+above doesn't cover: dialing only happens once, at startup, against
+whoever `Snapshot()` reports online *right then*. A peer that comes online
+later isn't discovered until *it* dials *this* node — asymmetric, not
+full mesh. The deferred periodic re-sync (above) is what closes this.
+
+### 5. Surface it in the TUI — done
+A `Peers` tab in the dashboard shows `Snapshot()` live, refreshed every 5s.
+Deliberately reads Tailscale's membership view directly rather than a
+record of completed hello exchanges — there's no store for the latter yet
+(still an open, unproposed piece of work), and the raw membership view is
+enough to make the feature visible and to unblock debugging peer-visibility
+problems, which is what actually drove building this now.
 
 Steps 1–3 have no dependency on each other's *content* but a hard dependency
 on order — 2 needs nothing from 1, 3 needs 2's connection open. Building
