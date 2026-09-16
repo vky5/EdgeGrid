@@ -39,14 +39,25 @@ us that for free:
 cmd/edgegrid/            entry point — up | dashboard | logs | profile
 internal/node/           tsnet lifecycle, config, identity, profiles, token files
 internal/tailscaleapi/   OAuth client: mint/revoke tailnet auth keys
+internal/discovery/      membership snapshot, listener, hello exchange over the tailnet
+internal/blob/           chunked, hashed transfer of large opaque payloads (in progress)
 internal/tui/            welcome screen, boot progress, dashboard (bubbletea)
 internal/planner/        (stub) turns a request into a plan — not yet implemented
 internal/executor/       (stub) does the work a plan describes — not yet implemented
 ```
 
 `internal/planner` and `internal/executor` are single `doc.go` files today —
-declared intent, no code. Peer discovery and task exchange (this doc's
-subject, and the next one) are what fills them in.
+declared intent, no code.
+
+`internal/discovery` is built and merged: nodes find each other and exchange
+identity on connect ([`peer-discovery.md`](peer-discovery.md)).
+`internal/blob` is partially built — manifest generation and manifest wire
+encoding exist, and the dashboard can pick a peer and hash a file into a
+manifest, but nothing sends one yet
+([`blob-transfer.md`](blob-transfer.md)). It sits deliberately *beside*
+`executor` rather than inside it: `executor` knows about files on disk,
+`blob` only knows how to move bytes, so anything else that later needs to
+move a large payload doesn't have to pretend to be an artifact first.
 
 ## Process shape (ASCII)
 
@@ -88,9 +99,9 @@ One node, start to finish:
                              |
                              v
                     +-------------------+
-                    |     dashboard      |   Overview | Tokens (if this node
-                    |  (bubbletea TUI)   |   holds ts_api_* credentials)
-                    +-------------------+
+                    |     dashboard      |   Overview | Peers | Tokens
+                    |  (bubbletea TUI)   |   (Tokens only if this node
+                    +-------------------+    holds ts_api_* credentials)
 ```
 
 Two node roles exist today, and they're not stored — they're derived:
@@ -177,7 +188,17 @@ addresses.
 
 ## What's not built yet
 
-See [`peer-discovery.md`](peer-discovery.md) for the design and task
-breakdown of the two things `internal/planner`/`internal/executor` exist for:
-nodes finding each other and exchanging state, and — later — declarative
-task placement between them.
+- [`peer-discovery.md`](peer-discovery.md) — nodes finding each other and
+  exchanging identity. **Built and merged**; the doc also records what was
+  explicitly deferred, including periodic re-sync and declarative task
+  placement.
+- [`blob-transfer.md`](blob-transfer.md) — moving a large payload between
+  two nodes: chunked, hashed against a manifest agreed in advance, and
+  eventually resumable. **In progress** — manifest generation, its wire
+  encoding, and the TUI flow for picking a peer and hashing a file are
+  done; the intent field, chunk framing, sender, receiver and resume are
+  not. Open decisions are listed there rather than guessed at here.
+- **Task dispatch** — declarative placement ("A publishes desired state, B
+  reconciles"), the thing `internal/planner` exists for. Still unproposed;
+  see peer-discovery.md's deferred section for why it needs its own design
+  pass rather than being an extension of either doc above.

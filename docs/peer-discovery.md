@@ -131,7 +131,12 @@ live path-MTU discovery succeeding.
 
 None of this is a live concern for `Hello` (well under 30 bytes). It becomes
 worth re-checking the day a large payload (artifact transfer, task dispatch
-state) rides this same channel — see the deferred section above.
+state) rides this same channel — which is now [`blob-transfer.md`](blob-transfer.md),
+where 4 MiB chunks are handed to the same stack described above. Worth being
+precise about what that does and doesn't mean: chunk size is an
+application-level choice about framing and re-fetch granularity, not a
+packet size. TCP segments the stream to fit the path regardless, so a larger
+chunk costs a retransmit more on loss, not a fragmented packet.
 
 ## Task breakdown
 
