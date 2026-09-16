@@ -82,15 +82,19 @@ func (d *Dashboard) resize() {
 }
 
 // CapturesTextInput reports whether the current view is holding focus in a
-// free-form text field. Neither remaining tab has one, but App checks this
-// on every dashboard, so it stays here for that contract.
-func (d Dashboard) CapturesTextInput() bool { return false }
+// free-form text field, so App knows not to treat keystrokes as its own
+// shortcuts. Peers holds focus while a file path is being typed.
+func (d Dashboard) CapturesTextInput() bool {
+	return d.tab == tabPeers && d.peers.capturesTextInput()
+}
 
 // HelpText reports the current footer hint, for app.App's chrome.
 func (d Dashboard) HelpText() string {
 	switch d.tab {
 	case tabTokens:
 		return "m mint   c copy+hide   esc hide   r revoke   tab switch   / command   q quit"
+	case tabPeers:
+		return d.peers.helpText()
 	default:
 		return "Tab switch tabs   /logs   / command   q quit"
 	}
@@ -115,7 +119,9 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 		return d, nil
 	}
 
-	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "tab" {
+	// Tab would otherwise switch away mid-keystroke while a file path is
+	// being typed, dropping the half-entered flow.
+	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "tab" && !d.CapturesTextInput() {
 		switch d.tab {
 		case tabOverview:
 			d.tab = tabPeers
@@ -142,7 +148,12 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 	// to be handled here regardless of which tab is active — routing it
 	// only through the tab-switch below would drop the reschedule whenever
 	// Peers isn't the visible tab, killing the ticker for good.
-	if _, ok := msg.(peersRefreshMsg); ok {
+	//
+	// manifestBuiltMsg needs the same treatment for a different reason: it
+	// arrives once, whenever hashing finishes, and switching tabs while a
+	// large file hashes would otherwise throw the result away.
+	switch msg.(type) {
+	case peersRefreshMsg, manifestBuiltMsg:
 		var cmd tea.Cmd
 		d.peers, cmd = d.peers.Update(msg)
 		return d, cmd
