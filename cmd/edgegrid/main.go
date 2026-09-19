@@ -17,6 +17,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/node"
 	"github.com/edgegrid/edgegrid/internal/tailscaleapi"
 	"github.com/edgegrid/edgegrid/internal/tui/app"
+	"github.com/edgegrid/edgegrid/internal/tui/dashboard"
 )
 
 func main() {
@@ -181,7 +182,22 @@ func runDashboard() {
 	// a real race: another EdgeGrid process switching profiles in the gap
 	// between that boot-time read and this one would leave DataDir correct
 	// but this label wrong (see node.resolveDataDir's doc comment).
-	a := app.New(nodeAgent.NodeID(), nodeAgent.TailscaleIP(), cfg.DataDir, cfg.ProfileName, nodeAgent.TailscaleHostname(), tsClient, lc, nodeAgent.SendBlob)
+	a := app.New(nodeAgent.NodeID(), nodeAgent.TailscaleIP(), cfg.DataDir, cfg.ProfileName, nodeAgent.TailscaleHostname(), tsClient, lc, nodeAgent.SendBlob, func() []dashboard.Transfer {
+		live := nodeAgent.Transfers()
+		out := make([]dashboard.Transfer, 0, len(live))
+		for _, t := range live {
+			out = append(out, dashboard.Transfer{
+				Direction: string(t.Direction),
+				Peer:      t.Peer,
+				Frac:      t.Progress.Frac(),
+				BytesDone: t.Progress.BytesDone,
+				Total:     t.Progress.BytesTotal,
+				Done:      t.Done,
+				Err:       t.Err,
+			})
+		}
+		return out
+	})
 
 	p := tea.NewProgram(a, tea.WithAltScreen())
 	finalModel, err := p.Run()

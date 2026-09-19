@@ -45,6 +45,7 @@ type Node struct {
 	nodeID      string
 
 	closeOnce sync.Once
+	transfers registry
 }
 
 // returns tailscale IP address of this node or "" if tsnet is not running
@@ -219,7 +220,10 @@ func (a *Node) receiveBlob(hello discovery.Hello, conn net.Conn) {
 	dest := filepath.Join(dir, fmt.Sprintf("%d.blob", time.Now().UnixNano()))
 
 	log.Printf("blob: receiving from %s into %s", hello.NodeID, dest)
-	m, err := blob.Receive(conn, dest)
+
+	t := a.transfers.start(Inbound, hello.NodeID)
+	m, err := blob.Receive(conn, dest, t.progressFunc())
+	a.transfers.finish(t, err)
 	if err != nil {
 		log.Printf("blob: receive from %s failed: %v", hello.NodeID, err)
 		if rmErr := os.Remove(dest); rmErr != nil {
@@ -265,7 +269,11 @@ func (a *Node) SendBlob(ctx context.Context, peer discovery.Peer, path string) e
 	}
 
 	log.Printf("blob: sending %s (%d bytes, %d chunks) to %s", path, m.Size, len(m.Chunks), peer.Hostname)
-	return blob.Send(conn, path, m)
+
+	t := a.transfers.start(Outbound, peer.Hostname)
+	err = blob.Send(conn, path, m, t.progressFunc())
+	a.transfers.finish(t, err)
+	return err
 }
 
 func (a *Node) dialAndGreet(ctx context.Context, peer discovery.Peer, msg discovery.Hello) error {

@@ -62,12 +62,12 @@ type App struct {
 // is this node's Tailscale hostname (node.Node.TailscaleHostname) — shown
 // in the footer so it's visible without leaving whatever tab you're on;
 // it's what this node shows up as in a peer's own Peers tab.
-func New(nodeID, tailscaleIP, dataDir, profileName, hostname string, tsClient *tailscaleapi.Client, lc *local.Client, send dashboard.SendFunc) App {
+func New(nodeID, tailscaleIP, dataDir, profileName, hostname string, tsClient *tailscaleapi.Client, lc *local.Client, send dashboard.SendFunc, transfers dashboard.TransfersFunc) App {
 	return App{
 		dataDir:     dataDir,
 		profileName: profileName,
 		hostname:    hostname,
-		dashboard:   dashboard.New(nodeID, tailscaleIP, dataDir, tsClient, lc, send),
+		dashboard:   dashboard.New(nodeID, tailscaleIP, dataDir, tsClient, lc, send, transfers),
 		cmdbar:      cmdbar.New(commands...),
 	}
 }

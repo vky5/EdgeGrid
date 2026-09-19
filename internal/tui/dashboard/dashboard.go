@@ -59,13 +59,13 @@ type Dashboard struct {
 // pure worker having no fleet tabs in the old dashboard. lc is nil only if
 // tsnet's local client couldn't be obtained — Peers then shows its error
 // state instead of crashing.
-func New(nodeID, tailscaleIP, dataDir string, tsClient *tailscaleapi.Client, lc *local.Client, send SendFunc) Dashboard {
+func New(nodeID, tailscaleIP, dataDir string, tsClient *tailscaleapi.Client, lc *local.Client, send SendFunc, transfers TransfersFunc) Dashboard {
 	d := Dashboard{
 		dataDir:   dataDir,
 		hasTokens: tsClient != nil,
 		tab:       tabOverview,
 		overview:  newOverviewModel(nodeID, tailscaleIP),
-		peers:     newPeersModel(lc, send),
+		peers:     newPeersModel(lc, send, transfers),
 	}
 	if tsClient != nil {
 		d.tokens = newTokensModel(tsClient)
@@ -153,7 +153,7 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 	// different reason: each arrives once, whenever the work finishes, and
 	// switching tabs mid-hash or mid-transfer would throw the result away.
 	switch msg.(type) {
-	case peersRefreshMsg, manifestBuiltMsg, blobSentMsg:
+	case peersRefreshMsg, manifestBuiltMsg, blobSentMsg, transferTickMsg:
 		var cmd tea.Cmd
 		d.peers, cmd = d.peers.Update(msg)
 		return d, cmd

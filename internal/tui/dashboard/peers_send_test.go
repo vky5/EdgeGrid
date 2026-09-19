@@ -246,3 +246,31 @@ func TestExpandPathHandlesDraggedInPaths(t *testing.T) {
 		}
 	}
 }
+
+// Dropping a second file pastes at the cursor rather than replacing, so two
+// drops arrive concatenated. That must be caught before os.Open reports a
+// confusing ENOTDIR about a path the user never typed.
+func TestMultipleDroppedFilesAreRejected(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory available")
+	}
+
+	if err := checkSinglePath(filepath.Join(home, "Downloads/one.mp4")); err != nil {
+		t.Errorf("single path rejected: %v", err)
+	}
+
+	concatenated := filepath.Join(home, "Downloads/one.mp4") + filepath.Join(home, "Downloads/two.mkv")
+	if err := checkSinglePath(concatenated); err == nil {
+		t.Error("two concatenated paths were accepted")
+	}
+
+	spaced := "/tmp/one.mp4 /tmp/two.mkv"
+	if err := checkSinglePath(spaced); err == nil {
+		t.Error("two space-separated paths were accepted")
+	}
+
+	if err := checkSinglePath("/mnt/backup/home/vky5/file.bin"); err != nil {
+		t.Errorf("legitimate path containing /home/ rejected: %v", err)
+	}
+}

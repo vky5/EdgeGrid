@@ -44,6 +44,27 @@ const (
 // declared here so the TUI doesn't import node.
 type SendFunc func(ctx context.Context, peer discovery.Peer, path string) error
 
+// Transfer is one in-flight transfer, in either direction. Mirrors
+// node.Transfer — redeclared so dashboard doesn't import node.
+type Transfer struct {
+	Direction string // "sending" or "receiving"
+	Peer      string
+	Frac      float64
+	BytesDone int64
+	Total     int64
+	Done      bool
+	Err       error
+}
+
+// TransfersFunc lists what this node is sending and receiving right now.
+// Polled rather than pushed: a transfer goroutine must never block on the
+// UI, and a tick already drives this tab.
+type TransfersFunc func() []Transfer
+
+// transferPollInterval is how often the transfer panel re-reads progress.
+// Fast enough to look live, slow enough to stay cheap.
+const transferPollInterval = 300 * time.Millisecond
+
 // peersModel shows discovery.Snapshot() live — Tailscale's own membership
 // view of every EdgeGrid-tagged device. It is not a record of hello
 // exchanges this node has completed; there's no store for that yet, so a
@@ -61,17 +82,19 @@ type peersModel struct {
 	// target is captured by value, not as an index into peers. The 5s
 	// refresh can reorder or shrink the list mid-flow, and an index would
 	// then point at a different machine than the one that was picked.
-	target   discovery.Peer
-	input    textinput.Model
-	path     string
-	manifest *blob.Manifest
-	flowErr  error
-	send     SendFunc
-	sendNote string
+	target    discovery.Peer
+	input     textinput.Model
+	path      string
+	manifest  *blob.Manifest
+	flowErr   error
+	send      SendFunc
+	transfers TransfersFunc
+	active    []Transfer
+	sendNote  string
 }
 
-func newPeersModel(lc *local.Client, send SendFunc) peersModel {
-	m := peersModel{lc: lc, send: send}
+func newPeersModel(lc *local.Client, send SendFunc, transfers TransfersFunc) peersModel {
+	m := peersModel{lc: lc, send: send, transfers: transfers}
 	return m.refresh()
 }
 
@@ -98,6 +121,12 @@ type blobSentMsg struct {
 	peer discovery.Peer
 	size int64
 	err  error
+}
+
+type transferTickMsg struct{}
+
+func transferTickCmd() tea.Cmd {
+	return tea.Tick(transferPollInterval, func(time.Time) tea.Msg { return transferTickMsg{} })
 }
 
 func peersRefreshCmd() tea.Cmd {
@@ -129,7 +158,7 @@ func (m peersModel) refresh() peersModel {
 	return m
 }
 
-func (m peersModel) Init() tea.Cmd { return peersRefreshCmd() }
+func (m peersModel) Init() tea.Cmd { return tea.Batch(peersRefreshCmd(), transferTickCmd()) }
 
 // capturesTextInput reports whether a keystroke belongs to the file-path
 // field rather than to the dashboard's own shortcuts.
@@ -139,7 +168,7 @@ func (m peersModel) capturesTextInput() bool { return m.mode == peersPickFile }
 func (m peersModel) helpText() string {
 	switch m.mode {
 	case peersPickFile:
-		return "enter hash the file   esc cancel"
+		return "enter hash the file   ctrl+u clear   esc cancel"
 	case peersBuilding:
 		return "hashing…   esc cancel"
 	case peersReady:
@@ -155,6 +184,12 @@ func (m peersModel) Update(msg tea.Msg) (peersModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case peersRefreshMsg:
 		return m.refresh(), peersRefreshCmd()
+
+	case transferTickMsg:
+		if m.transfers != nil {
+			m.active = m.transfers()
+		}
+		return m, transferTickCmd()
 
 	case blobSentMsg:
 		m.mode = peersBrowsing
@@ -240,9 +275,19 @@ func (m peersModel) updatePickFile(key tea.KeyMsg) (peersModel, tea.Cmd) {
 	switch key.Type {
 	case tea.KeyEsc:
 		return m.cancelFlow(), nil
+	case tea.KeyCtrlU:
+		// Dropping a file pastes at the cursor rather than replacing, so
+		// two drops concatenate into one nonsense path. This is the undo.
+		m.input.SetValue("")
+		m.flowErr = nil
+		return m, nil
 	case tea.KeyEnter:
 		path := expandPath(strings.TrimSpace(m.input.Value()))
 		if path == "" {
+			return m, nil
+		}
+		if err := checkSinglePath(path); err != nil {
+			m.flowErr = err
 			return m, nil
 		}
 		m.path = path
@@ -407,6 +452,10 @@ func (m peersModel) View() string {
 		}
 	}
 
+	if tp := m.transfersView(); tp != "" {
+		rows = append(rows, "", tp)
+	}
+
 	if m.flowErr != nil {
 		rows = append(rows, "", lipgloss.NewStyle().Foreground(style.Danger).Render(m.flowErr.Error()))
 	} else if m.sendNote != "" {
@@ -436,6 +485,9 @@ func (m peersModel) sendView() string {
 			"",
 			muted.Render("sending… manifest first, then every chunk"),
 		)
+		if tp := m.transfersView(); tp != "" {
+			lines = append(lines, "", tp)
+		}
 	case peersBuilding:
 		lines = append(lines,
 			muted.Render("file")+" "+m.path,
@@ -482,4 +534,93 @@ func shortHash(h string) string {
 		return h
 	}
 	return h[:16] + "…"
+}
+
+// transferBar renders a fixed-width progress bar. Deliberately not
+// overview.go's meter — that one colours by load, where high is bad; here
+// a full bar is the good outcome.
+func transferBar(frac float64, width int) string {
+	if frac < 0 {
+		frac = 0
+	}
+	if frac > 1 {
+		frac = 1
+	}
+	filled := int(frac * float64(width))
+	if filled > width {
+		filled = width
+	}
+	return lipgloss.NewStyle().Foreground(greenColor).Render(strings.Repeat("█", filled)) +
+		lipgloss.NewStyle().Foreground(style.Muted).Render(strings.Repeat("░", width-filled))
+}
+
+// transfersView lists every transfer this node is running, in either
+// direction. Inbound ones appear with no interaction at all — the peer
+// started them, so this is the only place they surface.
+func (m peersModel) transfersView() string {
+	if len(m.active) == 0 {
+		return ""
+	}
+
+	muted := lipgloss.NewStyle().Foreground(style.Muted)
+	barWidth := 24
+	if m.width > 0 && m.width < 70 {
+		barWidth = 12
+	}
+
+	rows := []string{muted.Render("transfers")}
+	for _, t := range m.active {
+		arrow := "→"
+		if t.Direction == "receiving" {
+			arrow = "←"
+		}
+
+		var status string
+		switch {
+		case t.Err != nil:
+			status = lipgloss.NewStyle().Foreground(style.Danger).Render("failed: " + t.Err.Error())
+		case t.Done:
+			status = lipgloss.NewStyle().Foreground(greenColor).Render("done  " + humanBytes(t.Total))
+		default:
+			status = fmt.Sprintf("%s  %3.0f%%  %s / %s",
+				transferBar(t.Frac, barWidth), t.Frac*100,
+				humanBytes(t.BytesDone), humanBytes(t.Total))
+		}
+
+		rows = append(rows, fmt.Sprintf("  %s %-16s %s", arrow, truncate(t.Peer, 16), status))
+	}
+	return strings.Join(rows, "\n")
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 1 {
+		return s[:n]
+	}
+	return s[:n-1] + "…"
+}
+
+// checkSinglePath rejects the result of dropping several files onto the
+// terminal. Each drop pastes at the cursor instead of replacing, so two
+// drops arrive as one string with a second absolute path embedded in the
+// middle — which then fails deep inside os.Open with a confusing ENOTDIR
+// about a path the user never typed.
+func checkSinglePath(p string) error {
+	multi := fmt.Errorf("looks like more than one file was dropped — ctrl+u to clear, then drop one")
+
+	// Two copies of the home dir means a second path got pasted onto the
+	// end of the first. Counting matters: a legitimate path can contain the
+	// home dir once (/mnt/backup/home/user/...), never twice.
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if strings.Count(p, home+"/") > 1 {
+			return multi
+		}
+	}
+	// Space-separated drops: "/a/b.mp4 /c/d.mkv".
+	if strings.Contains(strings.TrimPrefix(p, "/"), " /") {
+		return multi
+	}
+	return nil
 }

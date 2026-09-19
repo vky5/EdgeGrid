@@ -13,6 +13,34 @@ import (
 // Max size one frame can commit in the memory at once (so that no one can claim 100GB at once or something like that)
 const maxChunkSize = 64 << 20 // 64 MiB
 
+// Progress reports how far a transfer has got. BytesTotal and ChunksTotal
+// come from the manifest, so both are known before the first chunk moves.
+type Progress struct {
+	ChunksDone  int
+	ChunksTotal int
+	BytesDone   int64
+	BytesTotal  int64
+}
+
+// Frac returns completion in 0..1, or 0 for an empty blob.
+func (p Progress) Frac() float64 {
+	if p.BytesTotal <= 0 {
+		return 0
+	}
+	return float64(p.BytesDone) / float64(p.BytesTotal)
+}
+
+// ProgressFunc is called once per chunk. It runs on the transfer goroutine,
+// so it must not block — push to a counter or a channel, don't render.
+// A nil ProgressFunc is fine and costs nothing.
+type ProgressFunc func(Progress)
+
+func (f ProgressFunc) report(p Progress) {
+	if f != nil {
+		f(p)
+	}
+}
+
 // Reads one chunk at a time
 func ReadChunk(r io.Reader) (index int, data []byte, err error) {
 	var header [8]byte // [index][length]
@@ -50,7 +78,8 @@ func WriteChunk(w io.Writer, index int, data []byte) error {
 }
 
 // Send writes the manifest to w, then every chunk of path in order.
-func Send(w io.Writer, path string, m *Manifest) error {
+// onProgress may be nil.
+func Send(w io.Writer, path string, m *Manifest, onProgress ProgressFunc) error {
 	if err := WriteManifest(w, m); err != nil { // manifest is sent first over io writer
 		return err
 	}
@@ -62,7 +91,8 @@ func Send(w io.Writer, path string, m *Manifest) error {
 	defer f.Close()
 
 	var buf []byte
-	for _, c := range m.Chunks {
+	var sent int64
+	for i, c := range m.Chunks {
 		if cap(buf) < c.Length {
 			buf = make([]byte, c.Length)
 		}
@@ -73,13 +103,18 @@ func Send(w io.Writer, path string, m *Manifest) error {
 		if err := WriteChunk(w, c.Index, buf); err != nil {
 			return err
 		}
+		sent += int64(c.Length)
+		onProgress.report(Progress{
+			ChunksDone: i + 1, ChunksTotal: len(m.Chunks),
+			BytesDone: sent, BytesTotal: m.Size,
+		})
 	}
 	return nil
 }
 
 // Receive reads the manifest from r, then every chunk it promises, verifying
-// each one before it touches disk.
-func Receive(r io.Reader, destPath string) (*Manifest, error) {
+// each one before it touches disk. onProgress may be nil.
+func Receive(r io.Reader, destPath string, onProgress ProgressFunc) (*Manifest, error) {
 	m, err := ReadManifest(r)
 	if err != nil {
 		return nil, err
@@ -102,6 +137,11 @@ func Receive(r io.Reader, destPath string) (*Manifest, error) {
 	}
 
 	seen := make(map[int]bool, len(m.Chunks))
+	var got int64
+
+	// Tell the caller the size up front, so a receiver can show a full-width
+	// bar at 0% instead of nothing until the first chunk lands.
+	onProgress.report(Progress{ChunksTotal: len(m.Chunks), BytesTotal: m.Size})
 
 	// Read exactly as many frames as the manifest promised, no more.
 	for i := 0; i < len(m.Chunks); i++ {
@@ -130,6 +170,11 @@ func Receive(r io.Reader, destPath string) (*Manifest, error) {
 			return nil, fmt.Errorf("blob: write chunk %d: %w", idx, err)
 		}
 		seen[idx] = true
+		got += int64(c.Length)
+		onProgress.report(Progress{
+			ChunksDone: i + 1, ChunksTotal: len(m.Chunks),
+			BytesDone: got, BytesTotal: m.Size,
+		})
 	}
 
 	if err := f.Sync(); err != nil {
