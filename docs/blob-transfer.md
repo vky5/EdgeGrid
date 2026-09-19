@@ -151,6 +151,41 @@ possible. Position in the stream would be enough for a full sequential send,
 but it stops being enough the moment only chunks 4, 7 and 12 are being sent
 — which is exactly what resume and selective re-fetch look like.
 
+## The shape of it
+
+```
+Node A (dialer)                        Node B (listener)
+  │                                      │
+  │ Start()                              │ Start()
+  │ Snapshot() — who's online            │ server.Serve() — accepting
+  │                                      │
+  │ dialAndGreet() / SendBlob()          │
+  │── Dial() ───────────────────────────>│ handle()
+  │                                      │ IdentifyPeer() — WhoIs
+  │                                      │
+  │── hello {intent} ───────────────────>│ ExchangeAsListener()
+  │<──────────────────── hello {reply} ──│
+  │                                      │
+  │                                      │ OnPeer → handlePeer()
+  │                                      │ switch hello.Intent
+  │                                      │
+  │                       intent=hello:  │   close
+  │                       intent=blob:   │   keep reading ↓
+  │                                      │
+  │── manifest ─────────────────────────>│
+  │   (file size, chunk hashes)          │
+  │                                      │
+  │── chunk 0 ──────────────────────────>│
+  │── chunk 1 ──────────────────────────>│
+  │── chunk 2 ──────────────────────────>│
+  │           ...                        │
+```
+
+The dialer's side is one function start to finish (`SendBlob`). The
+listener's side is split across `discovery` — `Serve` accepts, `handle`
+identifies and greets — before anything reaches `node`'s `handlePeer`,
+which is the first place the intent is looked at.
+
 ## Sequence (Mermaid)
 
 ```mermaid

@@ -17,7 +17,7 @@ import (
 func TestTabsRenderFullWidthSoNavDoesNotMove(t *testing.T) {
 	const w, h = 100, 24
 
-	d := New("88c12417791e89d21aa", "100.92.16.79", "./data", &tailscaleapi.Client{}, nil)
+	d := New("88c12417791e89d21aa", "100.92.16.79", "./data", &tailscaleapi.Client{}, nil, nil)
 	d.width, d.height = w, h
 	d.resize()
 	d.tokens.justMinted = &tailscaleapi.MintedKey{

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -174,12 +175,48 @@ func (a *Node) handlePeer(who *apitype.WhoIsResponse, hello discovery.Hello, con
 
 	switch hello.Intent {
 	case discovery.IntentBlob:
-		// TODO receive the manifest, then the chunks — not built yet.
-		log.Printf("discovery: %s wants to send a blob; receiving isn't built yet", hello.NodeID)
+		a.receiveBlob(hello, conn)
 	default:
 		// IntentHello, empty (a peer older than the field)
 		// TODO record the peer somewhere (could be store or memory)
 	}
+}
+
+// blobReceiveTimeout bounds a whole inbound transfer. The hello exchange
+// clears its own deadline on return, so without this a peer could claim
+// IntentBlob and then hold the connection open forever.
+const blobReceiveTimeout = 30 * time.Minute
+
+// receiveBlob reads a manifest and its chunks into the profile's inbox.
+// blob.Receive verifies every chunk against the manifest before writing.
+func (a *Node) receiveBlob(hello discovery.Hello, conn net.Conn) {
+	if err := conn.SetDeadline(time.Now().Add(blobReceiveTimeout)); err != nil {
+		log.Printf("blob: set deadline: %v", err)
+		return
+	}
+
+	dir := filepath.Join(a.cfg.DataDir, "inbox")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.Printf("blob: inbox %s: %v", dir, err)
+		return
+	}
+
+	// The filename carries no peer-supplied string on purpose — NodeID is
+	// self-reported, so letting it into a path invites ../ escapes.
+	dest := filepath.Join(dir, fmt.Sprintf("%d.blob", time.Now().UnixNano()))
+
+	log.Printf("blob: receiving from %s into %s", hello.NodeID, dest)
+	m, err := blob.Receive(conn, dest)
+	if err != nil {
+		log.Printf("blob: receive from %s failed: %v", hello.NodeID, err)
+		if rmErr := os.Remove(dest); rmErr != nil {
+			log.Printf("blob: could not remove partial %s: %v", dest, rmErr)
+		}
+		return
+	}
+
+	log.Printf("blob: received %d bytes in %d chunks from %s -> %s (sha256 %s)",
+		m.Size, len(m.Chunks), hello.NodeID, dest, m.SHA256)
 }
 
 // sendBlobMediaType labels a file picked by a human — blob never

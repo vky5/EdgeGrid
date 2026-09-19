@@ -230,3 +230,19 @@ func TestHumanBytes(t *testing.T) {
 		}
 	}
 }
+
+// Dropping a file onto a terminal pastes its path as text, quoted or
+// backslash-escaped depending on the terminal.
+func TestExpandPathHandlesDraggedInPaths(t *testing.T) {
+	cases := map[string]string{
+		`'/home/v/my file.bin'`: "/home/v/my file.bin",
+		`"/home/v/my file.bin"`: "/home/v/my file.bin",
+		`/home/v/my\ file.bin`:  "/home/v/my file.bin",
+		`  /home/v/plain.bin  `: "/home/v/plain.bin",
+	}
+	for in, want := range cases {
+		if got := expandPath(in); got != want {
+			t.Errorf("expandPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

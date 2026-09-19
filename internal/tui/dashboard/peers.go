@@ -37,7 +37,12 @@ const (
 	peersPickFile
 	peersBuilding
 	peersReady
+	peersSending
 )
+
+// SendFunc transfers path to peer. node.Node.SendBlob satisfies it —
+// declared here so the TUI doesn't import node.
+type SendFunc func(ctx context.Context, peer discovery.Peer, path string) error
 
 // peersModel shows discovery.Snapshot() live — Tailscale's own membership
 // view of every EdgeGrid-tagged device. It is not a record of hello
@@ -61,10 +66,12 @@ type peersModel struct {
 	path     string
 	manifest *blob.Manifest
 	flowErr  error
+	send     SendFunc
+	sendNote string
 }
 
-func newPeersModel(lc *local.Client) peersModel {
-	m := peersModel{lc: lc}
+func newPeersModel(lc *local.Client, send SendFunc) peersModel {
+	m := peersModel{lc: lc, send: send}
 	return m.refresh()
 }
 
@@ -85,8 +92,23 @@ type manifestBuiltMsg struct {
 	err      error
 }
 
+// blobSentMsg carries the outcome of a transfer. The transfer runs off the
+// UI goroutine for the same reason hashing does — it can take minutes.
+type blobSentMsg struct {
+	peer discovery.Peer
+	size int64
+	err  error
+}
+
 func peersRefreshCmd() tea.Cmd {
 	return tea.Tick(peersRefreshInterval, func(time.Time) tea.Msg { return peersRefreshMsg{} })
+}
+
+func sendBlobCmd(send SendFunc, peer discovery.Peer, path string, size int64) tea.Cmd {
+	return func() tea.Msg {
+		err := send(context.Background(), peer, path)
+		return blobSentMsg{peer: peer, size: size, err: err}
+	}
 }
 
 func buildManifestCmd(path string) tea.Cmd {
@@ -122,6 +144,8 @@ func (m peersModel) helpText() string {
 		return "hashing…   esc cancel"
 	case peersReady:
 		return "enter send   esc cancel"
+	case peersSending:
+		return "sending…"
 	default:
 		return "↑/↓ select   s send a file   Tab switch tabs   /logs   q quit"
 	}
@@ -131,6 +155,19 @@ func (m peersModel) Update(msg tea.Msg) (peersModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case peersRefreshMsg:
 		return m.refresh(), peersRefreshCmd()
+
+	case blobSentMsg:
+		m.mode = peersBrowsing
+		m.manifest = nil
+		m.path = ""
+		if msg.err != nil {
+			m.flowErr = msg.err
+			m.sendNote = ""
+			return m, nil
+		}
+		m.flowErr = nil
+		m.sendNote = fmt.Sprintf("sent %s to %s", humanBytes(msg.size), peerLabel(msg.peer))
+		return m, nil
 
 	case manifestBuiltMsg:
 		// A cancel during hashing leaves the flow; a late result must not
@@ -156,6 +193,8 @@ func (m peersModel) Update(msg tea.Msg) (peersModel, tea.Cmd) {
 			if msg.Type == tea.KeyEsc {
 				return m.cancelFlow(), nil
 			}
+			return m, nil
+		case peersSending:
 			return m, nil
 		case peersReady:
 			return m.updateReady(msg)
@@ -187,6 +226,7 @@ func (m peersModel) updateBrowsing(key tea.KeyMsg) (peersModel, tea.Cmd) {
 		}
 		m.target = p
 		m.flowErr = nil
+		m.sendNote = ""
 		m.manifest = nil
 		m.path = ""
 		m.mode = peersPickFile
@@ -221,10 +261,13 @@ func (m peersModel) updateReady(key tea.KeyMsg) (peersModel, tea.Cmd) {
 	case tea.KeyEsc:
 		return m.cancelFlow(), nil
 	case tea.KeyEnter:
-		// The transfer itself isn't built yet — see docs/blob-transfer.md.
-		// Saying so is better than a button that silently does nothing.
-		m.flowErr = fmt.Errorf("transfer not wired up yet — manifest is built, nothing sends it")
-		return m, nil
+		if m.send == nil || m.manifest == nil {
+			m.flowErr = fmt.Errorf("no transport wired up")
+			return m, nil
+		}
+		m.flowErr = nil
+		m.mode = peersSending
+		return m, sendBlobCmd(m.send, m.target, m.path, m.manifest.Size)
 	}
 	return m, nil
 }
@@ -252,7 +295,20 @@ func newPathInput() textinput.Model {
 
 // expandPath resolves a leading ~ so a typed path behaves the way it does
 // in a shell. Anything else is left alone.
+//
+// It also undoes what a terminal does to a dragged-in file: dropping a file
+// onto a terminal pastes its path as text, and terminals disagree about
+// spaces — some wrap the whole path in quotes, others backslash-escape.
+// Neither form opens as-is.
 func expandPath(p string) string {
+	p = strings.TrimSpace(p)
+	if len(p) >= 2 {
+		if (p[0] == '\'' && p[len(p)-1] == '\'') || (p[0] == '"' && p[len(p)-1] == '"') {
+			p = p[1 : len(p)-1]
+		}
+	}
+	p = strings.ReplaceAll(p, `\ `, " ")
+
 	if p == "~" || strings.HasPrefix(p, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -353,6 +409,8 @@ func (m peersModel) View() string {
 
 	if m.flowErr != nil {
 		rows = append(rows, "", lipgloss.NewStyle().Foreground(style.Danger).Render(m.flowErr.Error()))
+	} else if m.sendNote != "" {
+		rows = append(rows, "", lipgloss.NewStyle().Foreground(greenColor).Render(m.sendNote))
 	}
 
 	return renderPane("PEERS", strings.Join(rows, "\n"), width, height)
@@ -372,6 +430,12 @@ func (m peersModel) sendView() string {
 	switch m.mode {
 	case peersPickFile:
 		lines = append(lines, muted.Render("file")+" "+m.input.View())
+	case peersSending:
+		lines = append(lines,
+			muted.Render("file")+" "+m.path,
+			"",
+			muted.Render("sending… manifest first, then every chunk"),
+		)
 	case peersBuilding:
 		lines = append(lines,
 			muted.Render("file")+" "+m.path,

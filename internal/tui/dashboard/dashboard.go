@@ -59,13 +59,13 @@ type Dashboard struct {
 // pure worker having no fleet tabs in the old dashboard. lc is nil only if
 // tsnet's local client couldn't be obtained — Peers then shows its error
 // state instead of crashing.
-func New(nodeID, tailscaleIP, dataDir string, tsClient *tailscaleapi.Client, lc *local.Client) Dashboard {
+func New(nodeID, tailscaleIP, dataDir string, tsClient *tailscaleapi.Client, lc *local.Client, send SendFunc) Dashboard {
 	d := Dashboard{
 		dataDir:   dataDir,
 		hasTokens: tsClient != nil,
 		tab:       tabOverview,
 		overview:  newOverviewModel(nodeID, tailscaleIP),
-		peers:     newPeersModel(lc),
+		peers:     newPeersModel(lc, send),
 	}
 	if tsClient != nil {
 		d.tokens = newTokensModel(tsClient)
@@ -149,11 +149,11 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 	// only through the tab-switch below would drop the reschedule whenever
 	// Peers isn't the visible tab, killing the ticker for good.
 	//
-	// manifestBuiltMsg needs the same treatment for a different reason: it
-	// arrives once, whenever hashing finishes, and switching tabs while a
-	// large file hashes would otherwise throw the result away.
+	// manifestBuiltMsg and blobSentMsg need the same treatment for a
+	// different reason: each arrives once, whenever the work finishes, and
+	// switching tabs mid-hash or mid-transfer would throw the result away.
 	switch msg.(type) {
-	case peersRefreshMsg, manifestBuiltMsg:
+	case peersRefreshMsg, manifestBuiltMsg, blobSentMsg:
 		var cmd tea.Cmd
 		d.peers, cmd = d.peers.Update(msg)
 		return d, cmd
