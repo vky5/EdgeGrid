@@ -72,6 +72,19 @@ func (a *Node) Listen(network, addr string) (net.Listener, error) {
 	return a.tsnetServer.Listen(network, addr)
 }
 
+// Dial opens a connection to another tailnet member through tsnet's own
+// userspace stack. This must not be net.Dial: tsnet has no TUN device, so
+// tailnet IPs are not in the kernel routing table and a plain dial leaves
+// via the default route into CGNAT space, where it hangs until TCP times
+// out.
+func (a *Node) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	return a.tsnetServer.Dial(ctx, network, addr)
+}
+
+// dialTimeout bounds reaching a peer. Without it a dial to an unreachable
+// tailnet IP blocks for the kernel's full TCP timeout.
+const dialTimeout = 15 * time.Second
+
 // Build the Node struct and authenticate tsnet
 func New(ctx context.Context, cfg *Config, onProgress func(string)) (*Node, error) {
 	ts := &tsnet.Server{
@@ -152,7 +165,7 @@ func (a *Node) Start(ctx context.Context) error {
 			continue
 		}
 		go func(p discovery.Peer) {
-			if err := dialAndGreet(ctx, p, a.selfHello(discovery.IntentHello)); err != nil {
+			if err := a.dialAndGreet(ctx, p, a.selfHello(discovery.IntentHello)); err != nil {
 				log.Printf("discovery: dial %s: %v", p.Hostname, err)
 			}
 		}(p)
@@ -235,8 +248,9 @@ func (a *Node) SendBlob(ctx context.Context, peer discovery.Peer, path string) e
 		return err
 	}
 
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(peer.IP.String(), strconv.Itoa(discovery.Port)))
+	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
+	conn, err := a.Dial(dialCtx, "tcp", net.JoinHostPort(peer.IP.String(), strconv.Itoa(discovery.Port)))
 	if err != nil {
 		return err
 	}
@@ -254,9 +268,10 @@ func (a *Node) SendBlob(ctx context.Context, peer discovery.Peer, path string) e
 	return blob.Send(conn, path, m)
 }
 
-func dialAndGreet(ctx context.Context, peer discovery.Peer, msg discovery.Hello) error {
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(peer.IP.String(), strconv.Itoa(discovery.Port)))
+func (a *Node) dialAndGreet(ctx context.Context, peer discovery.Peer, msg discovery.Hello) error {
+	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
+	conn, err := a.Dial(dialCtx, "tcp", net.JoinHostPort(peer.IP.String(), strconv.Itoa(discovery.Port)))
 	if err != nil {
 		return err
 	}
