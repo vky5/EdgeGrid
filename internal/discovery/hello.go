@@ -9,6 +9,16 @@ import (
 	"time"
 )
 
+// defines intent based on which, the function after receiving the hello struct will run 
+type IntentType string
+
+const (
+	IntentHello IntentType = "hello"
+
+	// IntentBlob means a manifest follows on this same connection
+	IntentBlob IntentType = "blob"
+)
+
 // maxHelloSize bounds how much a peer can make us allocate for one hello,
 // so a garbled or hostile length prefix can't make ReadHello try to read
 // gigabytes.
@@ -22,9 +32,12 @@ const helloTimeout = 5 * time.Second
 // just enough to prove the exchange works. It's a different kind of fact
 // than WhoIs: WhoIs is Tailscale's control plane, unspoofable; Hello is the
 // peer's own self-report, so NodeID is EdgeGrid's identity
-// (node.Node.NodeID), not a claim about anyone else.
+// (node.Node.NodeID), not a claim about anyone else. Intent is self-reported
+// for the same reason: it decides which handler runs, never whether the peer
+// is allowed to.
 type Hello struct {
-	NodeID string `json:"node_id"`
+	NodeID string     `json:"node_id"`
+	Intent IntentType `json:"intent"`
 }
 
 // WriteHello encodes h as length-prefixed JSON: a 4-byte big-endian length
@@ -78,6 +91,7 @@ func ExchangeAsDialer(conn net.Conn, self Hello, timeout time.Duration) (Hello, 
 
 	if err := WriteHello(conn, self); err != nil {
 		return Hello{}, err
+
 	}
 	return ReadHello(conn)
 }

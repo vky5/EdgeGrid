@@ -120,7 +120,7 @@ func New(ctx context.Context, cfg *Config, onProgress func(string)) (*Node, erro
 }
 
 func (a *Node) Start(ctx context.Context) error {
-	lc, err := a.LocalClient()
+	lc, err := a.LocalClient() // tailscale information
 	if err != nil {
 		return fmt.Errorf("local client: %w", err)
 	}
@@ -129,12 +129,9 @@ func (a *Node) Start(ctx context.Context) error {
 		return fmt.Errorf("discovery listen: %w", err)
 	}
 
-	server := discovery.NewServer(ln, lc, discovery.Hello{NodeID: a.NodeID()})
+	server := discovery.NewServer(ln, lc, a.selfHello(discovery.IntentHello))
 	server.Logf = log.Printf
-	server.OnPeer = func(who *apitype.WhoIsResponse, hello discovery.Hello, conn net.Conn) {
-		// TODO record the peer somewhere (could be store or memory)
-		conn.Close()
-	}
+	server.OnPeer = a.handlePeer
 
 	go func() {
 		if err := server.Serve(ctx); err != nil {
@@ -151,7 +148,7 @@ func (a *Node) Start(ctx context.Context) error {
 			continue
 		}
 		go func(p discovery.Peer) {
-			if err := dialAndGreet(ctx, p, discovery.Hello{NodeID: a.NodeID()}); err != nil {
+			if err := dialAndGreet(ctx, p, a.selfHello(discovery.IntentHello)); err != nil {
 				log.Printf("discovery: dial %s: %v", p.Hostname, err)
 			}
 		}(p)
@@ -160,6 +157,26 @@ func (a *Node) Start(ctx context.Context) error {
 	log.Println("starting EdgeGrid services")
 	<-ctx.Done()
 	return nil
+}
+
+// selfHello is what this node says about itself on a connection
+func (a *Node) selfHello(intent discovery.IntentType) discovery.Hello {
+	return discovery.Hello{NodeID: a.NodeID(), Intent: intent}
+}
+
+// handlePeer routes an identified, greeted connection by what the peer said
+// it wanted. The dispatch lives here rather than in discovery
+func (a *Node) handlePeer(who *apitype.WhoIsResponse, hello discovery.Hello, conn net.Conn) {
+	defer conn.Close() // close TCP connection after anything
+
+	switch hello.Intent {
+	case discovery.IntentBlob:
+		// TODO receive the manifest, then the chunks — not built yet.
+		log.Printf("discovery: %s wants to send a blob; receiving isn't built yet", hello.NodeID)
+	default:
+		// IntentHello, empty (a peer older than the field)
+		// TODO record the peer somewhere (could be store or memory)
+	}
 }
 
 func dialAndGreet(ctx context.Context, peer discovery.Peer, msg discovery.Hello) error {
