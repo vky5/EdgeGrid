@@ -29,7 +29,7 @@ func TestTimeAgo(t *testing.T) {
 // state, not panic — cmd/edgegrid/main.go passes nil here when
 // Node.LocalClient fails, rather than refusing to start the dashboard.
 func TestPeersModelWithNilClientDoesNotPanic(t *testing.T) {
-	m := newPeersModel(nil)
+	m := newPeersModel(nil, nil, nil)
 	m = m.WithSize(80, 20)
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "PEERS") {

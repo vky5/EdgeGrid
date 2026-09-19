@@ -23,6 +23,63 @@ func TestWriteReadHelloRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHelloCarriesIntentOverTheWire(t *testing.T) {
+	var buf bytes.Buffer
+	want := Hello{NodeID: "node-a", Intent: IntentBlob}
+	if err := WriteHello(&buf, want); err != nil {
+		t.Fatalf("WriteHello: %v", err)
+	}
+	got, err := ReadHello(&buf)
+	if err != nil {
+		t.Fatalf("ReadHello: %v", err)
+	}
+	if got.Intent != IntentBlob {
+		t.Errorf("Intent = %q, want %q", got.Intent, IntentBlob)
+	}
+}
+
+// A node built before Intent existed sends a hello without the field. It
+// must still decode, landing on the empty intent — which node.handlePeer
+// treats as a plain hello. This is the whole backward-compatibility claim,
+// so it's pinned against raw bytes rather than a round trip through
+// WriteHello, which would always include the field.
+func TestHelloWithoutIntentFieldDecodesAsEmpty(t *testing.T) {
+	body := []byte(`{"node_id":"old-node"}`)
+	var buf bytes.Buffer
+	var prefix [4]byte
+	binary.BigEndian.PutUint32(prefix[:], uint32(len(body)))
+	buf.Write(prefix[:])
+	buf.Write(body)
+
+	got, err := ReadHello(&buf)
+	if err != nil {
+		t.Fatalf("ReadHello on a pre-Intent hello: %v", err)
+	}
+	if got.NodeID != "old-node" {
+		t.Errorf("NodeID = %q, want old-node", got.NodeID)
+	}
+	if got.Intent != "" {
+		t.Errorf("Intent = %q, want empty", got.Intent)
+	}
+}
+
+// An intent this build has never heard of must decode cleanly rather than
+// erroring — the receiver handles it as a plain hello, it does not reject
+// the connection.
+func TestUnknownIntentDecodesWithoutError(t *testing.T) {
+	var buf bytes.Buffer
+	if err := WriteHello(&buf, Hello{NodeID: "future-node", Intent: "something-new"}); err != nil {
+		t.Fatalf("WriteHello: %v", err)
+	}
+	got, err := ReadHello(&buf)
+	if err != nil {
+		t.Fatalf("ReadHello: %v", err)
+	}
+	if got.Intent != "something-new" {
+		t.Errorf("Intent = %q, want it preserved verbatim", got.Intent)
+	}
+}
+
 func TestReadHelloRejectsOversizedLength(t *testing.T) {
 	var buf bytes.Buffer
 	var prefix [4]byte
