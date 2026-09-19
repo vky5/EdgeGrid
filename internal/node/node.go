@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/edgegrid/edgegrid/internal/blob"
 	"github.com/edgegrid/edgegrid/internal/discovery"
 	"tailscale.com/client/local"
 	"tailscale.com/client/tailscale/apitype"
@@ -143,6 +144,8 @@ func (a *Node) Start(ctx context.Context) error {
 	if err != nil {
 		log.Printf("discovery: snapshot: %v", err)
 	}
+
+	// This greeting is not periodic and it is for inital handshake and record keeping
 	for _, p := range peers {
 		if !p.Online {
 			continue
@@ -177,6 +180,41 @@ func (a *Node) handlePeer(who *apitype.WhoIsResponse, hello discovery.Hello, con
 		// IntentHello, empty (a peer older than the field)
 		// TODO record the peer somewhere (could be store or memory)
 	}
+}
+
+// sendBlobMediaType labels a file picked by a human — blob never
+// interprets it.
+const sendBlobMediaType = "application/octet-stream"
+
+// blobSendTimeout bounds a whole transfer. The hello exchange clears its
+// own deadline on return, so without this the connection has none.
+const blobSendTimeout = 30 * time.Minute
+
+// SendBlob dials peer with IntentBlob and streams path to it: manifest
+// first, then every chunk in order.
+func (a *Node) SendBlob(ctx context.Context, peer discovery.Peer, path string) error {
+	m, err := blob.BuildManifest(path, sendBlobMediaType, 0)
+	if err != nil {
+		return err
+	}
+
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(peer.IP.String(), strconv.Itoa(discovery.Port)))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if _, err := discovery.ExchangeAsDialer(conn, a.selfHello(discovery.IntentBlob), 10*time.Second); err != nil {
+		return err
+	}
+
+	if err := conn.SetDeadline(time.Now().Add(blobSendTimeout)); err != nil {
+		return err
+	}
+
+	log.Printf("blob: sending %s (%d bytes, %d chunks) to %s", path, m.Size, len(m.Chunks), peer.Hostname)
+	return blob.Send(conn, path, m)
 }
 
 func dialAndGreet(ctx context.Context, peer discovery.Peer, msg discovery.Hello) error {
