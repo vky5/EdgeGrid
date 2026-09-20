@@ -22,8 +22,9 @@
 //	  │                       intent=hello:  │   close
 //	  │                       intent=blob:   │   keep reading ↓
 //	  │                                      │
-//	  │── manifest ─────────────────────────>│
+//	  │── manifest ─────────────────────────>│ Validate(), ACL, size cap
 //	  │   (file size, chunk hashes)          │
+//	  │<──────────── verdict accept/refuse ──│
 //	  │                                      │
 //	  │── chunk 0 ──────────────────────────>│
 //	  │── chunk 1 ──────────────────────────>│

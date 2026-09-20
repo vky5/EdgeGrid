@@ -45,6 +45,15 @@ const (
 // declared here so the TUI doesn't import node.
 type SendFunc func(ctx context.Context, peer discovery.Peer, path string) error
 
+// TrustFuncs lets the Peers tab read and change which peers may send this
+// node files. node.Node.TrustedPeers and node.Node.SetTrust satisfy them —
+// declared here so the TUI doesn't import node. Keys are Tailscale StableIDs,
+// which is what discovery.Peer.ID already holds.
+type TrustFuncs struct {
+	List func() map[string]bool // StableID -> allowed; peers with no entry are absent
+	Set  func(stableID, hostname string, allow bool) error
+}
+
 // Transfer is one in-flight transfer, in either direction. Mirrors
 // node.Transfer — redeclared so dashboard doesn't import node.
 type Transfer struct {
@@ -89,6 +98,8 @@ type peersModel struct {
 	manifest  *blob.Manifest
 	flowErr   error
 	send      SendFunc
+	trust     TrustFuncs
+	trusted   map[string]bool
 	transfers TransfersFunc
 	active    []Transfer
 	sendNote  string
@@ -149,6 +160,9 @@ func buildManifestCmd(path string) tea.Cmd {
 }
 
 func (m peersModel) refresh() peersModel {
+	if m.trust.List != nil {
+		m.trusted = m.trust.List()
+	}
 	if m.lc == nil {
 		return m
 	}
@@ -177,7 +191,7 @@ func (m peersModel) helpText() string {
 	case peersSending:
 		return "sending…"
 	default:
-		return "↑/↓ select   s send a file   Tab switch tabs   /logs   q quit"
+		return "↑/↓ select   s send a file   a allow/block them sending to you   Tab switch tabs   q quit"
 	}
 }
 
@@ -250,6 +264,30 @@ func (m peersModel) updateBrowsing(key tea.KeyMsg) (peersModel, tea.Cmd) {
 	case "down", "j":
 		if m.cursor < len(m.peers)-1 {
 			m.cursor++
+		}
+	case "a":
+		if len(m.peers) == 0 || m.cursor >= len(m.peers) {
+			return m, nil
+		}
+		if m.trust.Set == nil {
+			m.flowErr = fmt.Errorf("trust isn't wired up")
+			return m, nil
+		}
+		p := m.peers[m.cursor]
+		// No entry or blocked becomes allowed; allowed becomes blocked.
+		allow := !m.trusted[p.ID]
+		if err := m.trust.Set(p.ID, peerLabel(p), allow); err != nil {
+			m.flowErr = err
+			return m, nil
+		}
+		m.flowErr = nil
+		if m.trust.List != nil {
+			m.trusted = m.trust.List()
+		}
+		if allow {
+			m.sendNote = peerLabel(p) + " may now send you files"
+		} else {
+			m.sendNote = peerLabel(p) + " is blocked from sending you files"
 		}
 	case "s", "enter":
 		if len(m.peers) == 0 || m.cursor >= len(m.peers) {
@@ -450,7 +488,7 @@ func (m peersModel) View() string {
 		if p.IP.IsValid() {
 			ip = p.IP.String()
 		}
-		row := fmt.Sprintf("%s  %-20s %-16s%s", statusPill, peerLabel(p), ip, seen)
+		row := fmt.Sprintf("%s %s %-20s %-16s%s", statusPill, m.trustMarker(p.ID), peerLabel(p), ip, seen)
 		if i == m.cursor {
 			rows = append(rows, style.Selected.Render("▸ ")+row)
 		} else {
@@ -636,4 +674,18 @@ func checkSinglePath(p string) error {
 		return multi
 	}
 	return nil
+}
+
+// trustMarker shows whether a peer may send this node files: allowed,
+// blocked, or no decision recorded (the profile's default applies).
+func (m peersModel) trustMarker(stableID string) string {
+	allowed, decided := m.trusted[stableID]
+	switch {
+	case !decided:
+		return lipgloss.NewStyle().Foreground(style.Muted).Render("·")
+	case allowed:
+		return lipgloss.NewStyle().Foreground(greenColor).Render("✓")
+	default:
+		return lipgloss.NewStyle().Foreground(style.Danger).Render("✗")
+	}
 }

@@ -7,9 +7,7 @@ import (
 	"io"
 )
 
-
-  const maxManifestSize = 64 << 20 // 64 MiB
-
+const maxManifestSize = 64 << 20 // 64 MiB
 
 // create the bytes in [length][body] format for the manifest
 func WriteManifest(w io.Writer, m *Manifest) error {
@@ -28,54 +26,52 @@ func WriteManifest(w io.Writer, m *Manifest) error {
 	return nil
 }
 
-
-
 // ReadManifest reads the bytes and generate the manifest from those
 func ReadManifest(r io.Reader) (*Manifest, error) {
-    // io.Reader is an interface implemented by types that provide a stream
-    // of bytes, such as *os.File and net.Conn.
-    
-    // Return a pointer to the Manifest we construct below.
-    var prefix [4]byte // 4-byte array: [00][00][00][00]
+	// io.Reader is an interface implemented by types that provide a stream
+	// of bytes, such as *os.File and net.Conn.
 
-    /*
-    Read() vs ReadFull()
+	// Return a pointer to the Manifest we construct below.
+	var prefix [4]byte // 4-byte array: [00][00][00][00]
 
-    Read() may return fewer bytes than requested. With TCP, for example,
-    we might ask for 4 bytes but receive only 2 in one Read() call.
+	/*
+	   Read() vs ReadFull()
 
-    ReadFull() keeps reading until the buffer is completely filled
-    (4 bytes here) or an error occurs.
-    */
-    if _, err := io.ReadFull(r, prefix[:]); err != nil {
-        return nil, fmt.Errorf("blob: manifest length %w", err)
-    }
+	   Read() may return fewer bytes than requested. With TCP, for example,
+	   we might ask for 4 bytes but receive only 2 in one Read() call.
 
-    // Interpret the 4 bytes in prefix as a big-endian uint32.
-    n := binary.BigEndian.Uint32(prefix[:])
+	   ReadFull() keeps reading until the buffer is completely filled
+	   (4 bytes here) or an error occurs.
+	*/
+	if _, err := io.ReadFull(r, prefix[:]); err != nil {
+		return nil, fmt.Errorf("blob: manifest length %w", err)
+	}
 
-    if n > maxManifestSize {
-        return nil, fmt.Errorf(
-            "blob: manifest length %d exceeds max %d",
-            n,
-            maxManifestSize,
-        )
-    }
+	// Interpret the 4 bytes in prefix as a big-endian uint32.
+	n := binary.BigEndian.Uint32(prefix[:])
 
-    // Allocate a byte slice containing n bytes.
-    body := make([]byte, n)
+	if n > maxManifestSize {
+		return nil, fmt.Errorf(
+			"blob: manifest length %d exceeds max %d",
+			n,
+			maxManifestSize,
+		)
+	}
 
-    // Read exactly n bytes into body.
-    if _, err := io.ReadFull(r, body); err != nil {
-        return nil, fmt.Errorf("blob: read manifest body: %w", err)
-    }
+	// Allocate a byte slice containing n bytes.
+	body := make([]byte, n)
 
-    var m Manifest
+	// Read exactly n bytes into body.
+	if _, err := io.ReadFull(r, body); err != nil {
+		return nil, fmt.Errorf("blob: read manifest body: %w", err)
+	}
 
-    // Decode the JSON bytes in body into the Manifest struct.
-    if err := json.Unmarshal(body, &m); err != nil {
-        return nil, fmt.Errorf("blob: decode manifest: %w", err)
-    }
+	var m Manifest
 
-    return &m, nil
+	// Decode the JSON bytes in body into the Manifest struct.
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, fmt.Errorf("blob: decode manifest: %w", err)
+	}
+
+	return &m, nil
 }

@@ -77,10 +77,23 @@ func WriteChunk(w io.Writer, index int, data []byte) error {
 	return nil
 }
 
-// Send writes the manifest to w, then every chunk of path in order.
-// onProgress may be nil.
-func Send(w io.Writer, path string, m *Manifest, onProgress ProgressFunc) error {
-	if err := WriteManifest(w, m); err != nil { // manifest is sent first over io writer
+// Send writes the manifest, waits for the receiver's verdict, then writes
+// every chunk of path in order. A receiver that declines yields a
+// *RefusedError before any chunk moves. onProgress may be nil.
+//
+// rw is one handle onto two one-way pipes, and the two sides take turns:
+//
+//	sender                                      receiver
+//	WriteManifest ──── outgoing pipe ────────>  ReadManifest
+//	ReadVerdict   <─── incoming pipe ─────────  WriteVerdict   (parks here)
+//	WriteChunk x N ─── outgoing pipe ────────>  ReadChunk x N
+//
+// Read more: docs/reading/two-pipes.md, and the notes at the bottom of this file.
+func Send(rw io.ReadWriter, path string, m *Manifest, onProgress ProgressFunc) error {
+	if err := WriteManifest(rw, m); err != nil { // manifest is sent first
+		return err
+	}
+	if err := ReadVerdict(rw); err != nil {
 		return err
 	}
 
@@ -100,7 +113,7 @@ func Send(w io.Writer, path string, m *Manifest, onProgress ProgressFunc) error 
 		if _, err := io.ReadFull(f, buf); err != nil {
 			return fmt.Errorf("blob: read chunk %d from %s: %w", c.Index, path, err)
 		}
-		if err := WriteChunk(w, c.Index, buf); err != nil {
+		if err := WriteChunk(rw, c.Index, buf); err != nil {
 			return err
 		}
 		sent += int64(c.Length)
@@ -112,11 +125,34 @@ func Send(w io.Writer, path string, m *Manifest, onProgress ProgressFunc) error 
 	return nil
 }
 
-// Receive reads the manifest from r, then every chunk it promises, verifying
-// each one before it touches disk. onProgress may be nil.
-func Receive(r io.Reader, destPath string, onProgress ProgressFunc) (*Manifest, error) {
-	m, err := ReadManifest(r)
+// AcceptFunc is a receiver's policy. It sees the manifest a peer is offering
+// and returns where to write the blob, or an error to refuse. The error's text
+// is sent to the peer as the reason, so it must be safe for them to see.
+type AcceptFunc func(m *Manifest) (destPath string, err error)
+
+// Receive reads the manifest, checks it is self-consistent, asks accept
+// whether to take it, answers the sender with a verdict, then reads every
+// chunk — verifying each one before it touches disk. onProgress may be nil.
+// It is the mirror image of Send: see the diagram there.
+func Receive(rw io.ReadWriter, accept AcceptFunc, onProgress ProgressFunc) (*Manifest, error) {
+	m, err := ReadManifest(rw)
 	if err != nil {
+		return nil, err
+	}
+
+	// Refuse before allocating anything: Size and Offset drive Truncate and
+	// WriteAt below, so a manifest that lies about them is rejected here.
+	if err := m.Validate(); err != nil {
+		_ = WriteVerdict(rw, err)
+		return nil, err
+	}
+
+	destPath, err := accept(m)
+	if err != nil {
+		_ = WriteVerdict(rw, err)
+		return nil, fmt.Errorf("blob: refused: %w", err)
+	}
+	if err := WriteVerdict(rw, nil); err != nil {
 		return nil, err
 	}
 
@@ -125,7 +161,7 @@ func Receive(r io.Reader, destPath string, onProgress ProgressFunc) (*Manifest, 
 		want[c.Index] = c
 	}
 
-	f, err := os.Create(destPath)
+	f, err := os.OpenFile(destPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("blob: create %s: %w", destPath, err)
 	}
@@ -145,7 +181,7 @@ func Receive(r io.Reader, destPath string, onProgress ProgressFunc) (*Manifest, 
 
 	// Read exactly as many frames as the manifest promised, no more.
 	for i := 0; i < len(m.Chunks); i++ {
-		idx, data, err := ReadChunk(r)
+		idx, data, err := ReadChunk(rw)
 		if err != nil {
 			return nil, err
 		}
@@ -210,86 +246,37 @@ func verifyWhole(f *os.File, want string) error {
 }
 
 // ---------------------------------------------------------------------------
-// How this stays bounded: framing, io.ReadFull, and TCP flow control
+// Notes: how the bytes move
 //
-// A 4 TB file never sits anywhere in memory, and never "sits in the TCP
-// stream" either. Three separate mechanisms make that true.
+// A 4 TB file never sits in memory, and never "sits in the TCP stream". Four
+// ideas make that true. Each has a full write-up, with diagrams, under
+// docs/reading/ — start at docs/reading/README.md.
 //
-// 1. Framing — length prefixes make a byte stream parseable
+// 1. Two pipes — docs/reading/two-pipes.md
+//    A connection is two independent one-way byte streams. net.Conn is one
+//    handle onto both, and io.ReadWriter is just the interface saying "has
+//    Read and Write" — which is why Send and Receive run unchanged over a
+//    real tailnet connection and over net.Pipe() in tests. The sender's wait
+//    for the verdict is nothing special: ReadVerdict is an io.ReadFull on a
+//    pipe with nothing in it yet, and the goroutine parks until bytes
+//    arrive, the connection closes, or the deadline passes.
 //
-// TCP delivers an ordered stream of bytes with no message boundaries. Write
-// 4 MiB in one call and the receiver may see it as 900 reads of 4 KiB; write
-// three small messages and they may arrive coalesced into one read. So the
-// receiver can only find message boundaries if the messages carry their own
-// lengths. That is what every frame here does:
+// 2. Framing — docs/reading/framing.md
+//    TCP has no message boundaries, so every frame carries its own length,
+//    and io.ReadFull reads exactly that many bytes and never more. That is
+//    what keeps the cursor aligned across ReadManifest, ReadVerdict and
+//    every ReadChunk.
 //
-//	manifest:  [4-byte length][JSON body]
-//	chunk:     [4-byte index][4-byte length][raw bytes]   (repeated)
+// 3. Flow control — docs/reading/flow-control.md
+//    Send reads one chunk from disk at a time, and Write blocks when the
+//    receiver has no room, so a slow receiver slows the sender with nothing
+//    written to make it so. Live memory is about one chunk buffer per end.
 //
-// The order is fixed — manifest first, then exactly len(m.Chunks) chunk
-// frames — so nothing needs a type tag. Position in the stream is the type.
+// 4. The receive window — docs/reading/receive-window.md
+//    The number the receiver's stack advertises, which is what actually makes
+//    Write block. Owned by the receiver, never the sender.
 //
-// 2. io.ReadFull — reads exactly N bytes, never more
-//
-// io.Reader.Read is allowed to return fewer bytes than asked for. ReadFull
-// loops until the buffer is exactly full, and critically it never reads
-// past it. That is what keeps the cursor aligned across calls:
-//
-//	ReadManifest:  read 4 bytes  -> N          read N bytes  -> JSON
-//	               (cursor is now exactly on the first chunk header)
-//	ReadChunk:     read 8 bytes  -> idx, len   read len bytes -> data
-//	               (cursor is now exactly on the next chunk header)
-//
-// Each call consumes its own frame and stops. No delimiters, no lookahead,
-// no scanning for markers.
-//
-// Note: if the connection is ever wrapped in a bufio.Reader, that same
-// reader must be threaded through every call. bufio reads ahead into its
-// own buffer, so mixing a wrapped reader with the raw conn loses whatever
-// is sitting in the buffer and desyncs the stream.
-//
-// 3. TCP flow control — the sender blocks when the receiver is slow
-//
-// The receiver advertises a window: how many bytes it is willing to accept
-// right now. As Receive's loop hashes and writes a chunk, it is not
-// draining the socket, so that window shrinks. When it reaches zero, the
-// sender's w.Write blocks inside Send. The remaining data stays on the
-// sender's disk, read one chunk at a time by io.ReadFull(f, buf).
-//
-// Nobody wrote that backpressure — it falls out of the kernel refusing to
-// accept bytes the receiver has no room for. So at any instant:
-//
-//	sender:     one chunk buffer (4 MiB, reused) + socket send buffer
-//	in flight:  about one receive window
-//	receiver:   one chunk buffer (4 MiB)         + socket recv buffer
-//
-// Roughly 10 MB of live memory, whether the file is 40 MB or 4 TB.
-//
-// Worked example — a 10 GiB file at the 4 MiB default chunk size:
-//
-//	BuildManifest reads it once, producing 2560 ChunkInfo entries
-//	(~150 bytes each, so a ~380 KB manifest). No file data is retained.
-//
-//	Send writes the manifest, reopens the file, then loops 2560 times:
-//	    read 4 MiB from disk into buf (reused every iteration)
-//	    write [index][length][4 MiB] to the socket, blocking if the
-//	    receiver is behind
-//
-//	Receive reads the manifest, learns to expect exactly 2560 frames, then
-//	loops 2560 times:
-//	    ReadChunk fills a fresh 4 MiB buffer
-//	    sha256 it and compare against m.Chunks[i].SHA256
-//	    WriteAt(data, c.Offset) — absolute position, so order never matters
-//
-//	Finally verifyWhole re-reads the assembled file. Per-chunk hashes prove
-//	each piece arrived intact; only this catches a piece written to the
-//	wrong place.
-//
-// Why chunk at all, given TCP already segments into ~1400-byte packets:
-// chunks are not packets and buy nothing at the network layer. They buy
-// verification granularity (which 4 MiB is bad, not merely "something is"),
-// resume (restart at chunk 87, not byte 0), cheap refetch (re-request
-// 4 MiB, not 10 GiB), and — once a request protocol exists — the ability to
-// fetch indices out of order or from several peers at once, which WriteAt
-// already supports.
+// The one rule to carry into any new message: two pipes rule out byte-level
+// collisions, not deadlock. A message both sides could send at once needs an
+// explicit order or its own reader goroutine — see two-pipes.md.
 // ---------------------------------------------------------------------------

@@ -73,6 +73,14 @@ func New(nodeID, tailscaleIP, dataDir string, tsClient *tailscaleapi.Client, lc 
 	return d
 }
 
+// WithTrust connects the Peers tab to this node's inbound ACL. Separate from
+// New so the constructor doesn't grow another argument for every capability.
+func (d Dashboard) WithTrust(t TrustFuncs) Dashboard {
+	d.peers.trust = t
+	d.peers = d.peers.refresh()
+	return d
+}
+
 func (d *Dashboard) resize() {
 	h := max(d.height-chromeLines, 3)
 	d.overview.width = d.width

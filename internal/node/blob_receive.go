@@ -1,0 +1,112 @@
+package node
+
+import (
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/edgegrid/edgegrid/internal/blob"
+	"github.com/edgegrid/edgegrid/internal/discovery"
+	"tailscale.com/client/tailscale/apitype"
+)
+
+// blobReceiveTimeout bounds a whole inbound transfer. The hello exchange
+// clears its own deadline on return, so without this a peer could claim
+// IntentBlob and then hold the connection open forever.
+const blobReceiveTimeout = 30 * time.Minute
+
+//   takes an inbound blob into the profile's inbox, if this node's
+// policy allows it. Every decision — ACL, size cap, where the file goes — is
+// made inside the accept callback so that a refusal always reaches the sender
+// as a verdict instead of a hung-up connection.
+func (a *Node) receiveBlob(who *apitype.WhoIsResponse, hello discovery.Hello, conn net.Conn) {
+	if err := conn.SetDeadline(time.Now().Add(blobReceiveTimeout)); err != nil {
+		log.Printf("blob: set deadline: %v", err)
+		return
+	}
+
+	// Identity for the ACL is what Tailscale attributes, never
+	// hello.NodeID that one is the peer's own claim.
+	var stableID, label string
+	if who != nil && who.Node != nil {
+		stableID = string(who.Node.StableID)
+		label = who.Node.ComputedName
+	}
+	if label == "" {
+		label = hello.NodeID
+	}
+
+	dir := filepath.Join(a.cfg.DataDir, "inbox")
+	var dest string
+	
+	// ? This is the callback function responsible for checking the ACL
+	accept := func(m *blob.Manifest) (string, error) {
+		if err := a.checkAccept(stableID, label, m); err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			log.Printf("blob: inbox %s: %v", dir, err)
+			return "", errors.New("this node could not store the file")
+		}
+		// The filename is the peer's, so it only ever becomes a single
+		// sanitised path component — see blob.SafeName.
+		p, err := reserveInboxFile(dir, blob.SafeName(m.Name))
+		if err != nil {
+			log.Printf("blob: reserve in %s: %v", dir, err)
+			return "", errors.New("this node could not store the file")
+		}
+		dest = p
+		return p, nil
+	}
+
+	log.Printf("blob: inbound connection from %s", label)
+	t := a.transfers.start(Inbound, label)
+	m, err := blob.Receive(conn, accept, t.progressFunc())
+	a.transfers.finish(t, err)
+	if err != nil {
+		log.Printf("blob: receive from %s failed: %v", label, err)
+		if dest != "" {
+			if rmErr := os.Remove(dest); rmErr != nil {
+				log.Printf("blob: could not remove partial %s: %v", dest, rmErr)
+			}
+		}
+		return
+	}
+
+	log.Printf("blob: received %q, %d bytes in %d chunks from %s -> %s (sha256 %s)",
+		m.Name, m.Size, len(m.Chunks), label, dest, m.SHA256)
+}
+
+// reserveInboxFile creates an empty file in dir named after name, adding
+// " (1)", " (2)" and so on if it exists, and returns its path. O_EXCL makes
+// the create the reservation, so two transfers landing the same name at once
+// can't pick the same path.
+func reserveInboxFile(dir, name string) (string, error) {
+	if name == "" {
+		name = "blob"
+	}
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+
+	for n := 0; n < 1000; n++ {
+		candidate := name
+		if n > 0 {
+			candidate = fmt.Sprintf("%s (%d)%s", stem, n, ext)
+		}
+		path := filepath.Join(dir, candidate)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			f.Close()
+			return path, nil
+		}
+		if !os.IsExist(err) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("too many files named %q in %s", name, dir)
+}
