@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -352,7 +353,12 @@ func expandPath(p string) string {
 			p = p[1 : len(p)-1]
 		}
 	}
-	p = strings.ReplaceAll(p, `\ `, " ")
+	// Backslash-escaped spaces are a Unix shell convention. On Windows the
+	// backslash is the path separator, so unescaping there would corrupt
+	// perfectly good paths.
+	if runtime.GOOS != "windows" {
+		p = strings.ReplaceAll(p, `\ `, " ")
+	}
 
 	if p == "~" || strings.HasPrefix(p, "~/") {
 		home, err := os.UserHomeDir()
@@ -610,16 +616,23 @@ func truncate(s string, n int) string {
 func checkSinglePath(p string) error {
 	multi := fmt.Errorf("looks like more than one file was dropped — ctrl+u to clear, then drop one")
 
+	sep := string(os.PathSeparator)
+
 	// Two copies of the home dir means a second path got pasted onto the
 	// end of the first. Counting matters: a legitimate path can contain the
 	// home dir once (/mnt/backup/home/user/...), never twice.
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		if strings.Count(p, home+"/") > 1 {
+		if strings.Count(p, home+sep) > 1 {
 			return multi
 		}
 	}
-	// Space-separated drops: "/a/b.mp4 /c/d.mkv".
-	if strings.Contains(strings.TrimPrefix(p, "/"), " /") {
+
+	// Space-separated drops: "/a/b.mp4 /c/d.mkv", or on Windows
+	// "C:\a.mp4 C:\b.mkv".
+	if strings.Contains(strings.TrimPrefix(p, sep), " "+sep) {
+		return multi
+	}
+	if runtime.GOOS == "windows" && strings.Count(p, ":"+sep) > 1 {
 		return multi
 	}
 	return nil

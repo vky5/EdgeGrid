@@ -40,7 +40,8 @@ cmd/edgegrid/            entry point — up | dashboard | logs | profile
 internal/node/           tsnet lifecycle, config, identity, profiles, token files
 internal/tailscaleapi/   OAuth client: mint/revoke tailnet auth keys
 internal/discovery/      membership snapshot, listener, hello exchange over the tailnet
-internal/blob/           chunked, hashed transfer of large opaque payloads (in progress)
+internal/sysstat/        CPU/memory load, one build-tagged file per OS
+internal/blob/           chunked, hashed transfer of large opaque payloads
 internal/tui/            welcome screen, boot progress, dashboard (bubbletea)
 internal/planner/        (stub) turns a request into a plan — not yet implemented
 internal/executor/       (stub) does the work a plan describes — not yet implemented
@@ -51,10 +52,10 @@ declared intent, no code.
 
 `internal/discovery` is built and merged: nodes find each other and exchange
 identity on connect ([`peer-discovery.md`](peer-discovery.md)).
-`internal/blob` is partially built — manifest generation and manifest wire
-encoding exist, and the dashboard can pick a peer and hash a file into a
-manifest, but nothing sends one yet
-([`blob-transfer.md`](blob-transfer.md)). It sits deliberately *beside*
+`internal/blob` transfers files between nodes today: manifest, chunk
+framing, verified receive, and live progress in both directions
+([`blob-transfer.md`](blob-transfer.md)). Resume, retry and a request
+protocol are not built. It sits deliberately *beside*
 `executor` rather than inside it: `executor` knows about files on disk,
 `blob` only knows how to move bytes, so anything else that later needs to
 move a large payload doesn't have to pretend to be an artifact first.
@@ -160,6 +161,25 @@ that no longer exist.
 | `ts_api_tag` | Settings form | `tailscaleapi.CreateKey` | No — ACL-relevant, not secret |
 | `api_port`, `require_approval` | Settings form | nothing yet | No — reserved, currently inert |
 | Minted auth key | `tailscaleapi.CreateKey` | shown once in Tokens tab, never written to disk | Grants tailnet join until used or revoked |
+
+## Platform support
+
+Linux, macOS and Windows all build and run. Almost nothing in the codebase
+is OS-specific — `tsnet`, the blob transfer, and the TUI are portable as
+written — with two exceptions worth knowing about:
+
+- **Machine stats** (`internal/sysstat`) are read differently per OS, so
+  each has its own build-tagged file. Linux reads `/proc/stat` and
+  `/proc/meminfo`. Windows calls `GetSystemTimes` and `GlobalMemoryStatusEx`
+  from kernel32. macOS has no per-CPU tick counter reachable without cgo, so
+  CPU load there is derived from the load average — an approximation that
+  counts uninterruptible-wait threads as busy and lags a spike by up to a
+  minute; memory combines `hw.memsize` with `vm_stat`'s page counts.
+- **File permissions are not enforced on Windows.** `node.SaveToken` writes
+  `0600`, which is a no-op there, so the files in the credentials table
+  above — including `ts_api_client_secret`, which can mint tailnet join keys
+  — rely on the parent directory's inherited ACLs rather than on the mode
+  EdgeGrid asks for.
 
 ## Alternatives considered
 
