@@ -1,15 +1,13 @@
 package dashboard
 
 import (
-	"bufio"
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/edgegrid/edgegrid/internal/sysstat"
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
@@ -46,8 +44,8 @@ func (m overviewModel) Update(msg tea.Msg) (overviewModel, tea.Cmd) {
 }
 
 func (m overviewModel) refreshLocal() overviewModel {
-	m.cpu = getLocalCPUUsage()
-	m.mem = getLocalMemUsage()
+	m.cpu = sysstat.CPUUsage()
+	m.mem = sysstat.MemUsage()
 	return m
 }
 
@@ -201,69 +199,4 @@ func (m overviewModel) View() string {
 		help,
 	)
 	return lipgloss.NewStyle().MaxHeight(height).MaxWidth(width).Render(out)
-}
-
-var (
-	overviewPrevIdle, overviewPrevTotal uint64
-)
-
-func getLocalCPUUsage() float64 {
-	f, err := os.Open("/proc/stat")
-	if err != nil {
-		return 0
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	if scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) >= 5 && fields[0] == "cpu" {
-			var total, idle uint64
-			for i := 1; i < len(fields); i++ {
-				v, _ := strconv.ParseUint(fields[i], 10, 64)
-				total += v
-				if i == 4 {
-					idle = v
-				}
-			}
-			diffIdle := idle - overviewPrevIdle
-			diffTotal := total - overviewPrevTotal
-			overviewPrevIdle = idle
-			overviewPrevTotal = total
-			if diffTotal > 0 {
-				return 1.0 - (float64(diffIdle) / float64(diffTotal))
-			}
-		}
-	}
-	return 0
-}
-
-func getLocalMemUsage() float64 {
-	f, err := os.Open("/proc/meminfo")
-	if err != nil {
-		return 0
-	}
-	defer f.Close()
-
-	var total, available float64
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "MemTotal:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				total, _ = strconv.ParseFloat(fields[1], 64)
-			}
-		}
-		if strings.HasPrefix(line, "MemAvailable:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				available, _ = strconv.ParseFloat(fields[1], 64)
-			}
-		}
-	}
-	if total > 0 {
-		return (total - available) / total
-	}
-	return 0
 }
