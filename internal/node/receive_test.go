@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/tailcfg"
@@ -94,5 +95,60 @@ func TestHandlePeerIgnoresTheClaimedNodeID(t *testing.T) {
 	var refused *blob.RefusedError
 	if !errors.As(err, &refused) {
 		t.Fatalf("Send error = %v, want a refusal: the claimed NodeID was trusted", err)
+	}
+}
+
+// SendBlob is handed the manifest the TUI already built so the file isn't
+// hashed a second time — but only while that manifest still describes the file.
+func TestManifestForReusesAValidManifestAndRebuildsAStaleOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "f.bin")
+	if err := os.WriteFile(path, []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	built, err := blob.BuildManifest(path, "application/octet-stream", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := manifestFor(path, built)
+	if err != nil || got != built {
+		t.Errorf("a manifest matching the file should be reused as-is (same pointer); got %p err=%v", got, err)
+	}
+
+	// The file grew after it was hashed: the old manifest is now wrong.
+	if err := os.WriteFile(path, []byte("0123456789 and more"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := manifestFor(path, built)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh == built || fresh.Size != int64(len("0123456789 and more")) {
+		t.Errorf("a stale manifest was reused: size=%d", fresh.Size)
+	}
+
+	// No manifest at all still works: it builds one.
+	if m, err := manifestFor(path, nil); err != nil || m == nil {
+		t.Errorf("manifestFor(nil) = %v, %v", m, err)
+	}
+}
+
+func TestTransferSnapshotCarriesVerifying(t *testing.T) {
+	var r registry
+	tr := r.start(Inbound, "peer")
+	tr.progressFunc()(blob.Progress{ChunksDone: 3, ChunksTotal: 3, BytesDone: 30, BytesTotal: 30, Verifying: true})
+
+	got := r.snapshot()
+	if len(got) != 1 || !got[0].Progress.Verifying {
+		t.Errorf("snapshot = %+v, want Verifying carried through", got)
+	}
+}
+
+func TestRateMBps(t *testing.T) {
+	if got := rateMBps(10<<20, 2*time.Second); got != 5 {
+		t.Errorf("rateMBps = %v, want 5", got)
+	}
+	if got := rateMBps(1<<20, 0); got != 0 {
+		t.Errorf("zero duration should give 0, got %v", got)
 	}
 }

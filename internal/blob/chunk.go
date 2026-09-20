@@ -20,6 +20,12 @@ type Progress struct {
 	ChunksTotal int
 	BytesDone   int64
 	BytesTotal  int64
+
+	// Verifying is set once every chunk has arrived and the receiver is
+	// flushing to disk and re-reading the file to check its whole-blob hash.
+	// That takes real time on a large file, during which a progress bar at
+	// 100% looks like a hang.
+	Verifying bool
 }
 
 // Frac returns completion in 0..1, or 0 for an empty blob.
@@ -212,6 +218,12 @@ func Receive(rw io.ReadWriter, accept AcceptFunc, onProgress ProgressFunc) (*Man
 			BytesDone: got, BytesTotal: m.Size,
 		})
 	}
+
+	onProgress.report(Progress{
+		ChunksDone: len(m.Chunks), ChunksTotal: len(m.Chunks),
+		BytesDone: got, BytesTotal: m.Size,
+		Verifying: true,
+	})
 
 	if err := f.Sync(); err != nil {
 		return nil, fmt.Errorf("blob: sync %s: %w", destPath, err)
