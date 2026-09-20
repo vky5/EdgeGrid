@@ -34,7 +34,13 @@ func RunBoot(ctx context.Context, cfg *node.Config) (*node.Node, func() error, e
 	events := make(chan bootEvent, 64)
 
 	go func() {
-		defer close(events)
+		// events is deliberately never closed. onProgress is handed to
+		// tsnet as UserLogf and outlives this function: when the node comes
+		// up, tsnet's printAuthURLLoop logs one last "AuthLoop: state is
+		// Running; done" from its own goroutine. A send on a closed channel
+		// panics even inside a select with a default, so closing here raced
+		// that line and crashed the process. The final bootEvent{done: true}
+		// below is what ends the boot screen, not a close.
 		onProgress := func(line string) {
 			// Non-blocking: tsnet calls this from its own goroutines and must
 			// never be stalled by a slow or finished UI.
