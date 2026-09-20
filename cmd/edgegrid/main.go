@@ -197,7 +197,7 @@ func runDashboard() {
 			})
 		}
 		return out
-	})
+	}).WithTrust(dashboard.TrustFuncs{List: nodeAgent.TrustedPeers, Set: nodeAgent.SetTrust})
 
 	p := tea.NewProgram(a, tea.WithAltScreen())
 	finalModel, err := p.Run()

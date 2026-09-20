@@ -274,3 +274,37 @@ func TestMultipleDroppedFilesAreRejected(t *testing.T) {
 		t.Errorf("legitimate path containing /home/ rejected: %v", err)
 	}
 }
+
+// "a" flips a peer between allowed and blocked, keyed on the peer's ID —
+// which is the Tailscale StableID, not anything the peer says about itself.
+func TestTrustToggleAllowsThenBlocks(t *testing.T) {
+	store := map[string]bool{}
+	m := modelWith(onlinePeer("stable-1", "alpha"))
+	m.trust = TrustFuncs{
+		List: func() map[string]bool { return store },
+		Set: func(id, _ string, allow bool) error {
+			store[id] = allow
+			return nil
+		},
+	}
+
+	m, _ = m.updateBrowsing(key("a"))
+	if !store["stable-1"] {
+		t.Fatal("first press should allow an undecided peer")
+	}
+	if !strings.Contains(m.sendNote, "may now send") {
+		t.Errorf("note = %q", m.sendNote)
+	}
+
+	m, _ = m.updateBrowsing(key("a"))
+	if allowed, decided := store["stable-1"]; !decided || allowed {
+		t.Errorf("second press should block, store = %v", store)
+	}
+
+	if !strings.Contains(stripANSI(m.trustMarker("stable-1")), "✗") {
+		t.Error("blocked peer should show ✗")
+	}
+	if !strings.Contains(stripANSI(m.trustMarker("nobody")), "·") {
+		t.Error("undecided peer should show ·")
+	}
+}

@@ -72,6 +72,12 @@ func New(nodeID, tailscaleIP, dataDir, profileName, hostname string, tsClient *t
 	}
 }
 
+// WithTrust connects the Peers tab to this node's inbound ACL.
+func (a App) WithTrust(t dashboard.TrustFuncs) App {
+	a.dashboard = a.dashboard.WithTrust(t)
+	return a
+}
+
 // WantsRestart reports whether "/profile <name>" switched the active
 // profile.
 func (a App) WantsRestart() (profileName string, ok bool) {
