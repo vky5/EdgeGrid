@@ -227,3 +227,42 @@ func TestSenderIgnoringARefusalGainsNothing(t *testing.T) {
 		t.Errorf("Receive returned %v, want a refusal", err)
 	}
 }
+
+// Once every chunk is in, the receiver still flushes and re-hashes the whole
+// file. Progress has to say so, or the UI shows 100% and looks hung.
+func TestReceiveReportsVerifyingAfterTheLastChunk(t *testing.T) {
+	src, m := writeSource(t, "twelve bytes")
+	dest := filepath.Join(t.TempDir(), "out.bin")
+
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+
+	var events []Progress
+	recvErr := make(chan error, 1)
+	go func() {
+		_, err := Receive(b, func(*Manifest) (string, error) { return dest, nil },
+			func(p Progress) { events = append(events, p) })
+		recvErr <- err
+	}()
+
+	if err := Send(a, src, m, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-recvErr; err != nil {
+		t.Fatal(err)
+	}
+
+	last := events[len(events)-1]
+	if !last.Verifying {
+		t.Errorf("last progress event = %+v, want Verifying set", last)
+	}
+	if last.BytesDone != last.BytesTotal {
+		t.Errorf("verifying reported before all bytes arrived: %+v", last)
+	}
+	for _, e := range events[:len(events)-1] {
+		if e.Verifying {
+			t.Errorf("Verifying set before the last chunk: %+v", e)
+		}
+	}
+}

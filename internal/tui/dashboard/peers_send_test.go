@@ -308,3 +308,29 @@ func TestTrustToggleAllowsThenBlocks(t *testing.T) {
 		t.Error("undecided peer should show ·")
 	}
 }
+
+// At 100% the receiver is still flushing and re-hashing the whole file. The
+// panel must say so rather than show a full bar that looks hung.
+func TestTransferPanelSaysVerifyingAtOneHundredPercent(t *testing.T) {
+	m := modelWith()
+	m.active = []Transfer{{Direction: "receiving", Peer: "alpha", Frac: 1, BytesDone: 100, Total: 100, Verifying: true}}
+
+	view := stripANSI(m.transfersView())
+	if !strings.Contains(view, "verifying") {
+		t.Errorf("view = %q, want it to say verifying", view)
+	}
+	if strings.Contains(view, "100%") {
+		t.Errorf("view still shows a 100%% bar: %q", view)
+	}
+}
+
+func TestPeerRowShowsTheRoute(t *testing.T) {
+	direct := discovery.Peer{ID: "a", Hostname: "alpha", Online: true, CurAddr: "1.2.3.4:5"}
+	relayed := discovery.Peer{ID: "b", Hostname: "bravo", Online: true, Relay: "mum"}
+	m := modelWith(direct, relayed)
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "direct") || !strings.Contains(view, "relay") {
+		t.Errorf("peer rows should show direct and relay, got:\n%s", view)
+	}
+}

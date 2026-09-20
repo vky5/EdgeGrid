@@ -42,8 +42,9 @@ const (
 )
 
 // SendFunc transfers path to peer. node.Node.SendBlob satisfies it —
-// declared here so the TUI doesn't import node.
-type SendFunc func(ctx context.Context, peer discovery.Peer, path string) error
+// declared here so the TUI doesn't import node. m is the manifest already
+// built for the preview, passed along so the file isn't hashed a second time.
+type SendFunc func(ctx context.Context, peer discovery.Peer, path string, m *blob.Manifest) error
 
 // TrustFuncs lets the Peers tab read and change which peers may send this
 // node files. node.Node.TrustedPeers and node.Node.SetTrust satisfy them —
@@ -62,6 +63,7 @@ type Transfer struct {
 	Frac      float64
 	BytesDone int64
 	Total     int64
+	Verifying bool // all bytes are in; the receiver is flushing and re-hashing
 	Done      bool
 	Err       error
 }
@@ -145,10 +147,10 @@ func peersRefreshCmd() tea.Cmd {
 	return tea.Tick(peersRefreshInterval, func(time.Time) tea.Msg { return peersRefreshMsg{} })
 }
 
-func sendBlobCmd(send SendFunc, peer discovery.Peer, path string, size int64) tea.Cmd {
+func sendBlobCmd(send SendFunc, peer discovery.Peer, path string, m *blob.Manifest) tea.Cmd {
 	return func() tea.Msg {
-		err := send(context.Background(), peer, path)
-		return blobSentMsg{peer: peer, size: size, err: err}
+		err := send(context.Background(), peer, path, m)
+		return blobSentMsg{peer: peer, size: m.Size, err: err}
 	}
 }
 
@@ -351,7 +353,7 @@ func (m peersModel) updateReady(key tea.KeyMsg) (peersModel, tea.Cmd) {
 		}
 		m.flowErr = nil
 		m.mode = peersSending
-		return m, sendBlobCmd(m.send, m.target, m.path, m.manifest.Size)
+		return m, sendBlobCmd(m.send, m.target, m.path, m.manifest)
 	}
 	return m, nil
 }
@@ -488,7 +490,7 @@ func (m peersModel) View() string {
 		if p.IP.IsValid() {
 			ip = p.IP.String()
 		}
-		row := fmt.Sprintf("%s %s %-20s %-16s%s", statusPill, m.trustMarker(p.ID), peerLabel(p), ip, seen)
+		row := fmt.Sprintf("%s %s %-20s %-16s %s%s", statusPill, m.trustMarker(p.ID), peerLabel(p), ip, routeCell(p), seen)
 		if i == m.cursor {
 			rows = append(rows, style.Selected.Render("▸ ")+row)
 		} else {
@@ -625,6 +627,12 @@ func (m peersModel) transfersView() string {
 			status = lipgloss.NewStyle().Foreground(style.Danger).Render("failed: " + t.Err.Error())
 		case t.Done:
 			status = lipgloss.NewStyle().Foreground(greenColor).Render("done  " + humanBytes(t.Total))
+		case t.Verifying:
+			// Every byte has arrived, so the bar would read 100% — but the
+			// receiver still flushes to disk and re-hashes the whole file,
+			// which takes a while on a large one and looks like a hang.
+			status = lipgloss.NewStyle().Foreground(style.Accent).Render(
+				"verifying…  " + humanBytes(t.Total) + " received, checking the whole file")
 		default:
 			status = fmt.Sprintf("%s  %3.0f%%  %s / %s",
 				transferBar(t.Frac, barWidth), t.Frac*100,
@@ -687,5 +695,22 @@ func (m peersModel) trustMarker(stableID string) string {
 		return lipgloss.NewStyle().Foreground(greenColor).Render("✓")
 	default:
 		return lipgloss.NewStyle().Foreground(style.Danger).Render("✗")
+	}
+}
+
+// routeCell shows how traffic to a peer is travelling, padded to a fixed
+// width so the columns after it stay aligned. A relayed path is far slower
+// than a direct one, so it's coloured as a warning.
+func routeCell(p discovery.Peer) string {
+	const width = 10
+	r := p.Route()
+	pad := strings.Repeat(" ", max(width-len(r), 0))
+	switch r {
+	case "direct":
+		return lipgloss.NewStyle().Foreground(greenColor).Render(r) + pad
+	case "relay", "peer relay":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render(r) + pad
+	default:
+		return lipgloss.NewStyle().Foreground(style.Muted).Render("—") + strings.Repeat(" ", width-1)
 	}
 }

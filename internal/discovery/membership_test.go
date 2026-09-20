@@ -128,3 +128,26 @@ func mustParseTime(t *testing.T, s string) time.Time {
 	}
 	return ts
 }
+
+func TestPeerRoute(t *testing.T) {
+	cases := []struct {
+		name string
+		p    Peer
+		want string
+	}{
+		{"direct path", Peer{Online: true, CurAddr: "192.168.1.5:41641"}, "direct"},
+		{"derp relay", Peer{Online: true, Relay: "mum"}, "relay"},
+		{"peer relay", Peer{Online: true, PeerRelay: "10.0.0.2:3478:1"}, "peer relay"},
+		// A direct address wins over a relay: both can be reported while
+		// Tailscale is upgrading, and the direct one is what carries traffic.
+		{"direct beats relay", Peer{Online: true, CurAddr: "1.2.3.4:5", Relay: "mum"}, "direct"},
+		{"no path yet", Peer{Online: true}, ""},
+		// Stale path data on an offline peer must not be shown as live.
+		{"offline", Peer{Online: false, CurAddr: "1.2.3.4:5"}, ""},
+	}
+	for _, c := range cases {
+		if got := c.p.Route(); got != c.want {
+			t.Errorf("%s: Route() = %q, want %q", c.name, got, c.want)
+		}
+	}
+}

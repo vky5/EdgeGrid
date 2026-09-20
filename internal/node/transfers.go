@@ -42,6 +42,7 @@ type transfer struct {
 	chunksTotal atomic.Int64
 	bytesDone   atomic.Int64
 	bytesTotal  atomic.Int64
+	verifying   atomic.Bool
 
 	done atomic.Bool
 	mu   sync.Mutex // guards err only
@@ -61,6 +62,7 @@ func (t *transfer) snapshot() Transfer {
 			ChunksTotal: int(t.chunksTotal.Load()),
 			BytesDone:   t.bytesDone.Load(),
 			BytesTotal:  t.bytesTotal.Load(),
+			Verifying:   t.verifying.Load(),
 		},
 		Started: t.started,
 		Done:    t.done.Load(),
@@ -76,7 +78,17 @@ func (t *transfer) progressFunc() blob.ProgressFunc {
 		t.chunksTotal.Store(int64(p.ChunksTotal))
 		t.bytesDone.Store(p.BytesDone)
 		t.bytesTotal.Store(p.BytesTotal)
+		t.verifying.Store(p.Verifying)
 	}
+}
+
+// rateMBps is n bytes over d in MB/s, for log lines. Zero for a zero-length
+// interval rather than +Inf.
+func rateMBps(n int64, d time.Duration) float64 {
+	if d <= 0 {
+		return 0
+	}
+	return float64(n) / (1 << 20) / d.Seconds()
 }
 
 // finishedLinger is how long a completed transfer stays listed, so a

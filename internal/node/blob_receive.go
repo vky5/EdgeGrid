@@ -66,7 +66,22 @@ func (a *Node) receiveBlob(who *apitype.WhoIsResponse, hello discovery.Hello, co
 
 	log.Printf("blob: inbound connection from %s", label)
 	t := a.transfers.start(Inbound, label)
-	m, err := blob.Receive(conn, accept, t.progressFunc())
+
+	// Split the time into the part that moved bytes and the part spent
+	// flushing and re-hashing at the end, so a slow transfer can be told
+	// apart from a slow disk. Receive runs on this goroutine, so plain
+	// variables are safe here.
+	began := time.Now()
+	var verifyBegan time.Time
+	report := t.progressFunc()
+	progress := func(p blob.Progress) {
+		if p.Verifying && verifyBegan.IsZero() {
+			verifyBegan = time.Now()
+		}
+		report(p)
+	}
+
+	m, err := blob.Receive(conn, accept, progress)
 	a.transfers.finish(t, err)
 	if err != nil {
 		log.Printf("blob: receive from %s failed: %v", label, err)
@@ -78,8 +93,15 @@ func (a *Node) receiveBlob(who *apitype.WhoIsResponse, hello discovery.Hello, co
 		return
 	}
 
+	end := time.Now()
+	if verifyBegan.IsZero() {
+		verifyBegan = end
+	}
+	moved, verified := verifyBegan.Sub(began), end.Sub(verifyBegan)
 	log.Printf("blob: received %q, %d bytes in %d chunks from %s -> %s (sha256 %s)",
 		m.Name, m.Size, len(m.Chunks), label, dest, m.SHA256)
+	log.Printf("blob: transfer took %s (%.1f MB/s), then verify+flush %s",
+		moved.Round(time.Millisecond), rateMBps(m.Size, moved), verified.Round(time.Millisecond))
 }
 
 // reserveInboxFile creates an empty file in dir named after name, adding

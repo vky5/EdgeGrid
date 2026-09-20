@@ -192,6 +192,7 @@ func runDashboard() {
 				Frac:      t.Progress.Frac(),
 				BytesDone: t.Progress.BytesDone,
 				Total:     t.Progress.BytesTotal,
+				Verifying: t.Progress.Verifying,
 				Done:      t.Done,
 				Err:       t.Err,
 			})
