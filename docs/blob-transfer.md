@@ -4,6 +4,11 @@ How a large payload moves from one node to another: chunked, hashed,
 verified against a manifest agreed in advance, and — eventually — resumable
 after an interruption. This is the subsystem `internal/blob` exists for.
 
+For what TCP is actually doing underneath — two pipes, framing, flow control,
+the receive window — see the [reading section](reading/README.md); it is
+background for [`internal/blob/chunk.go`](../internal/blob/chunk.go), which
+points back to it.
+
 Peer discovery ([`peer-discovery.md`](peer-discovery.md)) is a hard
 dependency: it's what makes an authenticated connection to a named peer
 possible at all. This doc assumes that layer works and builds on top of it.
@@ -97,8 +102,8 @@ Three properties this has to keep:
   doesn't break an older one either.
 - **Intent routes; it does not authorize.** `Hello` is the peer's own
   self-report — unlike `WhoIs`, which is the tailnet's control plane and
-  unspoofable. Any tagged node can claim any intent. Deciding whether a peer
-  is *allowed* to send is a separate thing that doesn't exist yet.
+  unspoofable. Any tagged node can claim any intent. Whether a peer is
+  *allowed* to send is decided separately, by the ACL below.
 - **It names the protocol that follows, not the payload's meaning.** What
   the receiver has to dispatch on is "a manifest comes next," not "this is
   an artifact" — `blob` is content-agnostic by design, so an intent named
@@ -124,16 +129,103 @@ sends it. Nothing initiates a transfer on its own. Automatic, declarative
 placement ("I want artifact X on node B") is task dispatch, which is
 deferred and needs its own proposal — see peer-discovery.md.
 
+## Who may send you a file
+
+Identity is attested (`WhoIs`); authorization is this node's own decision.
+The receiver applies three checks to a manifest, in this order, and any
+failure is sent back to the sender as a refusal:
+
+1. **`Manifest.Validate`** — the manifest must describe one contiguous,
+   self-consistent blob: chunk indices are their positions, offsets are the
+   running sum of lengths, the lengths total `Size`. Without it, a manifest
+   claiming `Size: 4` with a chunk at offset 1 TB would make `WriteAt` extend
+   the file to a terabyte, since `Truncate` and `WriteAt` both trust what the
+   peer declared.
+2. **The ACL** — is this peer allowed to send at all.
+3. **A size cap** — `Size` against `max_blob_bytes` (default 10 GiB, a guess
+   rather than a derived number).
+
+**The ACL is keyed on Tailscale's `StableID`, never on `Hello.NodeID`.** The
+StableID is what the control plane attributes to the connection and can't be
+forged; `NodeID` is the peer's own claim, and an allowlist keyed on a value
+the peer chooses is no allowlist. One consequence: a device removed from the
+tailnet and re-added gets a new StableID, so its entry goes stale — which is
+arguably right, since it is a new registration, but is the answer to "I
+re-added my laptop and now it can't send".
+
+It lives in the profile as one file per peer:
+
+```
+<DataDir>/acl/<StableID>
+
+# laptop, added after the office move
+allow=true
+hostname=alpha5-297b
+decided=2026-09-20T01:12:00Z
+```
+
+- **One file per peer, not a list in one file.** Adding or removing a peer is
+  a single create or delete with nothing to parse and rewrite — the
+  read-modify-write shape that already produced a real race on the global
+  `app.json`. Writes go to a temp name and are renamed, so a concurrent
+  reader never sees half a file.
+- **`key=value` with `#` comments**, not JSON or YAML. It allows a note on
+  why a peer is trusted, and it needs no new dependency — there is no YAML
+  parser anywhere in the module graph.
+- **`acl.default`** holds the policy for peers with no entry. Only an exact
+  `allow` allows; empty, absent or misspelt means deny, so a garbled file
+  fails closed. An explicit entry always beats the default.
+- **An unreadable entry is a refusal, not "no entry".** Falling back to the
+  default there could turn a deny into an allow.
+- The `StableID` is checked against `^[A-Za-z0-9-]{1,64}$` before it becomes
+  a filename. It comes from Tailscale rather than the peer, but it is still a
+  string about to be joined into a path.
+
+**A received file is named by the sender, but only ever as one sanitised path
+component.** `Manifest.Name` is peer-supplied, so `SafeName` takes the last
+component after splitting on both `/` and `\` (a Windows sender can hand a
+Linux receiver a backslash path that `filepath.Base` would leave intact),
+strips control characters and Windows-reserved punctuation, trims leading and
+trailing dots, prefixes device names like `NUL` and `COM1`, and caps the
+length. Collisions become `name (1).ext`, reserved with `O_EXCL` so two
+simultaneous transfers can't pick the same path.
+
+**In the TUI**, `a` on a peer toggles it between allowed and blocked, and
+each row shows `✓` allowed, `✗` blocked, or `·` no decision (the profile
+default applies). A headless node uses the files directly.
+
+**Not a prompt.** A "peer X wants to send you Y, accept?" panel can't be the
+mechanism: `edgegrid up` runs headless, so a human-only gate means a headless
+node can never receive anything. It also lands mid-protocol, holding an open
+socket against a deadline while a person decides. A prompt fits later as
+trust-on-first-use layered on top of this — an unknown peer asks once, the
+answer is stored as an entry — without changing anything here.
+
 ## Wire format
 
 Everything below rides one connection, in this order, after the hello
 exchange has completed on it.
 
 ```
-manifest:  [4-byte big-endian length][JSON body]
+manifest:  [4-byte big-endian length][JSON body]     sender -> receiver
+
+verdict:   [1 byte: 0 accept, 1 refuse]              receiver -> sender
+           [2-byte reason length][reason bytes]
 
 chunk:     [index][length][raw bytes]   — repeated, once per chunk
 ```
+
+The verdict is the only message that flows back. It exists because a
+receiver's only other way to say no was to hang up, which a sender cannot
+tell apart from a crash or a dropped network — it would see a broken pipe
+partway through, or block until its deadline. Now a refusal arrives as a
+`*blob.RefusedError` carrying the reason, before a single chunk moves.
+
+This is a wire change under the same `blob` intent: a sender built before
+the verdict existed sends chunks without waiting for one, and a receiver
+built before it never sends one, so the two versions do not interoperate.
+That is the cost of not versioning the intent string (`blob/v1`) — cheap to
+have done up front, painful to retrofit.
 
 The manifest's framing is deliberately identical to `discovery.Hello`'s: a
 length prefix exists because TCP is a byte stream with no message
@@ -172,8 +264,9 @@ Node A (dialer)                        Node B (listener)
   │                       intent=hello:  │   close
   │                       intent=blob:   │   keep reading ↓
   │                                      │
-  │── manifest ─────────────────────────>│
+  │── manifest ─────────────────────────>│ Validate(), ACL, size cap
   │   (file size, chunk hashes)          │
+  │<──────────── verdict accept/refuse ──│
   │                                      │
   │── chunk 0 ──────────────────────────>│
   │── chunk 1 ──────────────────────────>│
@@ -250,9 +343,14 @@ Known gaps, so they're not discovered the hard way:
   the moment it touches shared state — a transfer registry, a progress map,
   a peer table — that's a live data race unless it's behind a mutex or
   funneled through a channel.
-- **Identity is gated, authorization is not.** Any tagged tailnet node that
-  can reach the port can start a transfer. There is no notion of "may this
-  peer send me this."
+- **A denied peer still costs a manifest read.** The verdict follows the
+  manifest, so a refused peer gets to send up to `maxManifestSize` (64 MiB)
+  before hearing no. Bounded, and only tagged tailnet nodes reach the port,
+  but it is not free.
+- **The default is deny, so a fresh node receives nothing** until a peer is
+  allowed (`a` in the Peers tab, or an entry file). That is the intent; it
+  does mean the first transfer to a new node always needs a step on the
+  receiving side.
 
 ## Task breakdown
 
