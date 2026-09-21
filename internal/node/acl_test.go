@@ -80,6 +80,8 @@ func TestACLListSkipsTempFiles(t *testing.T) {
 
 func nodeWithDir(t *testing.T) *Node {
 	t.Helper()
+	// Policy tests shouldn't depend on how full the machine running them is.
+	withFreeSpace(t, 1<<60)
 	return &Node{cfg: &Config{DataDir: t.TempDir()}}
 }
 

@@ -213,5 +213,5 @@ func (a *Node) checkAccept(stableID, label string, m *blob.Manifest) error {
 		log.Printf("blob: refused %s: %d bytes exceeds the %d-byte limit", label, m.Size, limit)
 		return fmt.Errorf("file is %d bytes; this node accepts at most %d", m.Size, limit)
 	}
-	return nil
+	return a.checkSpace(label, m.Size)
 }
