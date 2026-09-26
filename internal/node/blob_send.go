@@ -18,8 +18,8 @@ import (
 // interprets it.
 const sendBlobMediaType = "application/octet-stream"
 
-// blobSendTimeout bounds a whole transfer. The hello exchange clears its
-// own deadline on return, so without this the connection has none.
+// blobSendTimeout is the outer ceiling no transfer may run past, even
+// while idleTimeout keeps getting refreshed by steady progress.
 const blobSendTimeout = 30 * time.Minute
 
 // manifestFor returns m if it still describes the file at path, and builds a
@@ -61,7 +61,8 @@ func (a *Node) SendBlob(ctx context.Context, peer discovery.Peer, path string, m
 		return err
 	}
 
-	if err := conn.SetDeadline(time.Now().Add(blobSendTimeout)); err != nil {
+	began := time.Now()
+	if err := conn.SetDeadline(began.Add(verdictTimeout)); err != nil {
 		return err
 	}
 
@@ -70,8 +71,13 @@ func (a *Node) SendBlob(ctx context.Context, peer discovery.Peer, path string, m
 	t := a.transfers.start(Outbound, peer.Hostname)
 	historyID, haveHistory := recordTransferStart(a.history, db.Outbound, peer.ID, peer.Hostname, m.Name, m.Size)
 
-	began := time.Now()
-	err = blob.Send(conn, path, m, t.progressFunc())
+	report := t.progressFunc()
+	progress := func(p blob.Progress) {
+		refreshDeadline(conn, began, idleTimeout, blobSendTimeout)
+		report(p)
+	}
+
+	err = blob.Send(conn, path, m, progress)
 	a.transfers.finish(t, err)
 
 	var refused *blob.RefusedError

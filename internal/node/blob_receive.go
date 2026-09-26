@@ -16,9 +16,8 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 )
 
-// blobReceiveTimeout bounds a whole inbound transfer. The hello exchange
-// clears its own deadline on return, so without this a peer could claim
-// IntentBlob and then hold the connection open forever.
+// blobReceiveTimeout is the outer ceiling no inbound transfer may run
+// past, even while idleTimeout keeps getting refreshed by steady progress.
 const blobReceiveTimeout = 30 * time.Minute
 
 //	takes an inbound blob into the profile's inbox, if this node's
@@ -27,7 +26,8 @@ const blobReceiveTimeout = 30 * time.Minute
 // made inside the accept callback so that a refusal always reaches the sender
 // as a verdict instead of a hung-up connection.
 func (a *Node) receiveBlob(who *apitype.WhoIsResponse, hello discovery.Hello, conn net.Conn) {
-	if err := conn.SetDeadline(time.Now().Add(blobReceiveTimeout)); err != nil {
+	began := time.Now()
+	if err := conn.SetDeadline(began.Add(verdictTimeout)); err != nil {
 		log.Printf("blob: set deadline: %v", err)
 		return
 	}
@@ -79,10 +79,10 @@ func (a *Node) receiveBlob(who *apitype.WhoIsResponse, hello discovery.Hello, co
 	// flushing and re-hashing at the end, so a slow transfer can be told
 	// apart from a slow disk. Receive runs on this goroutine, so plain
 	// variables are safe here.
-	began := time.Now()
 	var verifyBegan time.Time
 	report := t.progressFunc()
 	progress := func(p blob.Progress) {
+		refreshDeadline(conn, began, idleTimeout, blobReceiveTimeout)
 		if p.Verifying && verifyBegan.IsZero() {
 			verifyBegan = time.Now()
 		}

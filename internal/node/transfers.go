@@ -2,6 +2,7 @@ package node
 
 import (
 	"log"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -9,6 +10,24 @@ import (
 	"github.com/edgegrid/edgegrid/internal/blob"
 	"github.com/edgegrid/edgegrid/internal/db"
 )
+
+// verdictTimeout bounds the manifest+verdict phase, before any chunk has
+// moved — both sides' work there is local, not network-bound.
+const verdictTimeout = 15 * time.Second
+
+// idleTimeout bounds how long a transfer may go with no chunk moving.
+// Refreshed every chunk, so slow-but-alive never trips it, only stalled.
+const idleTimeout = 60 * time.Second
+
+// refreshDeadline pushes conn's deadline out by idle, but never past
+// began+ceiling — idle resets on progress, the ceiling doesn't.
+func refreshDeadline(conn net.Conn, began time.Time, idle, ceiling time.Duration) {
+	next := time.Now().Add(idle)
+	if ceilingAt := began.Add(ceiling); next.After(ceilingAt) {
+		next = ceilingAt
+	}
+	conn.SetDeadline(next) //nolint:errcheck // best-effort: a failed refresh just leaves the current deadline standing
+}
 
 // Direction says which way a transfer is moving relative to this node.
 type Direction string
