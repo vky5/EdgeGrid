@@ -78,6 +78,12 @@ func (a App) WithTrust(t dashboard.TrustFuncs) App {
 	return a
 }
 
+// WithHistory connects the History tab to this node's transfer database.
+func (a App) WithHistory(h dashboard.HistoryFuncs) App {
+	a.dashboard = a.dashboard.WithHistory(h)
+	return a
+}
+
 // WantsRestart reports whether "/profile <name>" switched the active
 // profile.
 func (a App) WantsRestart() (profileName string, ok bool) {

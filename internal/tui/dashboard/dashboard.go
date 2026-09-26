@@ -34,6 +34,7 @@ type tab int
 const (
 	tabOverview tab = iota
 	tabPeers
+	tabHistory
 	tabTokens
 )
 
@@ -49,6 +50,7 @@ type Dashboard struct {
 
 	overview overviewModel
 	peers    peersModel
+	history  historyModel
 	tokens   tokensModel
 
 	width, height int
@@ -66,6 +68,7 @@ func New(nodeID, tailscaleIP, dataDir string, tsClient *tailscaleapi.Client, lc 
 		tab:       tabOverview,
 		overview:  newOverviewModel(nodeID, tailscaleIP),
 		peers:     newPeersModel(lc, send, transfers),
+		history:   newHistoryModel(HistoryFuncs{}),
 	}
 	if tsClient != nil {
 		d.tokens = newTokensModel(tsClient)
@@ -81,11 +84,19 @@ func (d Dashboard) WithTrust(t TrustFuncs) Dashboard {
 	return d
 }
 
+// WithHistory connects the History tab to this node's transfer database.
+func (d Dashboard) WithHistory(h HistoryFuncs) Dashboard {
+	d.history.funcs = h
+	d.history = d.history.refresh()
+	return d
+}
+
 func (d *Dashboard) resize() {
 	h := max(d.height-chromeLines, 3)
 	d.overview.width = d.width
 	d.overview.height = h
 	d.peers = d.peers.WithSize(d.width, h)
+	d.history = d.history.WithSize(d.width, h)
 	d.tokens = d.tokens.WithSize(d.width, h)
 }
 
@@ -109,7 +120,7 @@ func (d Dashboard) HelpText() string {
 }
 
 func (d Dashboard) getTabNames() []string {
-	names := []string{"Overview", "Peers"}
+	names := []string{"Overview", "Peers", "History"}
 	if d.hasTokens {
 		names = append(names, "Tokens")
 	}
@@ -117,7 +128,7 @@ func (d Dashboard) getTabNames() []string {
 }
 
 func (d Dashboard) Init() tea.Cmd {
-	return tea.Batch(refreshCmd(), d.peers.Init())
+	return tea.Batch(refreshCmd(), d.peers.Init(), d.history.Init())
 }
 
 func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
@@ -134,6 +145,8 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 		case tabOverview:
 			d.tab = tabPeers
 		case tabPeers:
+			d.tab = tabHistory
+		case tabHistory:
 			if d.hasTokens {
 				d.tab = tabTokens
 			} else {
@@ -155,7 +168,8 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 	// peersRefreshMsg is self-rescheduling like RefreshMsg above, so it has
 	// to be handled here regardless of which tab is active — routing it
 	// only through the tab-switch below would drop the reschedule whenever
-	// Peers isn't the visible tab, killing the ticker for good.
+	// Peers isn't the visible tab, killing the ticker for good. historyRefreshMsg
+	// is the same story for the History tab.
 	//
 	// manifestBuiltMsg and blobSentMsg need the same treatment for a
 	// different reason: each arrives once, whenever the work finishes, and
@@ -165,6 +179,10 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 		var cmd tea.Cmd
 		d.peers, cmd = d.peers.Update(msg)
 		return d, cmd
+	case historyRefreshMsg:
+		var cmd tea.Cmd
+		d.history, cmd = d.history.Update(msg)
+		return d, cmd
 	}
 
 	var cmd tea.Cmd
@@ -173,6 +191,8 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 		d.tokens, cmd = d.tokens.Update(msg)
 	case tabPeers:
 		d.peers, cmd = d.peers.Update(msg)
+	case tabHistory:
+		d.history, cmd = d.history.Update(msg)
 	default:
 		d.overview, cmd = d.overview.Update(msg)
 	}
@@ -191,6 +211,8 @@ func (d Dashboard) View() string {
 		content = d.tokens.View()
 	case tabPeers:
 		content = d.peers.View()
+	case tabHistory:
+		content = d.history.View()
 	default:
 		content = d.overview.View()
 	}
@@ -207,6 +229,7 @@ func (d Dashboard) View() string {
 		var s string
 		active := (name == "Overview" && d.tab == tabOverview) ||
 			(name == "Peers" && d.tab == tabPeers) ||
+			(name == "History" && d.tab == tabHistory) ||
 			(name == "Tokens" && d.tab == tabTokens)
 		if active {
 			s = style.TabActive.Render("[ " + strings.ToUpper(name) + " ]")
