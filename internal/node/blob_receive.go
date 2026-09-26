@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/edgegrid/edgegrid/internal/blob"
+	"github.com/edgegrid/edgegrid/internal/db"
 	"github.com/edgegrid/edgegrid/internal/discovery"
 	"tailscale.com/client/tailscale/apitype"
 )
@@ -20,7 +21,8 @@ import (
 // IntentBlob and then hold the connection open forever.
 const blobReceiveTimeout = 30 * time.Minute
 
-//   takes an inbound blob into the profile's inbox, if this node's
+//	takes an inbound blob into the profile's inbox, if this node's
+//
 // policy allows it. Every decision — ACL, size cap, where the file goes — is
 // made inside the accept callback so that a refusal always reaches the sender
 // as a verdict instead of a hung-up connection.
@@ -43,10 +45,16 @@ func (a *Node) receiveBlob(who *apitype.WhoIsResponse, hello discovery.Hello, co
 
 	dir := filepath.Join(a.cfg.DataDir, "inbox")
 	var dest string
-	
+	var refused bool
+	var historyID int64
+	var haveHistory bool
+
 	// ? This is the callback function responsible for checking the ACL
 	accept := func(m *blob.Manifest) (string, error) {
+		historyID, haveHistory = recordTransferStart(a.history, db.Inbound, stableID, label, m.Name, m.Size)
+
 		if err := a.checkAccept(stableID, label, m); err != nil {
+			refused = true
 			return "", err
 		}
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -83,6 +91,13 @@ func (a *Node) receiveBlob(who *apitype.WhoIsResponse, hello discovery.Hello, co
 
 	m, err := blob.Receive(conn, accept, progress)
 	a.transfers.finish(t, err)
+
+	sha256 := ""
+	if err == nil {
+		sha256 = m.SHA256
+	}
+	recordTransferFinish(a.history, historyID, haveHistory, err, refused, sha256)
+
 	if err != nil {
 		log.Printf("blob: receive from %s failed: %v", label, err)
 		if dest != "" {
