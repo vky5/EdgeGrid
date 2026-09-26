@@ -1,11 +1,13 @@
 package node
 
 import (
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/edgegrid/edgegrid/internal/blob"
+	"github.com/edgegrid/edgegrid/internal/db"
 )
 
 // Direction says which way a transfer is moving relative to this node.
@@ -89,6 +91,39 @@ func rateMBps(n int64, d time.Duration) float64 {
 		return 0
 	}
 	return float64(n) / (1 << 20) / d.Seconds()
+}
+
+// recordTransferStart writes a starting row to the history database. h may
+// be nil (no database). ok is false when there is no row to finish later.
+func recordTransferStart(h *db.Store, dir db.Direction, peerID, peerHostname, name string, size int64) (id int64, ok bool) {
+	if h == nil {
+		return 0, false
+	}
+	id, err := h.RecordStart(dir, peerID, peerHostname, name, size)
+	if err != nil {
+		log.Printf("blob: could not record transfer start: %v", err)
+		return 0, false
+	}
+	return id, true
+}
+
+// recordTransferFinish writes the outcome for a row recordTransferStart
+// made. refused gets its own status, distinct from a generic failure.
+func recordTransferFinish(h *db.Store, id int64, ok bool, err error, refused bool, sha256 string) {
+	if !ok {
+		return
+	}
+	status, errText := db.StatusDone, ""
+	if err != nil {
+		errText = err.Error()
+		status = db.StatusFailed
+		if refused {
+			status = db.StatusRefused
+		}
+	}
+	if err := h.RecordFinish(id, status, errText, sha256); err != nil {
+		log.Printf("blob: could not record transfer finish: %v", err)
+	}
 }
 
 // finishedLinger is how long a completed transfer stays listed, so a

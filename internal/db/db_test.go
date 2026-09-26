@@ -46,35 +46,41 @@ func TestOpenIsIdempotent(t *testing.T) {
 func TestRecordStartAndFinishRoundTrip(t *testing.T) {
 	s := openTest(t)
 
-	id, err := s.RecordStart(Outbound, "peer-1", "alpha", "payload.bin", 1024, "deadbeef")
+	id, err := s.RecordStart(Outbound, "peer-1", "alpha", "payload.bin", 1024)
 	if err != nil {
 		t.Fatalf("RecordStart: %v", err)
 	}
 
-	var status string
+	var status, sha256 string
 	var finishedAt sql.NullInt64
-	row := s.db.QueryRow(`SELECT status, finished_at FROM transfers WHERE id = ?`, id)
-	if err := row.Scan(&status, &finishedAt); err != nil {
+	row := s.db.QueryRow(`SELECT status, sha256, finished_at FROM transfers WHERE id = ?`, id)
+	if err := row.Scan(&status, &sha256, &finishedAt); err != nil {
 		t.Fatalf("read row: %v", err)
 	}
 	if status != string(StatusInProgress) {
 		t.Errorf("status = %q, want %q", status, StatusInProgress)
 	}
+	if sha256 != "" {
+		t.Errorf("sha256 = %q, want empty before RecordFinish", sha256)
+	}
 	if finishedAt.Valid {
 		t.Error("finished_at set before RecordFinish")
 	}
 
-	if err := s.RecordFinish(id, StatusDone, ""); err != nil {
+	if err := s.RecordFinish(id, StatusDone, "", "deadbeef"); err != nil {
 		t.Fatalf("RecordFinish: %v", err)
 	}
 
 	var errVal sql.NullString
-	row = s.db.QueryRow(`SELECT status, error, finished_at FROM transfers WHERE id = ?`, id)
-	if err := row.Scan(&status, &errVal, &finishedAt); err != nil {
+	row = s.db.QueryRow(`SELECT status, sha256, error, finished_at FROM transfers WHERE id = ?`, id)
+	if err := row.Scan(&status, &sha256, &errVal, &finishedAt); err != nil {
 		t.Fatalf("read row after finish: %v", err)
 	}
 	if status != string(StatusDone) {
 		t.Errorf("status = %q, want %q", status, StatusDone)
+	}
+	if sha256 != "deadbeef" {
+		t.Errorf("sha256 = %q, want %q", sha256, "deadbeef")
 	}
 	if errVal.Valid {
 		t.Errorf("error = %q, want NULL for a successful transfer", errVal.String)
@@ -86,9 +92,9 @@ func TestRecordStartAndFinishRoundTrip(t *testing.T) {
 
 func TestRecordFinishStoresError(t *testing.T) {
 	s := openTest(t)
-	id, _ := s.RecordStart(Inbound, "peer-2", "bravo", "movie.mkv", 2048, "cafef00d")
+	id, _ := s.RecordStart(Inbound, "peer-2", "bravo", "movie.mkv", 2048)
 
-	if err := s.RecordFinish(id, StatusFailed, "connection reset"); err != nil {
+	if err := s.RecordFinish(id, StatusFailed, "connection reset", ""); err != nil {
 		t.Fatalf("RecordFinish: %v", err)
 	}
 
@@ -99,6 +105,26 @@ func TestRecordFinishStoresError(t *testing.T) {
 	}
 	if !errVal.Valid || errVal.String != "connection reset" {
 		t.Errorf("error = %v, want \"connection reset\"", errVal)
+	}
+}
+
+// A hash is only meaningful once verifyWhole has actually run, so
+// RecordFinish must drop it for anything but a clean success — even if a
+// caller passes one by mistake.
+func TestRecordFinishDropsHashWhenNotDone(t *testing.T) {
+	s := openTest(t)
+	id, _ := s.RecordStart(Outbound, "peer-1", "alpha", "a.bin", 10)
+
+	if err := s.RecordFinish(id, StatusFailed, "boom", "some-hash-that-was-never-checked"); err != nil {
+		t.Fatalf("RecordFinish: %v", err)
+	}
+
+	var sha256 string
+	if err := s.db.QueryRow(`SELECT sha256 FROM transfers WHERE id = ?`, id).Scan(&sha256); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if sha256 != "" {
+		t.Errorf("sha256 = %q, want empty for a failed transfer", sha256)
 	}
 }
 
@@ -117,9 +143,9 @@ func TestInvalidStatusIsRejected(t *testing.T) {
 
 func TestReconcileStaleTransfersInterruptsInProgressRows(t *testing.T) {
 	s := openTest(t)
-	staleID, _ := s.RecordStart(Outbound, "peer-1", "alpha", "a.bin", 10, "aaaa")
-	doneID, _ := s.RecordStart(Inbound, "peer-2", "bravo", "b.bin", 20, "bbbb")
-	if err := s.RecordFinish(doneID, StatusDone, ""); err != nil {
+	staleID, _ := s.RecordStart(Outbound, "peer-1", "alpha", "a.bin", 10)
+	doneID, _ := s.RecordStart(Inbound, "peer-2", "bravo", "b.bin", 20)
+	if err := s.RecordFinish(doneID, StatusDone, "", "bbbb"); err != nil {
 		t.Fatalf("RecordFinish: %v", err)
 	}
 

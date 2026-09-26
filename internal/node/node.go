@@ -9,10 +9,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/edgegrid/edgegrid/internal/db"
 	"github.com/edgegrid/edgegrid/internal/discovery"
 	"tailscale.com/client/local"
 	"tailscale.com/tsnet"
 )
+
+// historyFile is this node's local SQLite database, relative to DataDir.
+const historyFile = "edgegrid.db"
 
 func NewWithLogging(
 	ctx context.Context,
@@ -54,6 +58,9 @@ type Node struct {
 
 	closeOnce sync.Once
 	transfers registry
+
+	// history is this node's local transfer database, nil if it never opened.
+	history *db.Store
 }
 
 // returns tailscale IP address of this node or "" if tsnet is not running
@@ -135,11 +142,20 @@ func New(ctx context.Context, cfg *Config, onProgress func(string)) (*Node, erro
 		return nil, fmt.Errorf("node identity: %w", err)
 	}
 
+	history, err := db.Open(filepath.Join(cfg.DataDir, historyFile))
+	if err != nil {
+		// Best-effort: a node that can't record history should still transfer files
+		log.Printf("warning: could not open history database, transfers will not be recorded: %v", err)
+	} else if err := history.ReconcileStaleTransfers(); err != nil { // marks stale in-progress rows interrupted after a restart
+		log.Printf("warning: could not reconcile stale transfer records: %v", err)
+	}
+
 	return &Node{
 		cfg:         cfg,
 		tsnetServer: ts,
 		tailscaleIP: ip4.String(),
 		nodeID:      ident.NodeID,
+		history:     history,
 	}, nil
 }
 
@@ -196,6 +212,11 @@ func (a *Node) Close() {
 		if a.tsnetServer != nil {
 			if err := a.tsnetServer.Close(); err != nil {
 				log.Printf("closing tsnet server: %v", err)
+			}
+		}
+		if a.history != nil {
+			if err := a.history.Close(); err != nil {
+				log.Printf("closing history database: %v", err)
 			}
 		}
 	})

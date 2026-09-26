@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/edgegrid/edgegrid/internal/blob"
+	"github.com/edgegrid/edgegrid/internal/db"
 	"github.com/edgegrid/edgegrid/internal/discovery"
 )
 
@@ -66,9 +68,14 @@ func (a *Node) SendBlob(ctx context.Context, peer discovery.Peer, path string, m
 	log.Printf("blob: sending %s (%d bytes, %d chunks) to %s", path, m.Size, len(m.Chunks), peer.Hostname)
 
 	t := a.transfers.start(Outbound, peer.Hostname)
+	historyID, haveHistory := recordTransferStart(a.history, db.Outbound, peer.ID, peer.Hostname, m.Name, m.Size)
+
 	began := time.Now()
 	err = blob.Send(conn, path, m, t.progressFunc())
 	a.transfers.finish(t, err)
+
+	var refused *blob.RefusedError
+	recordTransferFinish(a.history, historyID, haveHistory, err, errors.As(err, &refused), m.SHA256)
 
 	elapsed := time.Since(began)
 	if err == nil {

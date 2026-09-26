@@ -14,9 +14,8 @@ const (
 	Inbound  Direction = "inbound"
 )
 
-// Status is where a transfer row stands. InProgress rows still open at
-// startup are stale — a crash, not a transfer still running — and get
-// reconciled to Interrupted before anything reads totals.
+// Status is where a transfer row stands. A stale InProgress row is a
+// crash, not a transfer still running — see ReconcileStaleTransfers.
 type Status string
 
 const (
@@ -27,13 +26,13 @@ const (
 	StatusInterrupted Status = "interrupted"
 )
 
-// RecordStart inserts a new transfer row with status in_progress and
-// returns its id, for a later RecordFinish to update.
-func (s *Store) RecordStart(dir Direction, peerID, peerHostname, fileName string, fileSize int64, sha256 string) (int64, error) {
+// RecordStart inserts a row with status in_progress and returns its id.
+// sha256 starts empty — it means "confirmed", not "claimed".
+func (s *Store) RecordStart(dir Direction, peerID, peerHostname, fileName string, fileSize int64) (int64, error) {
 	res, err := s.db.Exec(
 		`INSERT INTO transfers (direction, peer_id, peer_hostname, file_name, file_size, sha256, status, started_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		dir, peerID, peerHostname, fileName, fileSize, sha256, StatusInProgress, time.Now().UTC().Unix(),
+		dir, peerID, peerHostname, fileName, fileSize, "", StatusInProgress, time.Now().UTC().Unix(),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("db: record transfer start: %w", err)
@@ -41,16 +40,19 @@ func (s *Store) RecordStart(dir Direction, peerID, peerHostname, fileName string
 	return res.LastInsertId()
 }
 
-// RecordFinish marks a transfer row done, setting finished_at to now.
-// errMsg is stored only when non-empty.
-func (s *Store) RecordFinish(id int64, status Status, errMsg string) error {
+// RecordFinish updates a row's status and finished_at. sha256 is kept
+// only when status is StatusDone — anything else, it's dropped.
+func (s *Store) RecordFinish(id int64, status Status, errMsg, sha256 string) error {
 	var errVal sql.NullString
 	if errMsg != "" {
 		errVal = sql.NullString{String: errMsg, Valid: true}
 	}
+	if status != StatusDone {
+		sha256 = ""
+	}
 	_, err := s.db.Exec(
-		`UPDATE transfers SET status = ?, error = ?, finished_at = ? WHERE id = ?`,
-		status, errVal, time.Now().UTC().Unix(), id,
+		`UPDATE transfers SET status = ?, error = ?, sha256 = ?, finished_at = ? WHERE id = ?`,
+		status, errVal, sha256, time.Now().UTC().Unix(), id,
 	)
 	if err != nil {
 		return fmt.Errorf("db: record transfer finish: %w", err)
@@ -58,9 +60,8 @@ func (s *Store) RecordFinish(id int64, status Status, errMsg string) error {
 	return nil
 }
 
-// ReconcileStaleTransfers marks every in_progress row as interrupted. Call
-// once at startup: an in_progress row that predates this process is a
-// crash, not a transfer still running.
+// ReconcileStaleTransfers marks every in_progress row interrupted. Call
+// once at startup — such a row predates this process, so it's a crash.
 func (s *Store) ReconcileStaleTransfers() error {
 	_, err := s.db.Exec(
 		`UPDATE transfers SET status = ?, finished_at = ? WHERE status = ?`,
