@@ -1,15 +1,11 @@
 package node
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
-	"time"
 
 	"github.com/edgegrid/edgegrid/internal/blob"
 )
@@ -48,119 +44,21 @@ const maxBlobBytesFile = "max_blob_bytes"
 // by writing a byte count to max_blob_bytes.
 const defaultMaxBlobBytes int64 = 10 << 30
 
-// stableIDPattern is what a StableID looks like. It comes from Tailscale
-// rather than the peer, but it is still a string about to become a filename,
-// so it is checked rather than trusted.
-var stableIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+// fileACL is the file-transfer ACL's storage. See aclstore.go for the
+// shared mechanics, and task_acl.go for the separate task ACL.
+var fileACL = aclKind{dir: aclDir, defaultFile: aclDefaultFile}
 
-// ACLEntry is one peer's recorded decision.
-type ACLEntry struct {
-	StableID string
-	Allow    bool
-	Hostname string
-	Decided  time.Time
+func aclLookup(dataDir, stableID string) (ACLEntry, bool, error) {
+	return fileACL.lookup(dataDir, stableID)
 }
 
-func aclPath(dataDir, stableID string) (string, error) {
-	if !stableIDPattern.MatchString(stableID) {
-		return "", fmt.Errorf("acl: %q is not a valid stable id", stableID)
-	}
-	return filepath.Join(dataDir, aclDir, stableID), nil
-}
-
-// aclLookup returns the recorded decision for a peer, or ok=false when there
-// is none and the default applies.
-func aclLookup(dataDir, stableID string) (entry ACLEntry, ok bool, err error) {
-	path, err := aclPath(dataDir, stableID)
-	if err != nil {
-		return ACLEntry{}, false, err
-	}
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return ACLEntry{}, false, nil
-	}
-	if err != nil {
-		return ACLEntry{}, false, err
-	}
-	defer f.Close()
-
-	entry = ACLEntry{StableID: stableID}
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		k, v, found := strings.Cut(line, "=")
-		if !found {
-			continue
-		}
-		v = strings.TrimSpace(v)
-		switch strings.TrimSpace(k) {
-		case "allow":
-			entry.Allow = v == "true"
-		case "hostname":
-			entry.Hostname = v
-		case "decided":
-			entry.Decided, _ = time.Parse(time.RFC3339, v)
-		}
-	}
-	// A file that exists but can't be read is not "no entry" — falling back
-	// to the default there could turn a deny into an allow.
-	if err := sc.Err(); err != nil {
-		return ACLEntry{}, false, err
-	}
-	return entry, true, nil
-}
-
-// aclSet records a decision, replacing any earlier one. The file is written
-// to a temp name and renamed so a concurrent reader never sees half of it.
 func aclSet(dataDir, stableID, hostname string, allow bool) error {
-	path, err := aclPath(dataDir, stableID)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-
-	// A hostname is peer-influenced text going into a line-oriented file:
-	// keep a newline in it from injecting a second key.
-	hostname = strings.NewReplacer("\n", " ", "\r", " ").Replace(hostname)
-
-	body := fmt.Sprintf("allow=%t\nhostname=%s\ndecided=%s\n",
-		allow, hostname, time.Now().UTC().Format(time.RFC3339))
-
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fileACL.set(dataDir, stableID, hostname, allow)
 }
 
-// aclList returns every recorded decision, keyed by StableID.
-func aclList(dataDir string) map[string]ACLEntry {
-	out := map[string]ACLEntry{}
-	entries, err := os.ReadDir(filepath.Join(dataDir, aclDir))
-	if err != nil {
-		return out
-	}
-	for _, e := range entries {
-		if e.IsDir() || strings.HasSuffix(e.Name(), ".tmp") {
-			continue
-		}
-		if entry, ok, err := aclLookup(dataDir, e.Name()); err == nil && ok {
-			out[e.Name()] = entry
-		}
-	}
-	return out
-}
+func aclList(dataDir string) map[string]ACLEntry { return fileACL.list(dataDir) }
 
-// aclDefaultAllows reports the policy for peers with no entry. Anything but
-// an explicit "allow" is deny: a misspelt or empty file must fail closed.
-func aclDefaultAllows(dataDir string) bool {
-	return strings.TrimSpace(LoadToken(dataDir, aclDefaultFile)) == "allow"
-}
+func aclDefaultAllows(dataDir string) bool { return fileACL.defaultAllows(dataDir) }
 
 func maxBlobBytes(dataDir string) int64 {
 	var n int64
