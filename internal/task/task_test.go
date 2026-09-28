@@ -20,20 +20,20 @@ func TestOfferAndClaimRoundTrip(t *testing.T) {
 	}
 
 	go func() {
-		_, err := Claim(target, func(got *Task) error {
+		_, err := ProcessTask(target, func(got *Task) error {
 			if got.ID != sent.ID {
-				t.Errorf("Claim saw ID = %q, want %q", got.ID, sent.ID)
+				t.Errorf("ProcessTask saw ID = %q, want %q", got.ID, sent.ID)
 			}
 			if got.Kind != "noop" {
-				t.Errorf("Claim saw Kind = %q, want noop", got.Kind)
+				t.Errorf("ProcessTask saw Kind = %q, want noop", got.Kind)
 			}
 			if got.Requirements != sent.Requirements {
-				t.Errorf("Claim saw Requirements = %+v, want %+v", got.Requirements, sent.Requirements)
+				t.Errorf("ProcessTask saw Requirements = %+v, want %+v", got.Requirements, sent.Requirements)
 			}
 			return nil
 		})
 		if err != nil {
-			t.Errorf("Claim: %v", err)
+			t.Errorf("ProcessTask: %v", err)
 		}
 	}()
 
@@ -112,14 +112,14 @@ func TestValidateRejectsBadTasks(t *testing.T) {
 // Validate runs before accept, so a malformed task never reaches policy —
 // the refusal reason should say what was actually wrong, not "busy" or
 // whatever accept would have said.
-func TestClaimRefusesAnInvalidTaskWithoutCallingAccept(t *testing.T) {
+func TestProcessTaskRefusesAnInvalidTaskWithoutCallingAccept(t *testing.T) {
 	dispatcher, target := net.Pipe()
 	defer dispatcher.Close()
 	defer target.Close()
 
 	acceptCalled := false
 	go func() {
-		_, _ = Claim(target, func(*Task) error {
+		_, _ = ProcessTask(target, func(*Task) error {
 			acceptCalled = true
 			return nil
 		})
@@ -138,16 +138,16 @@ func TestClaimRefusesAnInvalidTaskWithoutCallingAccept(t *testing.T) {
 	}
 }
 
-func TestClaimRefusalReachesTheOfferer(t *testing.T) {
+func TestProcessTaskRefusalReachesTheOfferer(t *testing.T) {
 	dispatcher, target := net.Pipe()
 	defer dispatcher.Close()
 	defer target.Close()
 
-	// Claim's own return value isn't checked here — it's determined after
+	// ProcessTask's own return value isn't checked here — it's determined after
 	// WriteVerdict, which is what unblocks Offer below, so asserting on it
 	// in this goroutine would race with the test function returning.
 	go func() {
-		_, _ = Claim(target, func(*Task) error {
+		_, _ = ProcessTask(target, func(*Task) error {
 			return errors.New("busy")
 		})
 	}()
@@ -206,15 +206,15 @@ func TestReadTaskRejectsAWrongVersionBeforeReadingTheBody(t *testing.T) {
 	}
 }
 
-// A version mismatch is the one read failure Claim can still answer
+// A version mismatch is the one read failure ProcessTask can still answer
 // cleanly — it knows exactly how many bytes it consumed to find out.
-func TestClaimRefusesAWrongVersionInsteadOfHanging(t *testing.T) {
+func TestProcessTaskRefusesAWrongVersionInsteadOfHanging(t *testing.T) {
 	dispatcher, target := net.Pipe()
 	defer dispatcher.Close()
 	defer target.Close()
 
 	go func() {
-		_, _ = Claim(target, func(*Task) error { return nil })
+		_, _ = ProcessTask(target, func(*Task) error { return nil })
 	}()
 
 	// Hand-write a header with the wrong version, bypassing WriteTask. The

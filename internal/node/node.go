@@ -58,6 +58,7 @@ type Node struct {
 
 	closeOnce sync.Once
 	transfers registry
+	taskSlot  TaskSlot
 
 	// history is this node's local transfer database, nil if it never opened.
 	history *db.Store
