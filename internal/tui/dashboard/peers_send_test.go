@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -332,5 +333,21 @@ func TestPeerRowShowsTheRoute(t *testing.T) {
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "direct") || !strings.Contains(view, "relay") {
 		t.Errorf("peer rows should show direct and relay, got:\n%s", view)
+	}
+}
+
+func TestSpeedSuffix(t *testing.T) {
+	start := time.Now()
+	tr := Transfer{Started: start, BytesDone: 100 << 20, Total: 1000 << 20}
+
+	if got := speedSuffix(tr, start.Add(500*time.Millisecond)); got != "" {
+		t.Errorf("first second showed %q, want nothing", got)
+	}
+	got := speedSuffix(tr, start.Add(10*time.Second))
+	if !strings.Contains(got, "10.0 MiB/s") || !strings.Contains(got, "ETA 1m30s") {
+		t.Errorf("speedSuffix = %q, want 10.0 MiB/s and ETA 1m30s", got)
+	}
+	if got := speedSuffix(Transfer{BytesDone: 5, Total: 10}, start); got != "" {
+		t.Errorf("unknown start showed %q", got)
 	}
 }

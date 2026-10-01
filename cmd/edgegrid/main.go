@@ -195,6 +195,7 @@ func runDashboard() {
 				Verifying: t.Progress.Verifying,
 				Done:      t.Done,
 				Err:       t.Err,
+				Started:   t.Started,
 			})
 		}
 		return out

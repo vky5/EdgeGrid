@@ -66,6 +66,7 @@ type Transfer struct {
 	Verifying bool // all bytes are in; the receiver is flushing and re-hashing
 	Done      bool
 	Err       error
+	Started   time.Time // for the live speed; zero means unknown
 }
 
 // TransfersFunc lists what this node is sending and receiving right now.
@@ -634,14 +635,35 @@ func (m peersModel) transfersView() string {
 			status = lipgloss.NewStyle().Foreground(style.Accent).Render(
 				"verifying…  " + humanBytes(t.Total) + " received, checking the whole file")
 		default:
-			status = fmt.Sprintf("%s  %3.0f%%  %s / %s",
+			status = fmt.Sprintf("%s  %3.0f%%  %s / %s%s",
 				transferBar(t.Frac, barWidth), t.Frac*100,
-				humanBytes(t.BytesDone), humanBytes(t.Total))
+				humanBytes(t.BytesDone), humanBytes(t.Total),
+				speedSuffix(t, time.Now()))
 		}
 
 		rows = append(rows, fmt.Sprintf("  %s %-16s %s", arrow, truncate(t.Peer, 16), status))
 	}
 	return strings.Join(rows, "\n")
+}
+
+// speedSuffix is the average rate since the transfer began, plus an ETA once
+// there's enough to go on. Empty in the first second, where bytes/elapsed
+// swings wildly.
+func speedSuffix(t Transfer, now time.Time) string {
+	if t.Started.IsZero() || t.BytesDone <= 0 {
+		return ""
+	}
+	elapsed := now.Sub(t.Started)
+	if elapsed < time.Second {
+		return ""
+	}
+	rate := float64(t.BytesDone) / elapsed.Seconds()
+	out := "  " + humanBytes(int64(rate)) + "/s"
+	if remaining := t.Total - t.BytesDone; remaining > 0 && rate > 0 {
+		eta := time.Duration(float64(remaining) / rate * float64(time.Second))
+		out += "  ETA " + eta.Round(time.Second).String()
+	}
+	return out
 }
 
 func truncate(s string, n int) string {
