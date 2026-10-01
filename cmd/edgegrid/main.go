@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -61,7 +62,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  dashboard  bring this node up and open the terminal dashboard")
 	fmt.Fprintln(os.Stderr, "  logs       tail this node's log file")
 	fmt.Fprintln(os.Stderr, "  profile    list | use <name> | current")
-	fmt.Fprintln(os.Stderr, "  task       send <noop> — dispatch a dummy task to every online peer")
+	fmt.Fprintln(os.Stderr, "  task       send <kind> [input-json] — dispatch a task to the first online peer that accepts it")
 }
 
 // runNode brings the node up on the tailnet and blocks until interrupted.
@@ -205,6 +206,17 @@ func runDashboard() {
 		}
 		return out
 	}).WithTrust(dashboard.TrustFuncs{List: nodeAgent.TrustedPeers, Set: nodeAgent.SetTrust}).
+		WithTasks(dashboard.TaskFuncs{
+			ListTrust: nodeAgent.TrustedTaskPeers,
+			SetTrust:  nodeAgent.SetTaskTrust,
+			Dispatch: func(ctx context.Context, p discovery.Peer, kind string) error {
+				t, err := task.New(kind, task.Requirements{})
+				if err != nil {
+					return err
+				}
+				return nodeAgent.DispatchTask(ctx, []discovery.Peer{p}, t)
+			},
+		}).
 		WithHistory(dashboard.HistoryFuncs{Totals: nodeAgent.HistoryTotals, Recent: nodeAgent.RecentTransfers})
 
 	p := tea.NewProgram(a, tea.WithAltScreen())
@@ -276,18 +288,30 @@ func runTask(args []string) {
 	}
 	switch args[0] {
 	case "send":
-		runTaskSend()
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: edgegrid task send <kind> [input-json]")
+			os.Exit(1)
+		}
+		var input json.RawMessage
+		if len(args) > 2 {
+			if !json.Valid([]byte(args[2])) {
+				fmt.Fprintf(os.Stderr, "input is not valid JSON: %s\n", args[2])
+				os.Exit(1)
+			}
+			input = json.RawMessage(args[2])
+		}
+		runTaskSend(args[1], input)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown task subcommand %q\n", args[0])
 		os.Exit(1)
 	}
 }
 
-// runTaskSend is a dev-only trigger for dispatching a no-op task to every
-// online peer, to exercise DispatchTask outside of a test. It only needs
+// runTaskSend is a dev-only trigger for dispatching a task to every online
+// peer, to exercise DispatchTask outside of a test. It only needs
 // tsnet up, not the discovery listener — Snapshot reads Tailscale's own
 // membership state directly, and this command never receives anything.
-func runTaskSend() {
+func runTaskSend(kind string, input json.RawMessage) {
 	cfg := node.LoadConfig()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -321,12 +345,13 @@ func runTaskSend() {
 		return
 	}
 
-	t, err := task.New("noop", task.Requirements{})
+	t, err := task.New(kind, task.Requirements{})
 	if err != nil {
 		log.Fatalf("building task: %v", err)
 	}
+	t.Input = input
 
-	fmt.Printf("dispatching task %s (noop) to %d peer(s)...\n", t.ID, len(online))
+	fmt.Printf("dispatching task %s (%s) to %d peer(s)...\n", t.ID, kind, len(online))
 	if err := nodeAgent.DispatchTask(ctx, online, t); err != nil {
 		fmt.Fprintf(os.Stderr, "dispatch failed: %v\n", err)
 		os.Exit(1)

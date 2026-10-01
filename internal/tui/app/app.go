@@ -78,6 +78,12 @@ func (a App) WithTrust(t dashboard.TrustFuncs) App {
 	return a
 }
 
+// WithTasks connects the Peers tab to this node's task ACL and dispatcher.
+func (a App) WithTasks(t dashboard.TaskFuncs) App {
+	a.dashboard = a.dashboard.WithTasks(t)
+	return a
+}
+
 // WithHistory connects the History tab to this node's transfer database.
 func (a App) WithHistory(h dashboard.HistoryFuncs) App {
 	a.dashboard = a.dashboard.WithHistory(h)
