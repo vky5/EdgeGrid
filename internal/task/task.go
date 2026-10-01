@@ -38,8 +38,10 @@ type Requirements struct {
 // are the real fields; execution itself is still a hardcoded no-op for v1.
 type Task struct {
 	ID           string       `json:"id"`
-	Kind         string       `json:"kind"`
+	Kind         string       `json:"kind"` // must match with exectuor.go defintions
 	Requirements Requirements `json:"requirements"`
+	// Input is small kind-specific JSON fed to the run, bulk data goes via blob.
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 // New builds a task with a fresh random ID (a UUIDv4) — the normal way to
