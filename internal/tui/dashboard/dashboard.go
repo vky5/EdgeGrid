@@ -84,6 +84,13 @@ func (d Dashboard) WithTrust(t TrustFuncs) Dashboard {
 	return d
 }
 
+// WithTasks connects the Peers tab to this node's task ACL and dispatcher.
+func (d Dashboard) WithTasks(t TaskFuncs) Dashboard {
+	d.peers.tasks = t
+	d.peers = d.peers.refresh()
+	return d
+}
+
 // WithHistory connects the History tab to this node's transfer database.
 func (d Dashboard) WithHistory(h HistoryFuncs) Dashboard {
 	d.history.funcs = h

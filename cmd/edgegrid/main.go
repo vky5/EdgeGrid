@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -14,8 +15,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/edgegrid/edgegrid/internal/discovery"
 	"github.com/edgegrid/edgegrid/internal/node"
 	"github.com/edgegrid/edgegrid/internal/tailscaleapi"
+	"github.com/edgegrid/edgegrid/internal/task"
 	"github.com/edgegrid/edgegrid/internal/tui/app"
 	"github.com/edgegrid/edgegrid/internal/tui/dashboard"
 )
@@ -37,6 +40,9 @@ func main() {
 		case "dashboard":
 			runDashboard()
 			return
+		case "task":
+			runTask(os.Args[2:])
+			return
 		case "-h", "--help", "help":
 			usage()
 			return
@@ -51,11 +57,12 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: edgegrid <up|dashboard|logs|profile> [args]")
+	fmt.Fprintln(os.Stderr, "usage: edgegrid <up|dashboard|logs|profile|task> [args]")
 	fmt.Fprintln(os.Stderr, "  up         bring this node onto the tailnet and block until interrupted")
 	fmt.Fprintln(os.Stderr, "  dashboard  bring this node up and open the terminal dashboard")
 	fmt.Fprintln(os.Stderr, "  logs       tail this node's log file")
 	fmt.Fprintln(os.Stderr, "  profile    list | use <name> | current")
+	fmt.Fprintln(os.Stderr, "  task       send <kind> [input-json] — dispatch a task to the first online peer that accepts it")
 }
 
 // runNode brings the node up on the tailnet and blocks until interrupted.
@@ -199,6 +206,17 @@ func runDashboard() {
 		}
 		return out
 	}).WithTrust(dashboard.TrustFuncs{List: nodeAgent.TrustedPeers, Set: nodeAgent.SetTrust}).
+		WithTasks(dashboard.TaskFuncs{
+			ListTrust: nodeAgent.TrustedTaskPeers,
+			SetTrust:  nodeAgent.SetTaskTrust,
+			Dispatch: func(ctx context.Context, p discovery.Peer, kind string) error {
+				t, err := task.New(kind, task.Requirements{})
+				if err != nil {
+					return err
+				}
+				return nodeAgent.DispatchTask(ctx, []discovery.Peer{p}, t)
+			},
+		}).
 		WithHistory(dashboard.HistoryFuncs{Totals: nodeAgent.HistoryTotals, Recent: nodeAgent.RecentTransfers})
 
 	p := tea.NewProgram(a, tea.WithAltScreen())
@@ -260,6 +278,85 @@ func stripFlag(args []string, flag string) []string {
 		out = append(out, a)
 	}
 	return out
+}
+
+// runTask implements `edgegrid task <send>`.
+func runTask(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: edgegrid task <send>")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "send":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: edgegrid task send <kind> [input-json]")
+			os.Exit(1)
+		}
+		var input json.RawMessage
+		if len(args) > 2 {
+			if !json.Valid([]byte(args[2])) {
+				fmt.Fprintf(os.Stderr, "input is not valid JSON: %s\n", args[2])
+				os.Exit(1)
+			}
+			input = json.RawMessage(args[2])
+		}
+		runTaskSend(args[1], input)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown task subcommand %q\n", args[0])
+		os.Exit(1)
+	}
+}
+
+// runTaskSend is a dev-only trigger for dispatching a task to every online
+// peer, to exercise DispatchTask outside of a test. It only needs
+// tsnet up, not the discovery listener — Snapshot reads Tailscale's own
+// membership state directly, and this command never receives anything.
+func runTaskSend(kind string, input json.RawMessage) {
+	cfg := node.LoadConfig()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	nodeAgent, closeLog, err := node.NewWithLogging(ctx, cfg, nil, false)
+	if err != nil {
+		log.Fatalf("failed to initialize EdgeGrid agent: %v", err)
+	}
+	defer closeLog()
+	defer nodeAgent.Close()
+
+	lc, err := nodeAgent.LocalClient()
+	if err != nil {
+		log.Fatalf("local client: %v", err)
+	}
+
+	peers, err := discovery.Snapshot(ctx, lc)
+	if err != nil {
+		log.Fatalf("peer snapshot: %v", err)
+	}
+
+	var online []discovery.Peer
+	for _, p := range peers {
+		if p.Online {
+			online = append(online, p)
+		}
+	}
+	if len(online) == 0 {
+		fmt.Println("no online peers to dispatch to")
+		return
+	}
+
+	t, err := task.New(kind, task.Requirements{})
+	if err != nil {
+		log.Fatalf("building task: %v", err)
+	}
+	t.Input = input
+
+	fmt.Printf("dispatching task %s (%s) to %d peer(s)...\n", t.ID, kind, len(online))
+	if err := nodeAgent.DispatchTask(ctx, online, t); err != nil {
+		fmt.Fprintf(os.Stderr, "dispatch failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("task accepted")
 }
 
 // runProfile implements `edgegrid profile list|use <name>|current`.

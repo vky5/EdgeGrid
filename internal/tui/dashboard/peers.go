@@ -39,6 +39,8 @@ const (
 	peersBuilding
 	peersReady
 	peersSending
+	peersPickKind
+	peersDispatching
 )
 
 // SendFunc transfers path to peer. node.Node.SendBlob satisfies it —
@@ -53,6 +55,14 @@ type SendFunc func(ctx context.Context, peer discovery.Peer, path string, m *blo
 type TrustFuncs struct {
 	List func() map[string]bool // StableID -> allowed; peers with no entry are absent
 	Set  func(stableID, hostname string, allow bool) error
+}
+
+// TaskFuncs lets the Peers tab trust peers for tasks and dispatch one to the
+// selected peer. Same StableID keys as TrustFuncs, but a separate ACL.
+type TaskFuncs struct {
+	ListTrust func() map[string]bool
+	SetTrust  func(stableID, hostname string, allow bool) error
+	Dispatch  func(ctx context.Context, peer discovery.Peer, kind string) error
 }
 
 // Transfer is one in-flight transfer, in either direction. Mirrors
@@ -102,6 +112,9 @@ type peersModel struct {
 	send      SendFunc
 	trust     TrustFuncs
 	trusted   map[string]bool
+	tasks     TaskFuncs
+	taskTrust map[string]bool
+	kind      string
 	transfers TransfersFunc
 	active    []Transfer
 	sendNote  string
@@ -137,6 +150,21 @@ type blobSentMsg struct {
 	err  error
 }
 
+// taskDispatchedMsg carries the peer's verdict on an offered task. Off the
+// UI goroutine because the dial and verdict wait can take seconds.
+type taskDispatchedMsg struct {
+	peer discovery.Peer
+	kind string
+	err  error
+}
+
+func dispatchTaskCmd(dispatch func(context.Context, discovery.Peer, string) error, peer discovery.Peer, kind string) tea.Cmd {
+	return func() tea.Msg {
+		err := dispatch(context.Background(), peer, kind)
+		return taskDispatchedMsg{peer: peer, kind: kind, err: err}
+	}
+}
+
 type transferTickMsg struct{}
 
 func transferTickCmd() tea.Cmd {
@@ -165,6 +193,9 @@ func (m peersModel) refresh() peersModel {
 	if m.trust.List != nil {
 		m.trusted = m.trust.List()
 	}
+	if m.tasks.ListTrust != nil {
+		m.taskTrust = m.tasks.ListTrust()
+	}
 	if m.lc == nil {
 		return m
 	}
@@ -177,9 +208,11 @@ func (m peersModel) refresh() peersModel {
 
 func (m peersModel) Init() tea.Cmd { return tea.Batch(peersRefreshCmd(), transferTickCmd()) }
 
-// capturesTextInput reports whether a keystroke belongs to the file-path
-// field rather than to the dashboard's own shortcuts.
-func (m peersModel) capturesTextInput() bool { return m.mode == peersPickFile }
+// capturesTextInput reports whether a keystroke belongs to a text field
+// (file path or task kind) rather than to the dashboard's own shortcuts.
+func (m peersModel) capturesTextInput() bool {
+	return m.mode == peersPickFile || m.mode == peersPickKind
+}
 
 // helpText is the footer hint for whichever step of the flow is showing.
 func (m peersModel) helpText() string {
@@ -192,8 +225,12 @@ func (m peersModel) helpText() string {
 		return "enter send   esc cancel"
 	case peersSending:
 		return "sending…"
+	case peersPickKind:
+		return "enter offer the task   esc cancel"
+	case peersDispatching:
+		return "waiting for their answer…   esc stop waiting"
 	default:
-		return "↑/↓ select   s send a file   a allow/block them sending to you   Tab switch tabs   q quit"
+		return "↑/↓ select   s send file   x send task   a allow files   t allow tasks   Tab tabs   q quit"
 	}
 }
 
@@ -219,6 +256,21 @@ func (m peersModel) Update(msg tea.Msg) (peersModel, tea.Cmd) {
 		}
 		m.flowErr = nil
 		m.sendNote = fmt.Sprintf("sent %s to %s", humanBytes(msg.size), peerLabel(msg.peer))
+		return m, nil
+
+	case taskDispatchedMsg:
+		// esc while waiting already left the flow; a late answer is dropped.
+		if m.mode != peersDispatching || msg.peer.ID != m.target.ID {
+			return m, nil
+		}
+		m.mode = peersBrowsing
+		if msg.err != nil {
+			m.flowErr = msg.err
+			m.sendNote = ""
+			return m, nil
+		}
+		m.flowErr = nil
+		m.sendNote = fmt.Sprintf("%s accepted %q — it runs there; output is in their log", peerLabel(msg.peer), msg.kind)
 		return m, nil
 
 	case manifestBuiltMsg:
@@ -250,6 +302,13 @@ func (m peersModel) Update(msg tea.Msg) (peersModel, tea.Cmd) {
 			return m, nil
 		case peersReady:
 			return m.updateReady(msg)
+		case peersPickKind:
+			return m.updatePickKind(msg)
+		case peersDispatching:
+			if msg.Type == tea.KeyEsc {
+				return m.cancelFlow(), nil
+			}
+			return m, nil
 		default:
 			return m.updateBrowsing(msg)
 		}
@@ -291,6 +350,49 @@ func (m peersModel) updateBrowsing(key tea.KeyMsg) (peersModel, tea.Cmd) {
 		} else {
 			m.sendNote = peerLabel(p) + " is blocked from sending you files"
 		}
+	case "t":
+		if len(m.peers) == 0 || m.cursor >= len(m.peers) {
+			return m, nil
+		}
+		if m.tasks.SetTrust == nil {
+			m.flowErr = fmt.Errorf("task trust isn't wired up")
+			return m, nil
+		}
+		p := m.peers[m.cursor]
+		allow := !m.taskTrust[p.ID]
+		if err := m.tasks.SetTrust(p.ID, peerLabel(p), allow); err != nil {
+			m.flowErr = err
+			return m, nil
+		}
+		m.flowErr = nil
+		if m.tasks.ListTrust != nil {
+			m.taskTrust = m.tasks.ListTrust()
+		}
+		if allow {
+			m.sendNote = peerLabel(p) + " may now run tasks on this node"
+		} else {
+			m.sendNote = peerLabel(p) + " is blocked from running tasks on this node"
+		}
+	case "x":
+		if len(m.peers) == 0 || m.cursor >= len(m.peers) {
+			return m, nil
+		}
+		p := m.peers[m.cursor]
+		if !p.Online {
+			m.flowErr = fmt.Errorf("%s is offline", peerLabel(p))
+			return m, nil
+		}
+		if m.tasks.Dispatch == nil {
+			m.flowErr = fmt.Errorf("task dispatch isn't wired up")
+			return m, nil
+		}
+		m.target = p
+		m.flowErr = nil
+		m.sendNote = ""
+		m.kind = ""
+		m.mode = peersPickKind
+		m.input = newKindInput()
+		return m, textinput.Blink
 	case "s", "enter":
 		if len(m.peers) == 0 || m.cursor >= len(m.peers) {
 			return m, nil
@@ -358,13 +460,41 @@ func (m peersModel) updateReady(key tea.KeyMsg) (peersModel, tea.Cmd) {
 	return m, nil
 }
 
+func (m peersModel) updatePickKind(key tea.KeyMsg) (peersModel, tea.Cmd) {
+	switch key.Type {
+	case tea.KeyEsc:
+		return m.cancelFlow(), nil
+	case tea.KeyEnter:
+		kind := strings.TrimSpace(m.input.Value())
+		if kind == "" {
+			return m, nil
+		}
+		m.kind = kind
+		m.flowErr = nil
+		m.mode = peersDispatching
+		m.input.Blur()
+		return m, dispatchTaskCmd(m.tasks.Dispatch, m.target, kind)
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(key)
+	return m, cmd
+}
+
 func (m peersModel) cancelFlow() peersModel {
 	m.mode = peersBrowsing
 	m.input.Blur()
 	m.manifest = nil
 	m.flowErr = nil
 	m.path = ""
+	m.kind = ""
 	return m
+}
+
+func newKindInput() textinput.Model {
+	ti := newPathInput()
+	ti.Placeholder = "task kind, e.g. hello"
+	ti.CharLimit = 64
+	return ti
 }
 
 func newPathInput() textinput.Model {
@@ -459,7 +589,11 @@ func (m peersModel) View() string {
 		height = 24
 	}
 
-	if m.mode != peersBrowsing {
+	switch m.mode {
+	case peersBrowsing:
+	case peersPickKind, peersDispatching:
+		return renderPane("TASK", m.taskView(), width, height)
+	default:
 		return renderPane("SEND", m.sendView(), width, height)
 	}
 
@@ -490,7 +624,7 @@ func (m peersModel) View() string {
 		if p.IP.IsValid() {
 			ip = p.IP.String()
 		}
-		row := fmt.Sprintf("%s %s %-20s %-16s %s%s", statusPill, m.trustMarker(p.ID), peerLabel(p), ip, routeCell(p), seen)
+		row := fmt.Sprintf("%s f%s t%s %-20s %-16s %s%s", statusPill, m.trustMarker(p.ID), m.taskTrustMarker(p.ID), peerLabel(p), ip, routeCell(p), seen)
 		if i == m.cursor {
 			rows = append(rows, style.Selected.Render("▸ ")+row)
 		} else {
@@ -547,6 +681,29 @@ func (m peersModel) sendView() string {
 		}
 	}
 
+	if m.flowErr != nil {
+		lines = append(lines, "", lipgloss.NewStyle().Foreground(style.Danger).Render(m.flowErr.Error()))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// taskView renders the task flow: which peer, which kind, and whether we're
+// still waiting for its verdict.
+func (m peersModel) taskView() string {
+	muted := lipgloss.NewStyle().Foreground(style.Muted)
+	accent := lipgloss.NewStyle().Foreground(style.Accent).Bold(true)
+
+	lines := []string{muted.Render("to  ") + accent.Render(peerLabel(m.target))}
+	switch m.mode {
+	case peersPickKind:
+		lines = append(lines, muted.Render("kind")+" "+m.input.View())
+	case peersDispatching:
+		lines = append(lines,
+			muted.Render("kind")+" "+m.kind,
+			"",
+			muted.Render("offered… waiting for them to accept or refuse"),
+		)
+	}
 	if m.flowErr != nil {
 		lines = append(lines, "", lipgloss.NewStyle().Foreground(style.Danger).Render(m.flowErr.Error()))
 	}
@@ -687,7 +844,16 @@ func checkSinglePath(p string) error {
 // trustMarker shows whether a peer may send this node files: allowed,
 // blocked, or no decision recorded (the profile's default applies).
 func (m peersModel) trustMarker(stableID string) string {
-	allowed, decided := m.trusted[stableID]
+	return decisionMarker(m.trusted, stableID)
+}
+
+// taskTrustMarker is trustMarker for the separate task ACL.
+func (m peersModel) taskTrustMarker(stableID string) string {
+	return decisionMarker(m.taskTrust, stableID)
+}
+
+func decisionMarker(decisions map[string]bool, stableID string) string {
+	allowed, decided := decisions[stableID]
 	switch {
 	case !decided:
 		return lipgloss.NewStyle().Foreground(style.Muted).Render("·")

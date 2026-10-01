@@ -11,6 +11,7 @@ import (
 
 	"github.com/edgegrid/edgegrid/internal/db"
 	"github.com/edgegrid/edgegrid/internal/discovery"
+	"github.com/edgegrid/edgegrid/internal/executor"
 	"tailscale.com/client/local"
 	"tailscale.com/tsnet"
 )
@@ -58,6 +59,12 @@ type Node struct {
 
 	closeOnce sync.Once
 	transfers registry
+	taskSlot  TaskSlot
+
+	executor *executor.Executor
+	runCtx   context.Context // cancelled by Close, which kills any running task
+	stopRuns context.CancelFunc
+	runs     sync.WaitGroup // Close waits on this so no task outlives the node
 
 	// history is this node's local transfer database, nil if it never opened.
 	history *db.Store
@@ -150,12 +157,16 @@ func New(ctx context.Context, cfg *Config, onProgress func(string)) (*Node, erro
 		log.Printf("warning: could not reconcile stale transfer records: %v", err)
 	}
 
+	runCtx, stopRuns := context.WithCancel(context.Background())
 	return &Node{
 		cfg:         cfg,
 		tsnetServer: ts,
 		tailscaleIP: ip4.String(),
 		nodeID:      ident.NodeID,
 		history:     history,
+		executor:    loadExecutor(cfg.DataDir),
+		runCtx:      runCtx,
+		stopRuns:    stopRuns,
 	}, nil
 }
 
@@ -209,6 +220,8 @@ func (a *Node) Start(ctx context.Context) error {
 func (a *Node) Close() {
 	a.closeOnce.Do(func() {
 		log.Println("shutting down EdgeGrid services")
+		a.stopRuns()
+		a.runs.Wait()
 		if a.tsnetServer != nil {
 			if err := a.tsnetServer.Close(); err != nil {
 				log.Printf("closing tsnet server: %v", err)

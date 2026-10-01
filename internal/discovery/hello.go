@@ -17,6 +17,8 @@ const (
 
 	// IntentBlob means a manifest follows on this same connection
 	IntentBlob IntentType = "blob"
+
+	IntentTask IntentType = "task"
 )
 
 // maxHelloSize bounds how much a peer can make us allocate for one hello,
