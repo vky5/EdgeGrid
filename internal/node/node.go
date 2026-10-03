@@ -155,6 +155,8 @@ func New(ctx context.Context, cfg *Config, onProgress func(string)) (*Node, erro
 		log.Printf("warning: could not open history database, transfers will not be recorded: %v", err)
 	} else if err := history.ReconcileStaleTransfers(); err != nil { // marks stale in-progress rows interrupted after a restart
 		log.Printf("warning: could not reconcile stale transfer records: %v", err)
+	} else if err := history.ReconcileStaleTasks(); err != nil {
+		log.Printf("warning: could not reconcile stale task records: %v", err)
 	}
 
 	runCtx, stopRuns := context.WithCancel(context.Background())

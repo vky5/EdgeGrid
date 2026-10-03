@@ -26,6 +26,8 @@ func (a *Node) handlePeer(who *apitype.WhoIsResponse, hello discovery.Hello, con
 		a.receiveBlob(who, hello, conn)
 	case discovery.IntentTask:
 		a.receiveTask(who, hello, conn)
+	case discovery.IntentResult:
+		a.receiveResult(who, conn)
 
 	default:
 		// IntentHello, empty (a peer older than the field)
