@@ -10,7 +10,7 @@ import (
 )
 
 // schemaVersion is tracked in the database itself via PRAGMA user_version.
-const schemaVersion = 1
+const schemaVersion = 2
 
 // Store is this node's local database. SQLite serializes writers on its
 // own; the pragmas below just make that wait instead of fail.
