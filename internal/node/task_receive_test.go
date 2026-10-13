@@ -14,6 +14,7 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/tailcfg"
 
+	"github.com/edgegrid/edgegrid/internal/db"
 	"github.com/edgegrid/edgegrid/internal/discovery"
 	"github.com/edgegrid/edgegrid/internal/executor"
 	"github.com/edgegrid/edgegrid/internal/task"
@@ -30,12 +31,20 @@ func nodeForTasks(t *testing.T) (n *Node, marker string) {
 	e, err := executor.New([]executor.Definition{
 		{Kind: "noop", Runtime: executor.RuntimeBare, Entrypoint: []string{"true"}},
 		{Kind: "write", Runtime: executor.RuntimeBare, Entrypoint: []string{"sh", "-c", "cat > " + marker}},
+		{Kind: "echo", Runtime: executor.RuntimeBare, Entrypoint: []string{"cat"}},
+		{Kind: "fail", Runtime: executor.RuntimeBare, Entrypoint: []string{"sh", "-c", "echo boom >&2; exit 3"}},
 		{Kind: "sleep", Runtime: executor.RuntimeBare, Entrypoint: []string{"sleep", "30"}},
 	}, []executor.Runtime{executor.Bare{}}, filepath.Join(n.cfg.DataDir, taskRunsDir))
 	if err != nil {
 		t.Fatal(err)
 	}
 	n.executor = e
+	store, err := db.Open(filepath.Join(n.cfg.DataDir, historyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.history = store
+	t.Cleanup(func() { store.Close() }) // runs last: the run cleanup below finishes writes first
 	n.runCtx, n.stopRuns = context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		n.stopRuns()
@@ -48,6 +57,13 @@ func nodeForTasks(t *testing.T) (n *Node, marker string) {
 // drives the real handlePeer -> receiveTask -> task.ProcessTask wiring, not
 // just checkTaskAccept in isolation.
 func sendTaskThroughHandlePeer(t *testing.T, n *Node, stableID, kind string, input json.RawMessage) error {
+	t.Helper()
+	_, err := sendTaskID(t, n, stableID, kind, input)
+	return err
+}
+
+// sendTaskID is the same, and also returns the offered task's ID.
+func sendTaskID(t *testing.T, n *Node, stableID, kind string, input json.RawMessage) (string, error) {
 	t.Helper()
 
 	tk, err := task.New(kind, task.Requirements{})
@@ -67,7 +83,7 @@ func sendTaskThroughHandlePeer(t *testing.T, n *Node, stableID, kind string, inp
 
 	sendErr := task.Offer(sender, tk)
 	<-done
-	return sendErr
+	return tk.ID, sendErr
 }
 
 func peerWho(stableID string) *apitype.WhoIsResponse {
@@ -210,6 +226,9 @@ func TestHandlePeerFreesTheSlotWhenTheVerdictCannotBeSent(t *testing.T) {
 	if !n.taskSlot.TryClaim() {
 		t.Error("slot still claimed after the verdict write failed")
 	}
+	if rec, err := n.history.Task(db.RoleReceived, tk.ID); err != nil || rec.Status != db.TaskFailed {
+		t.Errorf("row = %+v, err = %v, want failed: the task never ran", rec, err)
+	}
 }
 
 // Close cancels a running task instead of waiting out its full duration.
@@ -230,3 +249,5 @@ func TestCloseStopsARunningTask(t *testing.T) {
 		t.Error("slot still claimed after Close stopped the task")
 	}
 }
+
+func asRefused(err error, target **task.RefusedError) bool { return errors.As(err, target) }

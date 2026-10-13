@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -210,13 +211,15 @@ func runDashboard() {
 		WithTasks(dashboard.TaskFuncs{
 			ListTrust: nodeAgent.TrustedTaskPeers,
 			SetTrust:  nodeAgent.SetTaskTrust,
-			Dispatch: func(ctx context.Context, p discovery.Peer, kind string) error {
+			Dispatch: func(ctx context.Context, p discovery.Peer, kind string) (string, error) {
 				t, err := task.New(kind, task.Requirements{})
 				if err != nil {
-					return err
+					return "", err
 				}
-				return nodeAgent.DispatchTask(ctx, []discovery.Peer{p}, t)
+				_, err = nodeAgent.DispatchTask(ctx, []discovery.Peer{p}, t)
+				return t.ID, err
 			},
+			Await: nodeAgent.AwaitResult,
 		}).
 		WithHistory(dashboard.HistoryFuncs{Totals: nodeAgent.HistoryTotals, Recent: nodeAgent.RecentTransfers})
 
@@ -309,7 +312,8 @@ func runTask(args []string) {
 }
 
 // runTaskSend is a dev-only trigger for dispatching a task to every online
-// peer, to exercise DispatchTask outside of a test. It only needs
+// peer and waiting for its result, to exercise DispatchTask and AwaitResult
+// outside of a test. It only needs
 // tsnet up, not the discovery listener — Snapshot reads Tailscale's own
 // membership state directly, and this command never receives anything.
 func runTaskSend(kind string, input json.RawMessage) {
@@ -353,11 +357,26 @@ func runTaskSend(kind string, input json.RawMessage) {
 	t.Input = input
 
 	fmt.Printf("dispatching task %s (%s) to %d peer(s)...\n", t.ID, kind, len(online))
-	if err := nodeAgent.DispatchTask(ctx, online, t); err != nil {
+	peer, err := nodeAgent.DispatchTask(ctx, online, t)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "dispatch failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("task accepted")
+	fmt.Printf("accepted by %s, waiting for the result (Ctrl+C stops waiting, not the task)\n", peer.Hostname)
+
+	resp, err := nodeAgent.AwaitResult(ctx, peer, t.ID)
+	if err != nil {
+		if ctx.Err() != nil {
+			err = errors.New("stopped waiting")
+		}
+		fmt.Fprintf(os.Stderr, "%v: task %s may still be running on %s\n", err, t.ID, peer.Hostname)
+		os.Exit(1)
+	}
+	if err := resp.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", peer.Hostname, err)
+		os.Exit(1)
+	}
+	os.Stdout.Write(resp.Output)
 }
 
 // runProfile implements `edgegrid profile list|use <name>|current`.

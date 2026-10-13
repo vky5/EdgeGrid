@@ -8,13 +8,17 @@ import (
 	"strconv"
 	"time"
 
+	"log"
+
+	"github.com/edgegrid/edgegrid/internal/db"
 	"github.com/edgegrid/edgegrid/internal/discovery"
 	"github.com/edgegrid/edgegrid/internal/task"
 )
 
 // DispatchTask tries each peer in order and stops at the first one that
-// accepts. A peer that's unreachable, refuses, or errors just gets skipped.
-func (a *Node) DispatchTask(ctx context.Context, peers []discovery.Peer, t *task.Task) error {
+// accepts, returning it so the caller knows whom to ask for the result. A peer
+// that's unreachable, refuses, or errors just gets skipped.
+func (a *Node) DispatchTask(ctx context.Context, peers []discovery.Peer, t *task.Task) (discovery.Peer, error) {
 	var errs []error
 
 	for _, peer := range peers {
@@ -40,9 +44,21 @@ func (a *Node) DispatchTask(ctx context.Context, peers []discovery.Peer, t *task
 			continue
 		}
 
-		return nil // this peer accepted — dispatch is done
+		a.recordSentTask(t, peer)
+		return peer, nil // this peer accepted — dispatch is done
 	}
 
 	errs = append(errs, errors.New("no peer accepted the task"))
-	return errors.Join(errs...)
+	return discovery.Peer{}, errors.Join(errs...)
+}
+
+// recordSentTask notes the dispatch so the result can be tied back to it.
+// Best-effort: without a store the task still runs, it just isn't tracked here.
+func (a *Node) recordSentTask(t *task.Task, peer discovery.Peer) {
+	if a.history == nil {
+		return
+	}
+	if err := a.history.RecordTaskStart(db.RoleSent, t.ID, peer.ID, peer.Hostname, t.Kind); err != nil {
+		log.Printf("task: could not record dispatch of %q: %v", t.ID, err)
+	}
 }

@@ -7,7 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/edgegrid/edgegrid/internal/discovery"
+	"github.com/edgegrid/edgegrid/internal/task"
 )
 
 // fakeTasks records what the Peers tab asked the node to do.
@@ -15,20 +18,43 @@ type fakeTasks struct {
 	trust      map[string]bool
 	dispatched []string // "peerID:kind"
 	refuse     error
+	result     *task.ResultResponse // nil leaves Await unwired
+	waitCtx    context.Context      // what Await was called with
 }
 
 func (f *fakeTasks) funcs() TaskFuncs {
-	return TaskFuncs{
+	tf := TaskFuncs{
 		ListTrust: func() map[string]bool { return maps.Clone(f.trust) },
 		SetTrust: func(id, _ string, allow bool) error {
 			f.trust[id] = allow
 			return nil
 		},
-		Dispatch: func(_ context.Context, p discovery.Peer, kind string) error {
+		Dispatch: func(_ context.Context, p discovery.Peer, kind string) (string, error) {
 			f.dispatched = append(f.dispatched, p.ID+":"+kind)
-			return f.refuse
+			return "task-1", f.refuse
 		},
 	}
+	if f.result != nil {
+		tf.Await = func(ctx context.Context, _ discovery.Peer, _ string) (task.ResultResponse, error) {
+			f.waitCtx = ctx
+			return *f.result, nil
+		}
+	}
+	return tf
+}
+
+// dispatchTo runs the x → kind → enter flow and delivers the verdict, leaving
+// the model waiting for the result. It returns that wait's command.
+func dispatchTo(t *testing.T, m peersModel, kind string) (peersModel, tea.Cmd) {
+	t.Helper()
+	m, _ = m.updateBrowsing(key("x"))
+	m = typeText(m, kind)
+	m, cmd := m.updatePickKind(key("enter"))
+	m, cmd = m.Update(cmd())
+	if m.mode != peersDispatching || m.taskID == "" || cmd == nil {
+		t.Fatalf("accepted task isn't waiting for its result: mode = %v, taskID = %q", m.mode, m.taskID)
+	}
+	return m, cmd
 }
 
 func modelWithTasks(f *fakeTasks, peers ...discovery.Peer) peersModel {
@@ -131,6 +157,59 @@ func TestEscWhileDispatchingDropsTheLateAnswer(t *testing.T) {
 	m, _ = m.Update(cmd())
 	if m.sendNote != "" || m.flowErr != nil {
 		t.Errorf("a late answer surfaced after esc: note=%q err=%v", m.sendNote, m.flowErr)
+	}
+}
+
+func TestAcceptedTaskShowsItsOutput(t *testing.T) {
+	f := &fakeTasks{trust: map[string]bool{}, result: &task.ResultResponse{Status: task.StatusDone, Output: []byte("hello from bravo\n")}}
+	m, cmd := dispatchTo(t, modelWithTasks(f, onlinePeer("b", "bravo")), "hello")
+
+	m, _ = m.Update(cmd())
+	if m.mode != peersBrowsing || !strings.Contains(m.sendNote, "hello from bravo") {
+		t.Errorf("mode = %v, note = %q, want back to browsing with the output", m.mode, m.sendNote)
+	}
+}
+
+func TestFailedTaskShowsItsError(t *testing.T) {
+	f := &fakeTasks{trust: map[string]bool{}, result: &task.ResultResponse{Status: task.StatusFailed, Error: "exit status 2"}}
+	m, cmd := dispatchTo(t, modelWithTasks(f, onlinePeer("b", "bravo")), "hello")
+
+	m, _ = m.Update(cmd())
+	if m.flowErr == nil || !strings.Contains(m.flowErr.Error(), "exit status 2") {
+		t.Errorf("flowErr = %v, want the task's error", m.flowErr)
+	}
+}
+
+// esc stops waiting for the result: the wait's context is cancelled and the
+// result that arrives anyway is dropped.
+func TestEscWhileAwaitingCancelsTheWait(t *testing.T) {
+	f := &fakeTasks{trust: map[string]bool{}, result: &task.ResultResponse{Status: task.StatusDone, Output: []byte("late")}}
+	m, cmd := dispatchTo(t, modelWithTasks(f, onlinePeer("b", "bravo")), "hello")
+
+	msg := cmd()
+	m, _ = m.Update(key("esc"))
+	if m.mode != peersBrowsing {
+		t.Fatalf("esc didn't leave the result wait, mode = %v", m.mode)
+	}
+	if f.waitCtx.Err() == nil {
+		t.Error("esc didn't cancel the result wait")
+	}
+	m, _ = m.Update(msg)
+	if m.sendNote != "" || m.flowErr != nil {
+		t.Errorf("a late result surfaced after esc: note=%q err=%v", m.sendNote, m.flowErr)
+	}
+}
+
+func TestOutputPreviewKeepsOneShortLine(t *testing.T) {
+	if got := outputPreview(nil); got != "(no output)" {
+		t.Errorf("empty output = %q", got)
+	}
+	if got := outputPreview([]byte("a\n  b\n")); got != "a b" {
+		t.Errorf("multi-line output = %q, want %q", got, "a b")
+	}
+	long := outputPreview([]byte(strings.Repeat("é", 300)))
+	if n := len([]rune(long)); n != 201 || !strings.HasSuffix(long, "…") {
+		t.Errorf("long output = %d runes, want 200 plus an ellipsis", n)
 	}
 }
 

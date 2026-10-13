@@ -19,6 +19,10 @@ const (
 	IntentBlob IntentType = "blob"
 
 	IntentTask IntentType = "task"
+
+	// IntentResult means a result request for a task follows on this same
+	// connection.
+	IntentResult IntentType = "result"
 )
 
 // maxHelloSize bounds how much a peer can make us allocate for one hello,
