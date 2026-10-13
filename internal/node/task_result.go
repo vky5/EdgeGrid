@@ -40,12 +40,16 @@ func (a *Node) lookupResult(taskID, requester string) task.ResultResponse {
 	if a.history == nil || requester == "" {
 		return unknown
 	}
-	rec, err := a.history.ReceivedTaskFor(taskID, requester)
+	rec, err := a.history.ReceivedTaskFor(taskID, requester) // takes requester as well for security check that the node that is asking for the result is same with which submitted the query
 	if err != nil {
 		if !errors.Is(err, db.ErrTaskNotFound) {
 			log.Printf("task: look up result %q: %v", taskID, err)
 		}
 		return unknown
 	}
-	return task.ResultResponse{Status: task.ResultStatus(rec.Status), Output: rec.Output, Error: rec.Error}
+	return task.ResultResponse{
+		Status: task.ResultStatus(rec.Status), 
+		Output: rec.Output, 
+		Error: rec.Error,
+	}
 }

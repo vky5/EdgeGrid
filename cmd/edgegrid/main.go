@@ -215,7 +215,8 @@ func runDashboard() {
 				if err != nil {
 					return err
 				}
-				return nodeAgent.DispatchTask(ctx, []discovery.Peer{p}, t)
+				_, err = nodeAgent.DispatchTask(ctx, []discovery.Peer{p}, t)
+				return err
 			},
 		}).
 		WithHistory(dashboard.HistoryFuncs{Totals: nodeAgent.HistoryTotals, Recent: nodeAgent.RecentTransfers})
@@ -353,7 +354,7 @@ func runTaskSend(kind string, input json.RawMessage) {
 	t.Input = input
 
 	fmt.Printf("dispatching task %s (%s) to %d peer(s)...\n", t.ID, kind, len(online))
-	if err := nodeAgent.DispatchTask(ctx, online, t); err != nil {
+	if _, err := nodeAgent.DispatchTask(ctx, online, t); err != nil {
 		fmt.Fprintf(os.Stderr, "dispatch failed: %v\n", err)
 		os.Exit(1)
 	}

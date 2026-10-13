@@ -3,6 +3,7 @@ package task
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
@@ -51,6 +52,19 @@ type ResultResponse struct {
 	Status ResultStatus `json:"status"`
 	Output []byte       `json:"output,omitempty"`
 	Error  string       `json:"error,omitempty"`
+}
+
+// Err is nil for a successful run, otherwise why the task produced no output.
+func (r ResultResponse) Err() error {
+	switch r.Status {
+	case StatusDone:
+		return nil
+	case StatusUnknown:
+		return errors.New("the executing node has no record of this task")
+	case StatusRunning:
+		return errors.New("task is still running")
+	}
+	return fmt.Errorf("task %s: %s", r.Status, r.Error)
 }
 
 // One result exchange on the wire, after the hello (intent "result") has gone

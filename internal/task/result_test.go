@@ -114,3 +114,17 @@ func TestFinished(t *testing.T) {
 		}
 	}
 }
+
+func TestResultErrOnlyNilWhenDone(t *testing.T) {
+	if err := (ResultResponse{Status: StatusDone}).Err(); err != nil {
+		t.Errorf("done: Err() = %v, want nil", err)
+	}
+	if err := (ResultResponse{Status: StatusFailed, Error: "exit status 2"}).Err(); err == nil || !strings.Contains(err.Error(), "exit status 2") {
+		t.Errorf("failed: Err() = %v, want the task's error", err)
+	}
+	for _, s := range []ResultStatus{StatusRunning, StatusInterrupted, StatusUnknown} {
+		if (ResultResponse{Status: s}).Err() == nil {
+			t.Errorf("%s: Err() = nil, want an error", s)
+		}
+	}
+}
