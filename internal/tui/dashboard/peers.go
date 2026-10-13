@@ -16,6 +16,7 @@ import (
 
 	"github.com/edgegrid/edgegrid/internal/blob"
 	"github.com/edgegrid/edgegrid/internal/discovery"
+	"github.com/edgegrid/edgegrid/internal/task"
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
@@ -57,12 +58,14 @@ type TrustFuncs struct {
 	Set  func(stableID, hostname string, allow bool) error
 }
 
-// TaskFuncs lets the Peers tab trust peers for tasks and dispatch one to the
-// selected peer. Same StableID keys as TrustFuncs, but a separate ACL.
+// TaskFuncs lets the Peers tab trust peers for tasks, dispatch one to the
+// selected peer and wait for its result. Same StableID keys as TrustFuncs, but
+// a separate ACL. Await is optional: without it the tab stops at the verdict.
 type TaskFuncs struct {
 	ListTrust func() map[string]bool
 	SetTrust  func(stableID, hostname string, allow bool) error
-	Dispatch  func(ctx context.Context, peer discovery.Peer, kind string) error
+	Dispatch  func(ctx context.Context, peer discovery.Peer, kind string) (taskID string, err error)
+	Await     func(ctx context.Context, peer discovery.Peer, taskID string) (task.ResultResponse, error)
 }
 
 // Transfer is one in-flight transfer, in either direction. Mirrors
@@ -116,6 +119,8 @@ type peersModel struct {
 	tasks     TaskFuncs
 	taskTrust map[string]bool
 	kind      string
+	taskID    string             // set once the peer accepted; the result wait is on
+	stopTask  context.CancelFunc // ends the dispatch or result wait, never the task
 	transfers TransfersFunc
 	active    []Transfer
 	sendNote  string
@@ -154,15 +159,30 @@ type blobSentMsg struct {
 // taskDispatchedMsg carries the peer's verdict on an offered task. Off the
 // UI goroutine because the dial and verdict wait can take seconds.
 type taskDispatchedMsg struct {
-	peer discovery.Peer
-	kind string
-	err  error
+	peer   discovery.Peer
+	kind   string
+	taskID string
+	err    error
 }
 
-func dispatchTaskCmd(dispatch func(context.Context, discovery.Peer, string) error, peer discovery.Peer, kind string) tea.Cmd {
+func dispatchTaskCmd(ctx context.Context, dispatch func(context.Context, discovery.Peer, string) (string, error), peer discovery.Peer, kind string) tea.Cmd {
 	return func() tea.Msg {
-		err := dispatch(context.Background(), peer, kind)
-		return taskDispatchedMsg{peer: peer, kind: kind, err: err}
+		id, err := dispatch(ctx, peer, kind)
+		return taskDispatchedMsg{peer: peer, kind: kind, taskID: id, err: err}
+	}
+}
+
+// taskResultMsg carries how an accepted task ended, or why waiting stopped.
+type taskResultMsg struct {
+	taskID string
+	resp   task.ResultResponse
+	err    error
+}
+
+func awaitResultCmd(ctx context.Context, await func(context.Context, discovery.Peer, string) (task.ResultResponse, error), peer discovery.Peer, taskID string) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := await(ctx, peer, taskID)
+		return taskResultMsg{taskID: taskID, resp: resp, err: err}
 	}
 }
 
@@ -264,14 +284,37 @@ func (m peersModel) Update(msg tea.Msg) (peersModel, tea.Cmd) {
 		if m.mode != peersDispatching || msg.peer.ID != m.target.ID {
 			return m, nil
 		}
-		m.mode = peersBrowsing
 		if msg.err != nil {
+			m = m.cancelFlow()
 			m.flowErr = msg.err
 			m.sendNote = ""
 			return m, nil
 		}
-		m.flowErr = nil
-		m.sendNote = fmt.Sprintf("%s accepted %q — it runs there; output is in their log", peerLabel(msg.peer), msg.kind)
+		if m.tasks.Await == nil {
+			m = m.cancelFlow()
+			m.sendNote = fmt.Sprintf("%s accepted %q — it runs there; output is in their log", peerLabel(msg.peer), msg.kind)
+			return m, nil
+		}
+		m.taskID = msg.taskID
+		var ctx context.Context
+		m, ctx = m.startWait()
+		return m, awaitResultCmd(ctx, m.tasks.Await, msg.peer, msg.taskID)
+
+	case taskResultMsg:
+		// esc already left the wait; a late result is dropped.
+		if m.mode != peersDispatching || msg.taskID != m.taskID {
+			return m, nil
+		}
+		label, kind := peerLabel(m.target), m.kind
+		m = m.cancelFlow()
+		switch {
+		case msg.err != nil:
+			m.flowErr = fmt.Errorf("%s: %w — the task may still be running there", label, msg.err)
+		case msg.resp.Err() != nil:
+			m.flowErr = fmt.Errorf("%s: %w", label, msg.resp.Err())
+		default:
+			m.sendNote = fmt.Sprintf("%s finished %q: %s", label, kind, outputPreview(msg.resp.Output))
+		}
 		return m, nil
 
 	case manifestBuiltMsg:
@@ -474,7 +517,8 @@ func (m peersModel) updatePickKind(key tea.KeyMsg) (peersModel, tea.Cmd) {
 		m.flowErr = nil
 		m.mode = peersDispatching
 		m.input.Blur()
-		return m, dispatchTaskCmd(m.tasks.Dispatch, m.target, kind)
+		m, ctx := m.startWait()
+		return m, dispatchTaskCmd(ctx, m.tasks.Dispatch, m.target, kind)
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(key)
@@ -482,13 +526,42 @@ func (m peersModel) updatePickKind(key tea.KeyMsg) (peersModel, tea.Cmd) {
 }
 
 func (m peersModel) cancelFlow() peersModel {
+	if m.stopTask != nil {
+		m.stopTask()
+		m.stopTask = nil
+	}
 	m.mode = peersBrowsing
 	m.input.Blur()
 	m.manifest = nil
 	m.flowErr = nil
 	m.path = ""
 	m.kind = ""
+	m.taskID = ""
 	return m
+}
+
+// startWait gives the next dispatch or result wait a context esc can cancel,
+// ending any previous one.
+func (m peersModel) startWait() (peersModel, context.Context) {
+	if m.stopTask != nil {
+		m.stopTask()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.stopTask = cancel
+	return m, ctx
+}
+
+// outputPreview keeps a task's output to one short line for the status note.
+func outputPreview(out []byte) string {
+	const limit = 200
+	s := []rune(strings.Join(strings.Fields(string(out)), " "))
+	if len(s) == 0 {
+		return "(no output)"
+	}
+	if len(s) > limit {
+		return string(s[:limit]) + "…"
+	}
+	return string(s)
 }
 
 func newKindInput() textinput.Model {
@@ -699,11 +772,11 @@ func (m peersModel) taskView() string {
 	case peersPickKind:
 		lines = append(lines, muted.Render("kind")+" "+m.input.View())
 	case peersDispatching:
-		lines = append(lines,
-			muted.Render("kind")+" "+m.kind,
-			"",
-			muted.Render("offered… waiting for them to accept or refuse"),
-		)
+		status := "offered… waiting for them to accept or refuse"
+		if m.taskID != "" {
+			status = "accepted… running there, waiting for the result"
+		}
+		lines = append(lines, muted.Render("kind")+" "+m.kind, "", muted.Render(status))
 	}
 	if m.flowErr != nil {
 		lines = append(lines, "", lipgloss.NewStyle().Foreground(style.Danger).Render(m.flowErr.Error()))
