@@ -3,7 +3,7 @@ id: 20261011-task-sent-row-outcome
 title: recordSentResult writes the finished status onto the sent row, mapping unknown to failed
 level: detail
 system: tasks
-status: proposed
+status: accepted
 date: 2026-10-11 00:33
 tags: []
 realizes: [20261013-task-send-to-shown-result]

@@ -3,7 +3,7 @@ id: 20261013-task-send-to-shown-result
 title: Sending a task waits on the executing node and shows its output to the sender
 level: story
 system: tasks
-status: proposed
+status: accepted
 date: 2026-10-13 22:40
 tags: []
 realizes: []

@@ -3,7 +3,7 @@ id: 20261013-task-executor-run
 title: The executor runs a registered kind as a plain process in a scratch dir, input on stdin, output from stdout
 level: detail
 system: tasks
-status: proposed
+status: accepted
 date: 2026-10-13 22:42
 tags: []
 realizes: [20261011-task-submit-to-stored-result]

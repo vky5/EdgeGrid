@@ -3,7 +3,7 @@ id: 20261013-task-result-callers
 title: The CLI blocks in AwaitResult and the Peers tab waits through cancellable bubbletea commands
 level: detail
 system: tasks
-status: proposed
+status: accepted
 date: 2026-10-13 22:41
 tags: []
 realizes: [20261013-task-send-to-shown-result]

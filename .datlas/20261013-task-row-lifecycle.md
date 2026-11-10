@@ -3,7 +3,7 @@ id: 20261013-task-row-lifecycle
 title: One tasks row per task per end, pruned after 7 days, with startup reconciles that run independently
 level: detail
 system: tasks
-status: proposed
+status: accepted
 date: 2026-10-13 22:43
 tags: []
 realizes: [20261011-task-submit-to-stored-result]

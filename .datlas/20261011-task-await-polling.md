@@ -3,7 +3,7 @@ id: 20261011-task-await-polling
 title: AwaitResult polls with doubling backoff for up to 10 minutes and retries network errors
 level: detail
 system: tasks
-status: proposed
+status: accepted
 date: 2026-10-11 00:32
 tags: []
 realizes: [20261013-task-send-to-shown-result]
