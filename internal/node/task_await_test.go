@@ -52,10 +52,10 @@ func TestAwaitResultRetriesAfterATransportError(t *testing.T) {
 	}
 }
 
-func TestAwaitResultStopsOnUnknown(t *testing.T) {
-	ask, calls := scripted(reply(task.StatusUnknown, ""))
+func TestAwaitResultStopsOnLost(t *testing.T) {
+	ask, calls := scripted(reply(task.StatusLost, ""))
 	resp, err := awaitResult(context.Background(), fastPlan, ask)
-	if err != nil || resp.Status != task.StatusUnknown || *calls != 1 {
+	if err != nil || resp.Status != task.StatusLost || *calls != 1 {
 		t.Errorf("resp = %+v, err = %v, calls = %d, want one poll", resp, err, *calls)
 	}
 }
@@ -122,15 +122,15 @@ func TestSentRowIsRecordedAndFinished(t *testing.T) {
 	}
 }
 
-func TestUnknownResultIsRecordedAsFailed(t *testing.T) {
+func TestLostResultKeepsTheReasonAndIsNotFailed(t *testing.T) {
 	n := nodeWithStore(t)
 	tk, _ := task.New("hello", task.Requirements{})
 	n.recordSentTask(tk, discovery.Peer{ID: "p", Hostname: "h"})
 
-	n.recordSentResult(tk.ID, task.ResultResponse{Status: task.StatusUnknown})
+	n.recordSentResult(tk.ID, task.ResultResponse{Status: task.StatusLost, Error: task.NoRecord})
 	rec, _ := n.history.Task(db.RoleSent, tk.ID)
-	if rec.Status != db.TaskFailed || rec.Error == "" {
-		t.Errorf("rec = %+v, want failed with a reason", rec)
+	if rec.Status != db.TaskLost || rec.Error != task.NoRecord {
+		t.Errorf("rec = %+v, want lost with B's reason", rec)
 	}
 }
 

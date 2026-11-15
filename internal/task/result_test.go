@@ -60,15 +60,29 @@ func TestMaxOutputFitsInAFrame(t *testing.T) {
 	}
 }
 
-func TestServeResultAnswersUnknownForABadIDWithoutLookup(t *testing.T) {
+func TestServeResultAnswersLostForABadIDWithoutLookup(t *testing.T) {
 	client, server := pipe(t)
 	go ServeResult(server, func(string) ResultResponse {
 		t.Error("lookup called for a malformed id")
 		return ResultResponse{}
 	})
 	resp, err := AskResult(client, "not-a-uuid")
-	if err != nil || resp.Status != StatusUnknown {
-		t.Errorf("resp = %+v, err = %v, want unknown", resp, err)
+	if err != nil || resp.Status != StatusLost || resp.Error != NoRecord {
+		t.Errorf("resp = %+v, err = %v, want lost with no record", resp, err)
+	}
+}
+
+func TestAskResultRejectsRetiredStatuses(t *testing.T) {
+	for _, old := range []ResultStatus{"interrupted", "unknown"} {
+		client, server := pipe(t)
+		go func() {
+			var req ResultRequest
+			readResultFrame(server, &req)
+			writeResultFrame(server, ResultResponse{Status: old})
+		}()
+		if _, err := AskResult(client, uuid.NewString()); err == nil {
+			t.Errorf("%s: accepted a status no longer on the wire", old)
+		}
 	}
 }
 
@@ -108,7 +122,7 @@ func TestFinished(t *testing.T) {
 	if StatusRunning.Finished() {
 		t.Error("running counted as finished")
 	}
-	for _, s := range []ResultStatus{StatusDone, StatusFailed, StatusInterrupted, StatusUnknown} {
+	for _, s := range []ResultStatus{StatusDone, StatusFailed, StatusLost} {
 		if !s.Finished() {
 			t.Errorf("%s not finished", s)
 		}
@@ -122,9 +136,12 @@ func TestResultErrOnlyNilWhenDone(t *testing.T) {
 	if err := (ResultResponse{Status: StatusFailed, Error: "exit status 2"}).Err(); err == nil || !strings.Contains(err.Error(), "exit status 2") {
 		t.Errorf("failed: Err() = %v, want the task's error", err)
 	}
-	for _, s := range []ResultStatus{StatusRunning, StatusInterrupted, StatusUnknown} {
+	for _, s := range []ResultStatus{StatusRunning, StatusLost} {
 		if (ResultResponse{Status: s}).Err() == nil {
 			t.Errorf("%s: Err() = nil, want an error", s)
 		}
+	}
+	if err := (ResultResponse{Status: StatusLost, Error: NoRecord}).Err(); err == nil || !strings.Contains(err.Error(), NoRecord) {
+		t.Errorf("lost: Err() = %v, want the reason", err)
 	}
 }

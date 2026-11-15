@@ -98,18 +98,13 @@ func (a *Node) askResult(ctx context.Context, peer discovery.Peer, taskID string
 	return task.AskResult(conn, taskID)
 }
 
-// recordSentResult stores the finished outcome on the sent row. Unknown means
-// the peer lost the task (pruned, or its database was wiped), so the sender
-// records it as failed rather than leaving it running forever.
+// recordSentResult stores the finished outcome on the sent row, keeping the
+// executing node's reason, such as "node restarted" or "no record of this task".
 func (a *Node) recordSentResult(taskID string, resp task.ResultResponse) {
 	if a.history == nil {
 		return
 	}
-	status, errMsg := db.TaskStatus(resp.Status), resp.Error
-	if resp.Status == task.StatusUnknown {
-		status, errMsg = db.TaskFailed, resp.Err().Error()
-	}
-	if err := a.history.RecordTaskFinish(db.RoleSent, taskID, status, resp.Output, errMsg); err != nil && !errors.Is(err, db.ErrTaskNotFound) {
+	if err := a.history.RecordTaskFinish(db.RoleSent, taskID, db.TaskStatus(resp.Status), resp.Output, resp.Error); err != nil && !errors.Is(err, db.ErrTaskNotFound) {
 		log.Printf("task: could not record result of %q: %v", taskID, err)
 	}
 }

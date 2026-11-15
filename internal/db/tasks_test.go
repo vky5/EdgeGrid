@@ -107,7 +107,7 @@ func TestReconcileStaleTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	run, _ := s.Task(RoleReceived, "run")
-	if run.Status != TaskInterrupted || run.Error != "node restarted" || run.FinishedAt.IsZero() {
+	if run.Status != TaskLost || run.Error != "node restarted" || run.FinishedAt.IsZero() {
 		t.Errorf("running row: %+v", run)
 	}
 	if fin, _ := s.Task(RoleReceived, "fin"); fin.Status != TaskDone {

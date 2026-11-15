@@ -84,7 +84,7 @@ func (a *Node) receiveTask(
 			log.Printf("task: %q (kind=%s) from %s failed: %v", t.ID, t.Kind, label, err)
 			status := db.TaskFailed
 			if a.runCtx.Err() != nil {
-				status = db.TaskInterrupted
+				status = db.TaskLost
 			}
 			a.finishTask(t, status, nil, err.Error())
 			return
@@ -96,7 +96,7 @@ func (a *Node) receiveTask(
 }
 
 // finishTask stores the outcome. If this write fails the row stays running
-// until the next restart marks it interrupted, so say so loudly.
+// until the next restart marks it lost, so say so loudly.
 func (a *Node) finishTask(t *task.Task, status db.TaskStatus, out []byte, errMsg string) {
 	if err := a.history.RecordTaskFinish(db.RoleReceived, t.ID, status, out, errMsg); err != nil {
 		log.Printf("task: %q: could not store its result, dispatcher will see it running: %v", t.ID, err)

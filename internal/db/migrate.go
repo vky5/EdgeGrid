@@ -32,7 +32,7 @@ CREATE TABLE tasks (
 	peer_id       TEXT    NOT NULL,
 	peer_hostname TEXT    NOT NULL,
 	kind          TEXT    NOT NULL,
-	status        TEXT    NOT NULL CHECK (status IN ('running', 'done', 'failed', 'interrupted')),
+	status        TEXT    NOT NULL CHECK (status IN ('running', 'done', 'failed', 'lost')),
 	output        BLOB,
 	error         TEXT,
 	started_at    INTEGER NOT NULL,

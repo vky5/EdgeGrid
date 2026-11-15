@@ -19,11 +19,12 @@ const (
 // see ReconcileStaleTasks.
 type TaskStatus string
 
+// The values match task.ResultStatus, so a row can be sent as-is.
 const (
-	TaskRunning     TaskStatus = "running"
-	TaskDone        TaskStatus = "done"
-	TaskFailed      TaskStatus = "failed"
-	TaskInterrupted TaskStatus = "interrupted"
+	TaskRunning TaskStatus = "running"
+	TaskDone    TaskStatus = "done"
+	TaskFailed  TaskStatus = "failed"
+	TaskLost    TaskStatus = "lost"
 )
 
 // MaxTaskOutput is the largest result stored inline. Bigger outputs belong in
@@ -128,12 +129,12 @@ func (s *Store) scanTask(query string, args ...any) (TaskRecord, error) {
 	return r, nil
 }
 
-// ReconcileStaleTasks marks every running row interrupted. Call once at
+// ReconcileStaleTasks marks every running row lost. Call once at
 // startup — such a row predates this process, so its run died with it.
 func (s *Store) ReconcileStaleTasks() error {
 	_, err := s.db.Exec(
 		`UPDATE tasks SET status = ?, error = ?, finished_at = ? WHERE status = ?`,
-		TaskInterrupted, "node restarted", time.Now().UTC().Unix(), TaskRunning,
+		TaskLost, "node restarted", time.Now().UTC().Unix(), TaskRunning,
 	)
 	if err != nil {
 		return fmt.Errorf("db: reconcile stale tasks: %w", err)
