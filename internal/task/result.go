@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -17,6 +18,10 @@ const resultWireVersion = 1
 // maxResultSize bounds a result frame. A 64KB output is about 87KB once
 // base64'd inside the JSON, so this leaves room for that plus the envelope.
 const maxResultSize = 128 * 1024
+
+// ResultRetention is how long the node that ran a task keeps its result for
+// the sender to collect. The sender stops asking after the same time.
+const ResultRetention = 7 * 24 * time.Hour
 
 // ResultStatus is what the executing node reports about a task. Unknown covers
 // both "no such task" and "not yours" so a peer can't probe for task IDs.

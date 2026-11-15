@@ -13,10 +13,6 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 )
 
-// taskRetention is how long finished task rows are kept for the dispatcher
-// to collect.
-const taskRetention = 7 * 24 * time.Hour
-
 // receiveTask handles an inbound task offer: ACL, kind, slot, then runs it in
 // the background. The outcome is stored for the dispatcher to ask for later
 // (see receiveResult).
@@ -77,7 +73,7 @@ func (a *Node) receiveTask(
 		}
 		return err
 	}
-	if err := a.history.PruneTasks(time.Now().Add(-taskRetention)); err != nil {
+	if err := a.history.PruneTasks(time.Now().Add(-task.ResultRetention)); err != nil {
 		log.Printf("task: prune old results: %v", err)
 	}
 
