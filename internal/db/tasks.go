@@ -129,12 +129,13 @@ func (s *Store) scanTask(query string, args ...any) (TaskRecord, error) {
 	return r, nil
 }
 
-// ReconcileStaleTasks marks every running row lost. Call once at
-// startup — such a row predates this process, so its run died with it.
+// ReconcileStaleTasks marks the tasks this node was running itself as lost.
+// Call once at startup: those runs died with the old process. Tasks this node
+// sent elsewhere are left running, because restarting here doesn't stop them.
 func (s *Store) ReconcileStaleTasks() error {
 	_, err := s.db.Exec(
-		`UPDATE tasks SET status = ?, error = ?, finished_at = ? WHERE status = ?`,
-		TaskLost, "node restarted", time.Now().UTC().Unix(), TaskRunning,
+		`UPDATE tasks SET status = ?, error = ?, finished_at = ? WHERE status = ? AND role = ?`,
+		TaskLost, "node restarted", time.Now().UTC().Unix(), TaskRunning, RoleReceived,
 	)
 	if err != nil {
 		return fmt.Errorf("db: reconcile stale tasks: %w", err)

@@ -115,6 +115,20 @@ func TestReconcileStaleTasks(t *testing.T) {
 	}
 }
 
+// A task sent to another node is still running there after this node restarts.
+func TestReconcileLeavesSentTasksRunning(t *testing.T) {
+	s := openTest(t)
+	s.RecordTaskStart(RoleSent, "away", "p", "h", "k")
+
+	if err := s.ReconcileStaleTasks(); err != nil {
+		t.Fatal(err)
+	}
+	away, _ := s.Task(RoleSent, "away")
+	if away.Status != TaskRunning || away.Error != "" || !away.FinishedAt.IsZero() {
+		t.Errorf("sent row was touched: %+v", away)
+	}
+}
+
 func TestPruneTasksKeepsRunningAndRecent(t *testing.T) {
 	s := openTest(t)
 	for _, id := range []string{"old-done", "old-running", "new-done"} {
