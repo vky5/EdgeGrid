@@ -6,33 +6,42 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 // resultWireVersion versions both result messages. Same layout as an offer:
 // version byte, 4-byte big-endian length, JSON body.
-const resultWireVersion = 1
+const resultWireVersion = 2
 
 // maxResultSize bounds a result frame. A 64KB output is about 87KB once
 // base64'd inside the JSON, so this leaves room for that plus the envelope.
 const maxResultSize = 128 * 1024
 
-// ResultStatus is what the executing node reports about a task. Unknown covers
-// both "no such task" and "not yours" so a peer can't probe for task IDs.
+// ResultRetention is how long the node that ran a task keeps its result for
+// the sender to collect. The sender stops asking after the same time.
+const ResultRetention = 7 * 24 * time.Hour
+
+// ResultStatus is what the executing node reports about a task.
 type ResultStatus string
 
 const (
-	StatusRunning     ResultStatus = "running"
-	StatusDone        ResultStatus = "done"
-	StatusFailed      ResultStatus = "failed"
-	StatusInterrupted ResultStatus = "interrupted"
-	StatusUnknown     ResultStatus = "unknown"
+	StatusRunning ResultStatus = "running"
+	StatusDone    ResultStatus = "done"
+	// the task itself broke, so sending it again won't help
+	StatusFailed ResultStatus = "failed"
+	// no result and not the task's fault, so sending it again makes sense
+	StatusLost ResultStatus = "lost"
 )
+
+// NoRecord is the reason given for a task the executing node can't show you,
+// whether it never existed or belongs to someone else.
+const NoRecord = "no record of this task"
 
 func (s ResultStatus) valid() bool {
 	switch s {
-	case StatusRunning, StatusDone, StatusFailed, StatusInterrupted, StatusUnknown:
+	case StatusRunning, StatusDone, StatusFailed, StatusLost:
 		return true
 	}
 	return false
@@ -47,7 +56,7 @@ type ResultRequest struct {
 }
 
 // ResultResponse is the executing node's answer. Output is set only for done,
-// Error only for failed and interrupted.
+// Error only for failed and lost.
 type ResultResponse struct {
 	Status ResultStatus `json:"status"`
 	Output []byte       `json:"output,omitempty"`
@@ -59,10 +68,11 @@ func (r ResultResponse) Err() error {
 	switch r.Status {
 	case StatusDone:
 		return nil
-	case StatusUnknown:
-		return errors.New("the executing node has no record of this task")
 	case StatusRunning:
 		return errors.New("task is still running")
+	}
+	if r.Error == "" {
+		return fmt.Errorf("task %s", r.Status)
 	}
 	return fmt.Errorf("task %s: %s", r.Status, r.Error)
 }
@@ -85,13 +95,14 @@ func (r ResultResponse) Err() error {
 //
 // response body (output is base64, as encoding/json does for []byte):
 //
-//	{"status":"running|done|failed|interrupted|unknown",
+//	{"status":"running|done|failed|lost",
 //	 "output":"<base64>",   only when done, at most 64KB before encoding
-//	 "error":"<text>"}      only when failed or interrupted
+//	 "error":"<text>"}      only when failed or lost
 //
 // As with an offer, the version sits outside the JSON so a mismatch is caught
-// before a body in an unknown shape is decoded. The executor answers unknown
-// for a missing task and for someone else's, so the two can't be told apart.
+// before a body in an unknown shape is decoded. The executor answers lost with
+// NoRecord for a missing task and for someone else's, so the two can't be told
+// apart.
 
 // writeResultFrame sends v in the format above.
 func writeResultFrame(w io.Writer, v any) error {
@@ -134,7 +145,7 @@ func readResultFrame(r io.Reader, v any) error {
 }
 
 // AskResult sends a request for taskID and reads the answer. An error means
-// the exchange failed; a task the peer doesn't know comes back as StatusUnknown.
+// the exchange failed; a task the peer doesn't know comes back as lost.
 func AskResult(rw io.ReadWriter, taskID string) (ResultResponse, error) {
 	if err := writeResultFrame(rw, ResultRequest{TaskID: taskID}); err != nil {
 		return ResultResponse{}, err
@@ -150,13 +161,13 @@ func AskResult(rw io.ReadWriter, taskID string) (ResultResponse, error) {
 }
 
 // ServeResult reads one request and answers it with lookup's result. A
-// malformed task ID is answered as StatusUnknown without calling lookup.
+// malformed task ID is answered as lost without calling lookup.
 func ServeResult(rw io.ReadWriter, lookup func(taskID string) ResultResponse) error {
 	var req ResultRequest
 	if err := readResultFrame(rw, &req); err != nil {
 		return err
 	}
-	resp := ResultResponse{Status: StatusUnknown}
+	resp := ResultResponse{Status: StatusLost, Error: NoRecord}
 	if _, err := uuid.Parse(req.TaskID); err == nil {
 		resp = lookup(req.TaskID)
 	}

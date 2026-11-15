@@ -93,7 +93,7 @@ func TestResultReportsAFailedRun(t *testing.T) {
 
 // Another peer asking for a real task ID must get the same answer as for an
 // ID that doesn't exist.
-func TestResultIsUnknownToAnyoneButTheDispatcher(t *testing.T) {
+func TestResultIsHiddenFromAnyoneButTheDispatcher(t *testing.T) {
 	n, _ := nodeForTasks(t)
 	trust(t, n, "friend")
 
@@ -103,18 +103,21 @@ func TestResultIsUnknownToAnyoneButTheDispatcher(t *testing.T) {
 	}
 	n.runs.Wait()
 
-	if resp := askResultThroughHandlePeer(t, n, "stranger", id); resp.Status != task.StatusUnknown {
-		t.Errorf("a stranger got %+v for a real task", resp)
+	stranger := askResultThroughHandlePeer(t, n, "stranger", id)
+	missing := askResultThroughHandlePeer(t, n, "friend", "00000000-0000-4000-8000-000000000000")
+	want := task.ResultResponse{Status: task.StatusLost, Error: task.NoRecord}
+	if stranger.Status != want.Status || stranger.Error != want.Error {
+		t.Errorf("a stranger got %+v for a real task", stranger)
 	}
-	if resp := askResultThroughHandlePeer(t, n, "friend", "00000000-0000-4000-8000-000000000000"); resp.Status != task.StatusUnknown {
-		t.Errorf("an unknown id got %+v", resp)
+	if missing.Status != want.Status || missing.Error != want.Error {
+		t.Errorf("a missing id got %+v", missing)
 	}
 }
 
-func TestResultWithNoDatabaseIsUnknown(t *testing.T) {
+func TestResultWithNoDatabaseIsLost(t *testing.T) {
 	n := nodeWithDir(t)
-	if resp := askResultThroughHandlePeer(t, n, "friend", "00000000-0000-4000-8000-000000000000"); resp.Status != task.StatusUnknown {
-		t.Errorf("resp = %+v, want unknown", resp)
+	if resp := askResultThroughHandlePeer(t, n, "friend", "00000000-0000-4000-8000-000000000000"); resp.Status != task.StatusLost {
+		t.Errorf("resp = %+v, want lost", resp)
 	}
 }
 
@@ -133,7 +136,7 @@ func TestTaskIsRefusedWhenResultsCannotBeRecorded(t *testing.T) {
 	}
 }
 
-func TestShutdownMarksARunningTaskInterrupted(t *testing.T) {
+func TestShutdownMarksARunningTaskLost(t *testing.T) {
 	n, _ := nodeForTasks(t)
 	trust(t, n, "friend")
 
@@ -145,7 +148,10 @@ func TestShutdownMarksARunningTaskInterrupted(t *testing.T) {
 	n.runs.Wait()
 
 	rec, err := n.history.Task(db.RoleReceived, id)
-	if err != nil || rec.Status != db.TaskInterrupted {
-		t.Errorf("rec = %+v, err = %v, want interrupted", rec, err)
+	if err != nil || rec.Status != db.TaskLost {
+		t.Errorf("rec = %+v, err = %v, want lost", rec, err)
+	}
+	if resp := askResultThroughHandlePeer(t, n, "friend", id); resp.Status != task.StatusLost || resp.Error == "" {
+		t.Errorf("dispatcher got %+v, want lost with a reason", resp)
 	}
 }

@@ -34,9 +34,9 @@ func (a *Node) receiveResult(who *apitype.WhoIsResponse, conn net.Conn) {
 }
 
 // lookupResult maps a stored row to the wire answer. Missing, someone else's,
-// and unreadable all read as unknown: a peer can't tell them apart.
+// and unreadable all get the same lost answer: a peer can't tell them apart.
 func (a *Node) lookupResult(taskID, requester string) task.ResultResponse {
-	unknown := task.ResultResponse{Status: task.StatusUnknown}
+	unknown := task.ResultResponse{Status: task.StatusLost, Error: task.NoRecord}
 	if a.history == nil || requester == "" {
 		return unknown
 	}
@@ -48,8 +48,8 @@ func (a *Node) lookupResult(taskID, requester string) task.ResultResponse {
 		return unknown
 	}
 	return task.ResultResponse{
-		Status: task.ResultStatus(rec.Status), 
-		Output: rec.Output, 
-		Error: rec.Error,
+		Status: task.ResultStatus(rec.Status),
+		Output: rec.Output,
+		Error:  rec.Error,
 	}
 }

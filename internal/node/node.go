@@ -154,7 +154,8 @@ func New(ctx context.Context, cfg *Config, onProgress func(string)) (*Node, erro
 		// Best-effort: a node that can't record history should still transfer files
 		log.Printf("warning: could not open history database, transfers will not be recorded: %v", err)
 	} else {
-		// Marks rows left in progress by a crash as interrupted. Independent,
+		// Marks rows left in progress by a crash as interrupted (transfers) or
+		// lost (tasks). Independent,
 		// so one failing must not skip the other.
 		if err := history.ReconcileStaleTransfers(); err != nil {
 			log.Printf("warning: could not reconcile stale transfer records: %v", err)

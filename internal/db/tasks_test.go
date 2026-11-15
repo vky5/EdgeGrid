@@ -107,11 +107,25 @@ func TestReconcileStaleTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	run, _ := s.Task(RoleReceived, "run")
-	if run.Status != TaskInterrupted || run.Error != "node restarted" || run.FinishedAt.IsZero() {
+	if run.Status != TaskLost || run.Error != "node restarted" || run.FinishedAt.IsZero() {
 		t.Errorf("running row: %+v", run)
 	}
 	if fin, _ := s.Task(RoleReceived, "fin"); fin.Status != TaskDone {
 		t.Errorf("finished row changed: %+v", fin)
+	}
+}
+
+// A task sent to another node is still running there after this node restarts.
+func TestReconcileLeavesSentTasksRunning(t *testing.T) {
+	s := openTest(t)
+	s.RecordTaskStart(RoleSent, "away", "p", "h", "k")
+
+	if err := s.ReconcileStaleTasks(); err != nil {
+		t.Fatal(err)
+	}
+	away, _ := s.Task(RoleSent, "away")
+	if away.Status != TaskRunning || away.Error != "" || !away.FinishedAt.IsZero() {
+		t.Errorf("sent row was touched: %+v", away)
 	}
 }
 

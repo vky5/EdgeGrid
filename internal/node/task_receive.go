@@ -13,10 +13,6 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 )
 
-// taskRetention is how long finished task rows are kept for the dispatcher
-// to collect.
-const taskRetention = 7 * 24 * time.Hour
-
 // receiveTask handles an inbound task offer: ACL, kind, slot, then runs it in
 // the background. The outcome is stored for the dispatcher to ask for later
 // (see receiveResult).
@@ -77,7 +73,7 @@ func (a *Node) receiveTask(
 		}
 		return err
 	}
-	if err := a.history.PruneTasks(time.Now().Add(-taskRetention)); err != nil {
+	if err := a.history.PruneTasks(time.Now().Add(-task.ResultRetention)); err != nil {
 		log.Printf("task: prune old results: %v", err)
 	}
 
@@ -88,7 +84,7 @@ func (a *Node) receiveTask(
 			log.Printf("task: %q (kind=%s) from %s failed: %v", t.ID, t.Kind, label, err)
 			status := db.TaskFailed
 			if a.runCtx.Err() != nil {
-				status = db.TaskInterrupted
+				status = db.TaskLost
 			}
 			a.finishTask(t, status, nil, err.Error())
 			return
@@ -100,7 +96,7 @@ func (a *Node) receiveTask(
 }
 
 // finishTask stores the outcome. If this write fails the row stays running
-// until the next restart marks it interrupted, so say so loudly.
+// until the next restart marks it lost, so say so loudly.
 func (a *Node) finishTask(t *task.Task, status db.TaskStatus, out []byte, errMsg string) {
 	if err := a.history.RecordTaskFinish(db.RoleReceived, t.ID, status, out, errMsg); err != nil {
 		log.Printf("task: %q: could not store its result, dispatcher will see it running: %v", t.ID, err)
