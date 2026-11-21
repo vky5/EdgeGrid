@@ -110,9 +110,8 @@ func TestRecordFinishStoresError(t *testing.T) {
 	}
 }
 
-// A hash is only meaningful once verifyWhole has actually run, so
-// RecordFinish must drop it for anything but a clean success — even if a
-// caller passes one by mistake.
+// a hash only means something once the whole file was checked
+// so it is dropped for anything but a success, even if a caller passes one by mistake
 func TestRecordFinishDropsHashWhenNotDone(t *testing.T) {
 	s := openTest(t)
 	id, _ := s.RecordStart(Outbound, "peer-1", "alpha", "a.bin", 10)
@@ -130,8 +129,7 @@ func TestRecordFinishDropsHashWhenNotDone(t *testing.T) {
 	}
 }
 
-// The CHECK constraints are the real guarantee that a typo can't corrupt
-// status or direction — this proves SQLite is actually enforcing them.
+// SQLite itself must refuse a misspelt status or direction, not just our code
 func TestInvalidStatusIsRejected(t *testing.T) {
 	s := openTest(t)
 	_, err := s.db.Exec(

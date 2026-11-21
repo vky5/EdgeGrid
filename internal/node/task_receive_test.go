@@ -20,9 +20,8 @@ import (
 	"github.com/edgegrid/edgegrid/internal/task"
 )
 
-// nodeForTasks is nodeWithDir plus what New would set up for the task path:
-// an executor with test kinds and a run context. marker is where the "write"
-// kind writes its input, so a test can prove a run actually happened.
+// a test node with what New sets up for tasks: an executor with test kinds and a run context
+// marker is the file the "write" kind writes its input to, so a test can prove a run happened
 func nodeForTasks(t *testing.T) (n *Node, marker string) {
 	t.Helper()
 	n = nodeWithDir(t)
@@ -53,16 +52,14 @@ func nodeForTasks(t *testing.T) (n *Node, marker string) {
 	return n, marker
 }
 
-// Mirrors sendThroughHandlePeer in receive_test.go, but for the task path:
-// drives the real handlePeer -> receiveTask -> task.ProcessTask wiring, not
-// just checkTaskAccept in isolation.
+// sends a task through the real handlePeer -> receiveTask -> task.ProcessTask path, not just checkTaskAccept
 func sendTaskThroughHandlePeer(t *testing.T, n *Node, stableID, kind string, input json.RawMessage) error {
 	t.Helper()
 	_, err := sendTaskID(t, n, stableID, kind, input)
 	return err
 }
 
-// sendTaskID is the same, and also returns the offered task's ID.
+// same, but also returns the offered task's ID
 func sendTaskID(t *testing.T, n *Node, stableID, kind string, input json.RawMessage) (string, error) {
 	t.Helper()
 
@@ -120,8 +117,7 @@ func TestHandlePeerRunsATaskForAnAllowedPeer(t *testing.T) {
 	}
 }
 
-// Identity for the task ACL is what Tailscale attributed, not the peer's
-// own claim in its hello.
+// who counts for the task ACL is who Tailscale says, not who the hello claims
 func TestHandlePeerIgnoresTheClaimedNodeIDForTasks(t *testing.T) {
 	n, _ := nodeForTasks(t)
 	trust(t, n, "claimed-id")
@@ -133,8 +129,7 @@ func TestHandlePeerIgnoresTheClaimedNodeIDForTasks(t *testing.T) {
 	}
 }
 
-// An unknown kind is refused before the verdict, so the dispatcher moves on
-// to the next peer instead of getting an accept for something that can't run.
+// an unknown kind is refused before the verdict, so the sender moves on to the next peer
 func TestHandlePeerRefusesAnUnknownKind(t *testing.T) {
 	n, _ := nodeForTasks(t)
 	trust(t, n, "friend")
@@ -168,8 +163,8 @@ func TestHandlePeerRunsTheTaskWithItsInput(t *testing.T) {
 	}
 }
 
-// The slot is released when the run finishes, not when the connection
-// closes — so a second task is accepted once the first run is done.
+// the slot is freed when the run ends, not when the connection closes
+// so a second task is taken once the first run is done
 func TestHandlePeerReleasesTheTaskSlotAfterTheRun(t *testing.T) {
 	n, _ := nodeForTasks(t)
 	trust(t, n, "friend")
@@ -183,8 +178,7 @@ func TestHandlePeerReleasesTheTaskSlotAfterTheRun(t *testing.T) {
 	}
 }
 
-// While a run is still going, the slot stays held even though receiveTask
-// has already returned and the connection is closed.
+// while a run is going the slot stays taken, even after the connection has closed
 func TestHandlePeerRefusesATaskWhileAnotherIsRunning(t *testing.T) {
 	n, _ := nodeForTasks(t)
 	trust(t, n, "friend")
@@ -199,8 +193,7 @@ func TestHandlePeerRefusesATaskWhileAnotherIsRunning(t *testing.T) {
 	}
 }
 
-// accept claims the slot before the verdict is written. If that write fails
-// because the dispatcher hung up, the slot must not stay claimed forever.
+// if the verdict can't be written because the sender hung up, the slot must not stay taken forever
 func TestHandlePeerFreesTheSlotWhenTheVerdictCannotBeSent(t *testing.T) {
 	n, _ := nodeForTasks(t)
 	trust(t, n, "friend")

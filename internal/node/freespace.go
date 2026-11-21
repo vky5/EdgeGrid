@@ -8,14 +8,14 @@ import (
 	"path/filepath"
 )
 
-// spaceHeadroom is the free space to keep spare beyond the file itself (a guess).
+// free space to keep spare on top of the file, 256 MB (a guess)
 const spaceHeadroom uint64 = 256 << 20
 
-// freeBytesFunc is a variable so tests can fake a full disk.
+// reads free disk space; tests swap it to fake a full disk
 var freeBytesFunc = freeBytes
 
-// checkSpace refuses a blob that won't fit in the inbox's filesystem, so the sender hears so up front.
-// Best-effort: an unreadable free-space figure allows the transfer, and nothing is reserved.
+// refuses a file that won't fit on the inbox's disk, so the sender hears why up front
+// if free space can't be read the file is allowed, and no space is set aside
 func (a *Node) checkSpace(label string, size int64) error {
 	dir := filepath.Join(a.cfg.DataDir, "inbox")
 	if err := os.MkdirAll(dir, 0o700); err != nil { // it may not exist yet

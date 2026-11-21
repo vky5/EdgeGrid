@@ -6,12 +6,12 @@ import (
 	"io"
 )
 
-// AcceptFunc is a receiver's policy for one offered task. Returning nil
-// accepts; an error refuses, its text sent to the dispatcher as the reason.
+// decides whether to take one offered task
+// nil accepts; an error refuses, and its text goes to the sender as the reason
 type AcceptFunc func(t *Task) error
 
-// ProcessTask reads an offered task, asks accept whether to take it, and
-// answers with a verdict. It is the mirror image of Offer.
+// reads an offered task, asks accept whether to take it, and answers yes or no
+// the receiving side of Offer
 func ProcessTask(rw io.ReadWriter, accept AcceptFunc) (*Task, error) {
 	t, err := ReadTask(rw)
 	if err != nil {

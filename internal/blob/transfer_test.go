@@ -81,7 +81,7 @@ func writeSource(t *testing.T, content string) (path string, m *Manifest) {
 	return path, m
 }
 
-// A whole transfer over an in-memory connection, verdict included.
+// a whole transfer over an in-memory connection, verdict included
 func TestSendReceiveRoundTrip(t *testing.T) {
 	content := "hello, chunked world!" // 21 bytes -> 6 chunks at size 4
 	src, m := writeSource(t, content)
@@ -118,8 +118,7 @@ func TestSendReceiveRoundTrip(t *testing.T) {
 	}
 }
 
-// The point of the verdict: a refusal reaches the sender as a real error
-// before any chunk moves, not as a broken pipe.
+// a refusal reaches the sender as a real error before any chunk moves, not as a broken pipe
 func TestRefusalReachesTheSender(t *testing.T) {
 	src, m := writeSource(t, "some bytes to refuse")
 
@@ -141,8 +140,7 @@ func TestRefusalReachesTheSender(t *testing.T) {
 	}
 }
 
-// A hostile manifest must be refused before Truncate or WriteAt can act on
-// its lies — no file may be created.
+// a lying manifest is refused before any file is made
 func TestReceiveRefusesLyingManifestBeforeTouchingDisk(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "out.bin")
 
@@ -169,8 +167,7 @@ func TestSendAndReceiveRejectCorruptedChunk(t *testing.T) {
 	src, m := writeSource(t, "twelve bytes")
 	dest := filepath.Join(t.TempDir(), "out.bin")
 
-	// Tamper with the manifest's promised hash for chunk 1: the chunk that
-	// actually arrives no longer matches what was "promised".
+	// change the promised hash for chunk 1, so the chunk that arrives no longer matches
 	m.Chunks[1].SHA256 = strings.Repeat("0", 64)
 
 	a, b := net.Pipe()
@@ -191,10 +188,8 @@ func TestSendAndReceiveRejectCorruptedChunk(t *testing.T) {
 	}
 }
 
-// The sender never checks the ACL — it can't, the ACL lives in the
-// receiver's profile. What protects the receiver is that it stops reading
-// after a refusal, so a sender that ignores the verdict and pushes chunks
-// anyway is writing into a connection nobody is draining.
+// the sender doesn't check the ACL; the receiver stops reading after it refuses
+// so a sender that ignores the no and sends chunks anyway writes into a connection nobody reads
 func TestSenderIgnoringARefusalGainsNothing(t *testing.T) {
 	_, m := writeSource(t, "these bytes must never land")
 
@@ -218,7 +213,7 @@ func TestSenderIgnoringARefusalGainsNothing(t *testing.T) {
 		t.Fatalf("verdict = %v, want a refusal", err)
 	}
 
-	// A hostile sender ignores that and streams a chunk regardless.
+	// a hostile sender ignores the no and sends a chunk anyway
 	if err := WriteChunk(a, 0, []byte("these bytes must never land")); err == nil {
 		t.Error("a chunk was accepted by a receiver that had refused the transfer")
 	}
@@ -228,8 +223,8 @@ func TestSenderIgnoringARefusalGainsNothing(t *testing.T) {
 	}
 }
 
-// Once every chunk is in, the receiver still flushes and re-hashes the whole
-// file. Progress has to say so, or the UI shows 100% and looks hung.
+// after the last chunk the receiver still checks the whole file
+// progress has to say so, or the UI shows 100% and looks hung
 func TestReceiveReportsVerifyingAfterTheLastChunk(t *testing.T) {
 	src, m := writeSource(t, "twelve bytes")
 	dest := filepath.Join(t.TempDir(), "out.bin")

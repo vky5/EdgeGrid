@@ -2,8 +2,7 @@ package db
 
 import "fmt"
 
-// transfersSchema is schema version 1: one table for every send and
-// receive this node has taken part in.
+// table layout version 1: one row for every file this node sent or received
 const transfersSchema = `
 CREATE TABLE transfers (
 	id            INTEGER PRIMARY KEY,
@@ -22,9 +21,8 @@ CREATE INDEX idx_transfers_peer_id ON transfers(peer_id);
 CREATE INDEX idx_transfers_status  ON transfers(status);
 `
 
-// tasksSchema is schema version 2: one row per task, on both ends. role says
-// which end this node was — "sent" rows track tasks it dispatched, "received"
-// rows tasks it was asked to run.
+// table layout version 2: one row per task, on both ends
+// role is "sent" for tasks this node sent, "received" for tasks it was asked to run
 const tasksSchema = `
 CREATE TABLE tasks (
 	task_id       TEXT    NOT NULL,
@@ -45,11 +43,11 @@ CREATE INDEX idx_tasks_started_at ON tasks(started_at);
 CREATE INDEX idx_tasks_next_check_at ON tasks(next_check_at);
 `
 
-// migrations[i] takes the schema from version i to i+1.
+// each step upgrades the tables one version, e.g. step 0 goes from 0 to 1
 var migrations = []string{transfersSchema, tasksSchema}
 
-// migrate brings a fresh or existing database up to schemaVersion.
-// A fresh file reads back user_version 0, so that means "apply everything."
+// brings a new or existing database up to the current table layout
+// a new file reads as version 0, so every step runs
 func (s *Store) migrate() error {
 	var version int
 	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {

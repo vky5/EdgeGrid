@@ -14,23 +14,15 @@ import (
 	"github.com/edgegrid/edgegrid/internal/discovery"
 )
 
-// sendBlobMediaType labels a file picked by a human — blob never
-// interprets it.
+// the type sent with a file someone picked by hand; blob never reads it
 const sendBlobMediaType = "application/octet-stream"
 
-// blobSendTimeout is the outer ceiling no transfer may run past, even
-// while idleTimeout keeps getting refreshed by steady progress.
+// the longest any outgoing transfer may run, 30 minutes, even while chunks keep moving
 const blobSendTimeout = 30 * time.Minute
 
-// manifestFor returns m if it still describes the file at path, and builds a
-// fresh one if not. Hashing is a full read of the file, so a caller that
-// already has a manifest (the TUI builds one to show a preview) should pass it
-// in rather than make SendBlob hash the same file a second time.
-//
-// The only staleness check is size: a file edited to a different length since
-// it was hashed is caught here, and one edited in place to the same length is
-// caught by the receiver, which verifies every chunk against the manifest and
-// refuses a mismatch.
+// reuses the given manifest if the file is still the same size, and hashes the file again if not
+// e.g. the TUI already hashed it for the preview, so it isn't read twice
+// a same-size edit is still caught by the receiver, which checks every chunk
 func manifestFor(path string, m *blob.Manifest) (*blob.Manifest, error) {
 	if m != nil {
 		if fi, err := os.Stat(path); err == nil && fi.Size() == m.Size {
@@ -40,9 +32,8 @@ func manifestFor(path string, m *blob.Manifest) (*blob.Manifest, error) {
 	return blob.BuildManifest(path, sendBlobMediaType, 0)
 }
 
-// SendBlob dials peer with IntentBlob and streams path to it: manifest
-// first, then every chunk in order. m is an already-built manifest for path,
-// or nil to have one built here.
+// sends a file to a peer: the manifest first, then every chunk in order
+// pass the manifest if you already built one, or nil to build it here
 func (a *Node) SendBlob(ctx context.Context, peer discovery.Peer, path string, m *blob.Manifest) error {
 	m, err := manifestFor(path, m)
 	if err != nil {
@@ -85,8 +76,7 @@ func (a *Node) SendBlob(ctx context.Context, peer discovery.Peer, path string, m
 
 	elapsed := time.Since(began)
 	if err == nil {
-		// route says whether this went direct or through a relay — the
-		// first thing to look at when the rate is low.
+		// route says direct or relay, the first thing to check when the speed is low
 		log.Printf("blob: sent %s to %s: %d bytes in %s (%.1f MB/s), route=%s",
 			path, peer.Hostname, m.Size, elapsed.Round(time.Millisecond),
 			rateMBps(m.Size, elapsed), routeLabel(peer))

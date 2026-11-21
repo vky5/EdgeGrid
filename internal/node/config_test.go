@@ -27,8 +27,7 @@ func TestDefaultHostnameStableAcrossCalls(t *testing.T) {
 	}
 }
 
-// Two different data dirs must not collide on the same hostname — that's
-// the entire point of the suffix (see defaultHostname's doc comment).
+// two data folders must not get the same hostname; that's what the suffix is for
 func TestDefaultHostnameDiffersAcrossDataDirs(t *testing.T) {
 	a := defaultHostname(t.TempDir())
 	b := defaultHostname(t.TempDir())
@@ -37,8 +36,8 @@ func TestDefaultHostnameDiffersAcrossDataDirs(t *testing.T) {
 	}
 }
 
-// hostnameSuffix splits "base-XXXX" back into its suffix, failing the test
-// (via ok=false) rather than panicking on an unexpected shape.
+// pulls the suffix out of "base-XXXX", e.g. "laptop-3f9a" gives "3f9a"
+// returns ok=false on any other shape instead of panicking
 func hostnameSuffix(t *testing.T, hostname, base string) (suffix string, ok bool) {
 	t.Helper()
 	prefix := base + "-"
@@ -48,9 +47,7 @@ func hostnameSuffix(t *testing.T, hostname, base string) (suffix string, ok bool
 	return hostname[len(prefix):], true
 }
 
-// An explicit --data-dir must win outright, with no profile name attached —
-// this is the escape hatch resolveDataDir's doc comment promises stays
-// ahead of the active profile.
+// --data-dir must win over the active profile, with no profile name attached
 func TestResolveDataDirFlagWinsWithNoProfileName(t *testing.T) {
 	dir, profile := resolveDataDir("/explicit/path")
 	if dir != "/explicit/path" {
@@ -61,9 +58,7 @@ func TestResolveDataDirFlagWinsWithNoProfileName(t *testing.T) {
 	}
 }
 
-// DATA_DIR must win over the active profile, same reasoning — and same
-// "no profile name attached" rule, since it's also an override, not a
-// profile selection.
+// DATA_DIR must also win over the active profile, with no profile name attached
 func TestResolveDataDirEnvWinsOverProfileWithNoProfileName(t *testing.T) {
 	t.Setenv("DATA_DIR", "/env/path")
 	dir, profile := resolveDataDir("")

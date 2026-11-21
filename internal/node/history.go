@@ -2,8 +2,8 @@ package node
 
 import "github.com/edgegrid/edgegrid/internal/db"
 
-// HistoryTotals reports total bytes sent/received and average throughput.
-// A node with no history database returns a zero Totals, not an error.
+// total bytes sent and received, and the average speed
+// a node with no database returns zeros, not an error
 func (a *Node) HistoryTotals() (db.Totals, error) {
 	if a.history == nil {
 		return db.Totals{}, nil
@@ -11,7 +11,7 @@ func (a *Node) HistoryTotals() (db.Totals, error) {
 	return a.history.Totals()
 }
 
-// RecentTransfers lists the most recently recorded transfers, newest first.
+// the latest saved transfers, newest first
 func (a *Node) RecentTransfers(limit int) ([]db.TransferSummary, error) {
 	if a.history == nil {
 		return nil, nil

@@ -15,11 +15,8 @@ import (
 	"github.com/edgegrid/edgegrid/internal/discovery"
 )
 
-// The unit tests cover checkAccept and blob.Receive separately. This one
-// drives the real handlePeer -> receiveBlob -> blob.Receive path, because
-// the wiring between them (the accept closure handed to Receive) is the
-// part a refactor could silently break: pass a callback that always says
-// yes and every other test would still pass.
+// sends a file through the real handlePeer -> receiveBlob -> blob.Receive path
+// a broken accept callback, e.g. one that always says yes, would pass every other test
 func sendThroughHandlePeer(t *testing.T, n *Node, stableID string) (sendErr error) {
 	t.Helper()
 
@@ -82,9 +79,8 @@ func TestHandlePeerAcceptsAllowedPeerAndKeepsItsFilename(t *testing.T) {
 	}
 }
 
-// The identity that counts is the one Tailscale attributed, not what the
-// peer claimed in its hello. Trusting "claimed-id" must not admit a peer
-// whose StableID has no entry.
+// who counts is who Tailscale says, not who the hello claims
+// e.g. trusting "claimed-id" must not let in a peer whose Tailscale ID has no entry
 func TestHandlePeerIgnoresTheClaimedNodeID(t *testing.T) {
 	n := nodeWithDir(t)
 	if err := n.SetTrust("claimed-id", "liar", true); err != nil { // keyed on the claim
@@ -98,8 +94,7 @@ func TestHandlePeerIgnoresTheClaimedNodeID(t *testing.T) {
 	}
 }
 
-// SendBlob is handed the manifest the TUI already built so the file isn't
-// hashed a second time — but only while that manifest still describes the file.
+// the manifest the TUI built is reused so the file isn't hashed twice, but only while it still matches the file
 func TestManifestForReusesAValidManifestAndRebuildsAStaleOne(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "f.bin")
 	if err := os.WriteFile(path, []byte("0123456789"), 0o600); err != nil {

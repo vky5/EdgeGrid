@@ -1,5 +1,4 @@
-// Package task is the offer/claim wire protocol for dispatching work to a
-// peer — the task equivalent of blob's manifest+verdict exchange.
+// Package task sends a task to a peer and gets back yes or no, and later the result.
 package task
 
 import (
@@ -14,38 +13,35 @@ import (
 	"github.com/edgegrid/edgegrid/internal/blob"
 )
 
-// taskWireVersion is this node's Task schema — see the wire diagram above
-// WriteTask for how it travels.
+// the version byte at the start of each task offer
 const taskWireVersion = 1
 
-// maxTaskSize bounds how much a peer can make us allocate for one offer,
-// same reasoning as blob's manifest/hello size caps.
+// the biggest task offer we read, 64 KB, so a peer can't make us allocate more
 const maxTaskSize = 64 * 1024
 
-// ErrUnsupportedVersion means a peer's Task used a schema this node
-// doesn't speak. Claim refuses this one read failure; others get no verdict.
+// a peer's task used a version this node doesn't speak
+// the only read failure that still gets a refusal back; others get no answer
 var ErrUnsupportedVersion = errors.New("task: unsupported version")
 
-// Requirements is what a task needs to run — not enforced yet, but here
-// so adding enforcement later isn't a breaking wire change.
+// what a task needs to run, e.g. 2 CPU cores or a GPU; not checked yet
+// it is already in the message, so checking it later won't break older nodes
 type Requirements struct {
 	CPUCores int   `json:"cpu_cores,omitempty"`
 	MemoryMB int64 `json:"memory_mb,omitempty"`
 	GPU      bool  `json:"gpu,omitempty"`
 }
 
-// Task is what a dispatcher offers a peer to run. Kind and Requirements
-// are the real fields; execution itself is still a hardcoded no-op for v1.
+// what a sender offers a peer to run
+// Kind and Requirements are the real fields; running it is still a hardcoded no-op for v1
 type Task struct {
 	ID           string       `json:"id"`
 	Kind         string       `json:"kind"` // must match with exectuor.go defintions
 	Requirements Requirements `json:"requirements"`
-	// Input is small kind-specific JSON fed to the run, bulk data goes via blob.
+	// small JSON given to the run; big data goes as a file instead
 	Input json.RawMessage `json:"input,omitempty"`
 }
 
-// New builds a task with a fresh random ID (a UUIDv4) — the normal way to
-// construct one, so nothing forgets to set it.
+// builds a task with a new random ID, e.g. 3f2b8c1e-…, so nothing forgets to set one
 func New(kind string, req Requirements) (*Task, error) {
 	id, err := uuid.NewRandom()
 	if err != nil {
@@ -54,8 +50,7 @@ func New(kind string, req Requirements) (*Task, error) {
 	return &Task{ID: id.String(), Kind: kind, Requirements: req}, nil
 }
 
-// Validate checks id/kind/requirements before accept() ever sees them —
-// the same role blob.Manifest.Validate plays for a file offer.
+// checks the ID, kind and requirements before accept ever sees them
 func (t *Task) Validate() error {
 	if t.ID == "" {
 		return errors.New("task: id is empty")
@@ -81,10 +76,9 @@ func (t *Task) Validate() error {
 //	bytes 1-4   length         big-endian, of the JSON body that follows
 //	bytes 5-N   JSON body      {"id":"...","kind":"...","requirements":{...}}
 //
-// The version sits outside the JSON so a mismatch is caught before decoding
-// a body in a shape this code might not understand.
+// the version is outside the JSON, so a mismatch is caught before decoding a body we may not understand
 
-// WriteTask sends t to w in the format above.
+// sends a task in the format above
 func WriteTask(w io.Writer, t *Task) error {
 	body, err := json.Marshal(t)
 	if err != nil {
@@ -99,8 +93,8 @@ func WriteTask(w io.Writer, t *Task) error {
 	return nil
 }
 
-// ReadTask decodes one task, checking the version before it reads a single
-// byte of body, and rejecting an oversized length before allocating one.
+// reads one task, checking the version before the body
+// and refusing an oversized length before making room for it
 func ReadTask(r io.Reader) (*Task, error) {
 	var hdr [5]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
@@ -124,16 +118,15 @@ func ReadTask(r io.Reader) (*Task, error) {
 	return &t, nil
 }
 
-// WriteVerdict and ReadVerdict reuse blob's — a task refusal is the same
-// accept-or-refuse-with-a-reason shape as a file refusal.
+// the yes-or-no answer to an offer, the same as blob's, since a task refusal looks like a file refusal
 func WriteVerdict(w io.Writer, refusal error) error { return blob.WriteVerdict(w, refusal) }
 func ReadVerdict(r io.Reader) error                 { return blob.ReadVerdict(r) }
 
-// RefusedError is what a dispatcher gets back when a peer declines a task.
+// what the sender gets back when a peer says no to a task
 type RefusedError = blob.RefusedError
 
-// Offer sends t and waits for the peer's verdict. A *RefusedError means the
-// peer declined; anything else is a transport failure.
+// sends a task and waits for the peer's yes or no
+// a *RefusedError means the peer said no; any other error means the connection failed
 func Offer(rw io.ReadWriter, t *Task) error {
 	if err := WriteTask(rw, t); err != nil {
 		return err

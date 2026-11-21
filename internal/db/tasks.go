@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Role is which end of a task this node was.
+// which end of a task this node was, the sender or the one running it
 type Role string
 
 const (
@@ -15,11 +15,11 @@ const (
 	RoleReceived Role = "received"
 )
 
-// TaskStatus is where a task row stands. A stale TaskRunning row is a crash —
-// see ReconcileStaleTasks.
+// where a task stands, e.g. running, done, failed, lost
+// a running row left over from before a restart means a crash
 type TaskStatus string
 
-// The values match task.ResultStatus, so a row can be sent as-is.
+// the same values as task.ResultStatus, so a row can be sent as it is
 const (
 	TaskRunning TaskStatus = "running"
 	TaskDone    TaskStatus = "done"
@@ -27,19 +27,19 @@ const (
 	TaskLost    TaskStatus = "lost"
 )
 
-// MaxTaskOutput is the largest result stored inline. Bigger outputs belong in
-// a blob transfer; they fail loudly here instead of being truncated.
+// the biggest output saved with a task, 64 KB
+// bigger output should go as a file; here it fails instead of being cut short
 const MaxTaskOutput = 64 << 10
 
-// FirstCheckAfter is how long after sending a task this node first goes back
-// to ask about it, if nothing is waiting for the answer by then.
+// how long after sending a task we first go back and ask about it
+// e.g. sent at 09:00, first check at 09:10; the live wait covers those 10 minutes
 const FirstCheckAfter = 10 * time.Minute
 
-// ErrTaskNotFound is returned when no row matches — including a row that
-// exists but belongs to a different peer, so callers can't probe for IDs.
+// no matching task, including one that belongs to a different peer
+// a missing task and someone else's task look the same, so a peer can't guess IDs
 var ErrTaskNotFound = errors.New("db: task not found")
 
-// TaskRecord is one stored task, as seen from this node.
+// one saved task, as this node sees it
 type TaskRecord struct {
 	TaskID       string
 	Role         Role
@@ -55,9 +55,9 @@ type TaskRecord struct {
 	NextCheckAt  time.Time // when to ask next; zero for tasks this node received
 }
 
-// RecordTaskStart inserts a running row. peer is the executor for RoleSent and
-// the dispatcher for RoleReceived. A sent task gets its first check
-// FirstCheckAfter from now.
+// adds a row for a task that just started
+// the peer is the node running it for a sent task, and the sender for a received one
+// a sent task gets its first check 10 minutes from now (FirstCheckAfter)
 func (s *Store) RecordTaskStart(role Role, taskID, peerID, peerHostname, kind string) error {
 	now := time.Now().UTC()
 	var next sql.NullInt64
@@ -75,8 +75,8 @@ func (s *Store) RecordTaskStart(role Role, taskID, peerID, peerHostname, kind st
 	return nil
 }
 
-// RecordTaskFinish stores the outcome. Output is kept only for TaskDone, and a
-// done result over MaxTaskOutput is turned into a failure rather than cut.
+// saves how a task ended; output is kept only when it is done
+// done output over 64 KB is saved as a failure instead of being cut
 func (s *Store) RecordTaskFinish(role Role, taskID string, status TaskStatus, output []byte, errMsg string) error {
 	if status == TaskDone && len(output) > MaxTaskOutput {
 		status, output = TaskFailed, nil
@@ -102,17 +102,16 @@ func (s *Store) RecordTaskFinish(role Role, taskID string, status TaskStatus, ou
 	return nil
 }
 
-// taskColumns is every column readTask expects, in its order.
+// every column readTask expects, in its order
 const taskColumns = `task_id, role, peer_id, peer_hostname, kind, status, output, error,
 	started_at, finished_at, attempts, next_check_at`
 
-// Task returns this node's row for taskID in the given role.
+// this node's row for one task, as sender or as the one running it
 func (s *Store) Task(role Role, taskID string) (TaskRecord, error) {
 	return s.taskRow(`SELECT `+taskColumns+` FROM tasks WHERE task_id = ? AND role = ?`, taskID, role)
 }
 
-// ReceivedTaskFor is the lookup behind answering a result request: it matches
-// only when requesterID is the peer that dispatched the task.
+// finds a task this node ran, only if the one asking is the node that sent it
 func (s *Store) ReceivedTaskFor(taskID, requesterID string) (TaskRecord, error) {
 	return s.taskRow(
 		`SELECT `+taskColumns+` FROM tasks WHERE task_id = ? AND role = ? AND peer_id = ?`,
@@ -201,9 +200,8 @@ func readTask(row interface{ Scan(...any) error }) (TaskRecord, error) {
 	return r, nil
 }
 
-// ReconcileStaleTasks marks the tasks this node was running itself as lost.
-// Call once at startup: those runs died with the old process. Tasks this node
-// sent elsewhere are left running, because restarting here doesn't stop them.
+// marks tasks this node was running itself as lost; call once at startup
+// those runs died with the old process; tasks sent elsewhere stay running, since a restart here doesn't stop them
 func (s *Store) ReconcileStaleTasks() error {
 	_, err := s.db.Exec(
 		`UPDATE tasks SET status = ?, error = ?, finished_at = ? WHERE status = ? AND role = ?`,
@@ -215,8 +213,8 @@ func (s *Store) ReconcileStaleTasks() error {
 	return nil
 }
 
-// PruneTasks deletes finished rows that started before cutoff. Running rows
-// are never pruned.
+// deletes finished tasks that started before the cutoff, e.g. over a week ago
+// running tasks are never deleted
 func (s *Store) PruneTasks(cutoff time.Time) error {
 	_, err := s.db.Exec(`DELETE FROM tasks WHERE started_at < ? AND status != ?`, cutoff.UTC().Unix(), TaskRunning)
 	if err != nil {

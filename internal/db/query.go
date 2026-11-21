@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// TransferSummary is one recorded transfer, for display.
+// one saved transfer, for the TUI to show
 type TransferSummary struct {
 	Direction    Direction
 	PeerHostname string
@@ -18,8 +18,8 @@ type TransferSummary struct {
 	FinishedAt   time.Time // zero if still in_progress
 }
 
-// Throughput is bytes/sec over how long this transfer actually took, or 0
-// for anything that never finished successfully.
+// speed in bytes per second over how long the transfer took, e.g. 100 bytes in 10s gives 10
+// 0 for anything that didn't finish successfully
 func (t TransferSummary) Throughput() float64 {
 	if t.Status != StatusDone || t.FinishedAt.IsZero() {
 		return 0
@@ -31,17 +31,16 @@ func (t TransferSummary) Throughput() float64 {
 	return float64(t.FileSize) / secs
 }
 
-// Totals summarizes every finished transfer, split by direction. Only
-// StatusDone rows count — anything else never confirmed how many bytes
-// actually landed. Throughput is one rate over all bytes and all time, not
-// an average of each row's own rate.
+// bytes and speed for finished transfers, split by direction
+// only successful ones count, since others never confirmed how many bytes landed
+// speed is all bytes over all time, not an average of each transfer's speed
 type Totals struct {
 	SentBytes, ReceivedBytes           int64
 	SentCount, ReceivedCount           int
 	SentThroughput, ReceivedThroughput float64 // bytes/sec
 }
 
-// Totals reads Totals from the transfers table.
+// adds up every successful transfer into Totals
 func (s *Store) Totals() (Totals, error) {
 	rows, err := s.db.Query(
 		`SELECT direction, COALESCE(SUM(file_size), 0), COUNT(*), COALESCE(SUM(finished_at - started_at), 0)
@@ -78,7 +77,7 @@ func throughput(bytes, secs int64) float64 {
 	return float64(bytes) / float64(secs)
 }
 
-// RecentTransfers returns up to limit rows, newest first.
+// the latest transfers, newest first, up to limit
 func (s *Store) RecentTransfers(limit int) ([]TransferSummary, error) {
 	rows, err := s.db.Query(
 		`SELECT direction, peer_hostname, file_name, file_size, status, error, started_at, finished_at

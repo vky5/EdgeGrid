@@ -9,17 +9,16 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// schemaVersion is tracked in the database itself via PRAGMA user_version.
+// the table layout version this code expects, saved inside the database file
 const schemaVersion = 2
 
-// Store is this node's local database. SQLite serializes writers on its
-// own; the pragmas below just make that wait instead of fail.
+// this node's local database of transfers and tasks
+// SQLite lets one writer in at a time; the settings below make others wait instead of fail
 type Store struct {
 	db *sql.DB
 }
 
-// Open creates path's parent directory if needed, opens or creates the
-// database there, and brings its schema up to date.
+// opens the database file, creating it and its folder if needed, and updates its tables
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("db: create %s: %w", filepath.Dir(path), err)
@@ -46,7 +45,7 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
-// Close releases the underlying database handle.
+// closes the database file
 func (s *Store) Close() error {
 	return s.db.Close()
 }

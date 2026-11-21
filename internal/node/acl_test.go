@@ -36,8 +36,7 @@ func TestACLRoundTrip(t *testing.T) {
 	}
 }
 
-// StableID becomes a filename. Anything that isn't shaped like one must be
-// refused rather than joined into a path.
+// the peer ID becomes a filename, so anything not shaped like one must be refused
 func TestACLRejectsPathLikeStableIDs(t *testing.T) {
 	dir := t.TempDir()
 	for _, id := range []string{"", "../escape", "a/b", `a\b`, "..", "id with space", strings.Repeat("a", 65)} {
@@ -117,7 +116,7 @@ func TestCheckAcceptHonoursEntries(t *testing.T) {
 	}
 }
 
-// A garbled default file must fail closed, not open.
+// a garbled default file must mean deny, not allow
 func TestACLDefaultFailsClosed(t *testing.T) {
 	n := nodeWithDir(t)
 	for _, v := range []string{"", "ALLOW!", "yes", "true", "  "} {
@@ -149,8 +148,7 @@ func TestCheckAcceptEnforcesSizeCap(t *testing.T) {
 	}
 }
 
-// A peer with no attested identity (empty StableID) has no ACL entry and
-// can't be given one, so it falls to the default — deny.
+// a peer with no Tailscale ID can't have an entry, so it gets the default, deny
 func TestCheckAcceptRefusesUnattestedPeer(t *testing.T) {
 	n := nodeWithDir(t)
 	if err := n.checkAccept("", "unknown", manifestOf(10)); err == nil {

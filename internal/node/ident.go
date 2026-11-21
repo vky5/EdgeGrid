@@ -1,6 +1,3 @@
-// Package nodeident generates and persists a stable node identity (UUID-style
-// hex ID and an optional secret token). Both are stored in the node's data
-// directory and reused across restarts.
 package node
 
 import (
@@ -19,7 +16,8 @@ type Identity struct {
 	NodeID string `json:"node_id"`
 }
 
-// LoadOrCreate reads data/node.id, or generates and persists node ID (same for coordinator + worker)
+// reads this node's ID from node.id, or makes and saves one the first time
+// the same ID is reused across restarts
 func LoadOrCreateIdentity(dataDir string) (*Identity, error) {
 	if raw := LoadToken(dataDir, identFile); raw != "" {
 		var id Identity
@@ -42,16 +40,13 @@ func LoadOrCreateIdentity(dataDir string) (*Identity, error) {
 	return id, nil
 }
 
-// HasJoined reports whether dataDir's node has ever completed a tailnet
-// bring-up. tailscale.ip is written only after ts.Up returns a valid address
-// (see Node.New), which makes it a truthful "this node is already a member"
-// marker — unlike tsnet/tailscaled.state, which exists from the first
-// attempt whether or not authentication ever succeeded.
+// whether this data folder has joined the tailnet before
+// tailscale.ip is only written after a join works; tsnet's own state file exists even after a failed login
 func HasJoined(dataDir string) bool {
 	return LoadToken(dataDir, "tailscale.ip") != ""
 }
 
-// RandomToken returns a cryptographically random hex string (n bytes → 2n hex chars).
+// a random hex string, safe for secrets, e.g. 2 bytes gives 4 characters like 3f9a
 func RandomToken(n int) (string, error) {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -60,8 +55,8 @@ func RandomToken(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// EnsurePollNonce returns this node's join-poll nonce, generating and
-// persisting one on first call — proof to the coordinator of node identity, not just node ID knowledge.
+// this node's join-poll secret, made and saved on first call
+// proves to the coordinator that it is this node, not just someone who knows the ID
 func EnsurePollNonce(dataDir string) (string, error) {
 	if n := LoadToken(dataDir, "node.nonce"); n != "" {
 		return n, nil
@@ -76,7 +71,7 @@ func EnsurePollNonce(dataDir string) (string, error) {
 	return nonce, nil
 }
 
-// LoadToken reads a saved token from dataDir/filename, or returns "".
+// reads a saved value from a file in the data folder, or "" if there is none
 func LoadToken(dataDir, filename string) string {
 	data, err := os.ReadFile(filepath.Join(dataDir, filename))
 	if err != nil {
@@ -85,7 +80,7 @@ func LoadToken(dataDir, filename string) string {
 	return string(data)
 }
 
-// SaveToken writes a token to dataDir/filename with 0600 permissions.
+// writes a value to a file in the data folder that only this user can read
 func SaveToken(dataDir, filename, token string) error {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return err

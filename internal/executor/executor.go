@@ -8,12 +8,12 @@ import (
 	"os"
 )
 
-// RuntimeName identifies a Runtime, e.g. in a Definition's "runtime" field.
+// the name of a way to run a task, e.g. "bare" in a definition's runtime field
 type RuntimeName string
 
 const RuntimeBare RuntimeName = "bare"
 
-// Definition describes one kind of task: what to fetch and what to run.
+// one kind of task: what to fetch and what to run
 type Definition struct {
 	Kind       string      `json:"kind"`
 	Runtime    RuntimeName `json:"runtime"`
@@ -21,27 +21,27 @@ type Definition struct {
 	Entrypoint []string    `json:"entrypoint"`
 }
 
-// Artifact is a file a run needs before it starts, pinned by its hash.
+// a file a run needs before it starts, checked by its hash
 type Artifact struct {
 	URL    string `json:"url"`
 	SHA256 string `json:"sha256"`
 	Dest   string `json:"dest"`
 }
 
-// Runtime is the mechanism that actually runs an entrypoint.
+// a way to run a task's program, e.g. as a plain process (Bare)
 type Runtime interface {
 	Name() RuntimeName
 	Run(ctx context.Context, workDir string, entrypoint []string, input []byte) ([]byte, error)
 }
 
-// Executor looks up a kind's Definition and hands it to the matching Runtime.
+// finds the definition for a task kind and runs it with the matching runtime
 type Executor struct {
 	defs     map[string]Definition
 	runtimes map[RuntimeName]Runtime
 	workRoot string // each run gets a fresh dir under here, removed afterwards
 }
 
-// LoadDefinitions reads a registry file: a JSON array of Definitions.
+// reads the list of task kinds from a JSON file
 func LoadDefinitions(path string) ([]Definition, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -87,8 +87,8 @@ func (d Definition) validate() error {
 	return nil
 }
 
-// Supports reports whether this node can run kind right now. Artifact
-// fetching isn't built yet, so a kind that needs artifacts is unsupported.
+// whether this node can run the kind right now
+// fetching artifacts isn't built yet, so a kind that needs them is refused
 func (e *Executor) Supports(kind string) bool {
 	d, ok := e.defs[kind]
 	if !ok || len(d.Artifacts) > 0 {
@@ -98,7 +98,7 @@ func (e *Executor) Supports(kind string) bool {
 	return ok
 }
 
-// Run executes kind once. A panicking runtime becomes an error, not a crashed node.
+// runs the kind once; a panic in the runtime becomes an error, not a crashed node
 func (e *Executor) Run(ctx context.Context, kind string, input []byte) (out []byte, err error) {
 	if !e.Supports(kind) {
 		return nil, fmt.Errorf("executor: kind %q not supported on this node", kind)

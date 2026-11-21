@@ -12,13 +12,9 @@ import (
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
-// tokensModel mints Tailscale auth keys directly through tailscaleapi.Client.
-// Mint-only, on purpose: the old version listed every previously-minted key
-// with a used/revoked status pulled from a coordinator's admin store — that
-// store doesn't exist anymore, and tailscaleapi has no ListKeys, so there's
-// nothing to back a history table with. justMinted is the entire state: the
-// key from the most recent "m", shown once, revocable while it's still on
-// screen, then gone — nothing here is persisted to disk.
+// the tab that makes Tailscale join keys with "m"
+// only the newest key is kept, in memory: shown once and revocable while it's on screen
+// there's no list of older keys, since tailscaleapi can't list keys
 type tokensModel struct {
 	client        *tailscaleapi.Client
 	width, height int
@@ -26,11 +22,8 @@ type tokensModel struct {
 	justMinted *tailscaleapi.MintedKey
 	revoked    bool
 	copied     bool
-	// hidden blanks the secret from the screen while keeping justMinted set,
-	// so "r" can still revoke the key it belongs to. Dropping justMinted
-	// outright would clear the display but also strand the key: its ID would
-	// be gone from memory and revoking would mean going to the Tailscale
-	// console instead.
+	// blanks the key on screen but keeps it in justMinted, so "r" can still revoke it
+	// clearing justMinted instead would lose the key's ID, leaving only the Tailscale console
 	hidden bool
 	err    error
 }
@@ -44,10 +37,8 @@ func (m tokensModel) WithSize(w, h int) tokensModel {
 	return m
 }
 
-// copyToClipboard writes an OSC 52 escape sequence directly to the
-// terminal — works over SSH/tmux, unlike an OS clipboard library, since the
-// terminal emulator (not the remote process) owns the clipboard. Best
-// effort: unsupported terminals just ignore the sequence.
+// copies text through the terminal itself (OSC 52), so it works over SSH and tmux
+// terminals that don't support it just ignore it
 func copyToClipboard(s string) tea.Cmd {
 	return func() tea.Msg {
 		encoded := base64.StdEncoding.EncodeToString([]byte(s))
@@ -63,9 +54,8 @@ func (m tokensModel) Init() tea.Cmd { return nil }
 func (m tokensModel) Update(msg tea.Msg) (tokensModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tokenCopiedMsg:
-		// Hide on copy, not on keypress: this arrives once the OSC 52 sequence
-		// has actually been written, so the secret stays up until the copy has
-		// been attempted rather than vanishing on an keystroke that did nothing.
+		// hide once the copy was actually sent, not on the keypress,
+		// so the key doesn't vanish before it was copied
 		m.copied = true
 		m.hidden = true
 		return m, nil
@@ -88,8 +78,7 @@ func (m tokensModel) Update(msg tea.Msg) (tokensModel, tea.Cmd) {
 				return m, copyToClipboard(m.justMinted.Key)
 			}
 		case "esc":
-			// Dismiss without copying — for when the key is already written
-			// down and you just want it off the screen.
+			// hide without copying, for when the key is already written down
 			if m.justMinted != nil && !m.revoked {
 				m.hidden = true
 			}
@@ -117,9 +106,7 @@ func (m tokensModel) View() string {
 		height = 10
 	}
 
-	// Everything is rendered inside the same full-width pane the Overview tab
-	// uses, so switching tabs changes only what's in the pane — not the shape
-	// of the page or where the nav sits.
+	// same full-width pane as Overview, so switching tabs doesn't move the tab bar
 	inner := max(width-6, 20)
 	label := lipgloss.NewStyle().Foreground(style.Muted)
 
@@ -142,9 +129,8 @@ func (m tokensModel) View() string {
 		body = label.Width(inner).Render(
 			"Key revoked — it can no longer be used to join.\n\npress m to mint another")
 	default:
-		// The key wraps rather than overflowing: auth keys run past 60
-		// characters and a truncated one is worse than useless, since it looks
-		// copyable but isn't.
+		// wrap the key, never cut it: keys run past 60 characters
+		// and a cut one looks copyable but doesn't work
 		key := lipgloss.NewStyle().
 			Foreground(style.Accent).
 			Bold(true).

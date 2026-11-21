@@ -20,18 +20,13 @@ import (
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
-// peersRefreshInterval is how often the Peers tab re-reads Tailscale's
-// membership state.
+// how often the Peers tab asks Tailscale for the peer list again
 const peersRefreshInterval = 5 * time.Second
 
-// sendMediaType is what a file picked in the TUI is labelled as. blob
-// never interprets it — it travels with the manifest so a receiver can
-// decide what the bytes are for. "Some opaque file a human picked" has no
-// better label than the generic one.
+// the type sent with a file picked in the TUI; blob never reads it, the receiver can
 const sendMediaType = "application/octet-stream"
 
-// peersMode is where the Peers tab is in the send flow. Browsing is the
-// resting state; everything else is one step of "send a file to this peer".
+// which step the Peers tab is on, e.g. browsing, picking a file, sending
 type peersMode int
 
 const (
@@ -44,23 +39,19 @@ const (
 	peersDispatching
 )
 
-// SendFunc transfers path to peer. node.Node.SendBlob satisfies it —
-// declared here so the TUI doesn't import node. m is the manifest already
-// built for the preview, passed along so the file isn't hashed a second time.
+// sends a file to a peer, e.g. node.Node.SendBlob; declared here so the TUI doesn't import node
+// m is the manifest already built for the preview, so the file isn't hashed twice
 type SendFunc func(ctx context.Context, peer discovery.Peer, path string, m *blob.Manifest) error
 
-// TrustFuncs lets the Peers tab read and change which peers may send this
-// node files. node.Node.TrustedPeers and node.Node.SetTrust satisfy them —
-// declared here so the TUI doesn't import node. Keys are Tailscale StableIDs,
-// which is what discovery.Peer.ID already holds.
+// reads and changes which peers may send this node files, e.g. node.Node.TrustedPeers and SetTrust
+// keyed by Tailscale's ID for the peer, the same as discovery.Peer.ID
 type TrustFuncs struct {
 	List func() map[string]bool // StableID -> allowed; peers with no entry are absent
 	Set  func(stableID, hostname string, allow bool) error
 }
 
-// TaskFuncs lets the Peers tab trust peers for tasks, dispatch one to the
-// selected peer and wait for its result. Same StableID keys as TrustFuncs, but
-// a separate ACL. Await is optional: without it the tab stops at the verdict.
+// lets the Peers tab allow peers to send tasks, send one and wait for its result
+// same keys as TrustFuncs but a separate list; without Await the tab stops at yes or no
 type TaskFuncs struct {
 	ListTrust func() map[string]bool
 	SetTrust  func(stableID, hostname string, allow bool) error
@@ -68,34 +59,28 @@ type TaskFuncs struct {
 	Await     func(ctx context.Context, peer discovery.Peer, taskID string) (task.ResultResponse, error)
 }
 
-// Transfer is one in-flight transfer, in either direction. Mirrors
-// node.Transfer — redeclared so dashboard doesn't import node.
+// one transfer happening now, either way; a copy of node.Transfer
 type Transfer struct {
 	Direction string // "sending" or "receiving"
 	Peer      string
 	Frac      float64
 	BytesDone int64
 	Total     int64
-	Verifying bool // all bytes are in; the receiver is flushing and re-hashing
+	Verifying bool // all bytes are in; the receiver is saving and checking the file
 	Done      bool
 	Err       error
 	Started   time.Time // for the live speed; zero means unknown
 }
 
-// TransfersFunc lists what this node is sending and receiving right now.
-// Polled rather than pushed: a transfer goroutine must never block on the
-// UI, and a tick already drives this tab.
+// lists what this node is sending and receiving right now
+// the tab asks for it on a tick, so a transfer never waits on the screen
 type TransfersFunc func() []Transfer
 
-// transferPollInterval is how often the transfer panel re-reads progress.
-// Fast enough to look live, slow enough to stay cheap.
+// how often the transfer panel reads progress again; fast enough to look live
 const transferPollInterval = 300 * time.Millisecond
 
-// peersModel shows discovery.Snapshot() live — Tailscale's own membership
-// view of every EdgeGrid-tagged device. It is not a record of hello
-// exchanges this node has completed; there's no store for that yet, so a
-// peer listed here as online is a Tailscale fact, not proof this node has
-// actually talked to it.
+// the Peers tab: every EdgeGrid node Tailscale knows about
+// online means Tailscale sees it, not that this node has talked to it
 type peersModel struct {
 	lc            *local.Client
 	peers         []discovery.Peer
@@ -105,9 +90,7 @@ type peersModel struct {
 	mode   peersMode
 	cursor int
 
-	// target is captured by value, not as an index into peers. The 5s
-	// refresh can reorder or shrink the list mid-flow, and an index would
-	// then point at a different machine than the one that was picked.
+	// a copy, not an index: the 5s refresh can reorder peers, and an index would send to the wrong machine
 	target    discovery.Peer
 	input     textinput.Model
 	path      string
@@ -138,26 +121,22 @@ func (m peersModel) WithSize(w, h int) peersModel {
 
 type peersRefreshMsg struct{}
 
-// manifestBuiltMsg carries the result of hashing a file off the UI
-// goroutine. BuildManifest reads and hashes the whole file, which is
-// seconds to minutes for a large one — long enough to freeze the TUI if it
-// ran inline.
+// the result of hashing a file in the background
+// a large file takes minutes to hash, which would freeze the TUI
 type manifestBuiltMsg struct {
 	path     string
 	manifest *blob.Manifest
 	err      error
 }
 
-// blobSentMsg carries the outcome of a transfer. The transfer runs off the
-// UI goroutine for the same reason hashing does — it can take minutes.
+// how a transfer ended; it runs in the background since it can take minutes
 type blobSentMsg struct {
 	peer discovery.Peer
 	size int64
 	err  error
 }
 
-// taskDispatchedMsg carries the peer's verdict on an offered task. Off the
-// UI goroutine because the dial and verdict wait can take seconds.
+// the peer's yes or no on a task; asked in the background since it can take seconds
 type taskDispatchedMsg struct {
 	peer   discovery.Peer
 	kind   string
@@ -172,7 +151,7 @@ func dispatchTaskCmd(ctx context.Context, dispatch func(context.Context, discove
 	}
 }
 
-// taskResultMsg carries how an accepted task ended, or why waiting stopped.
+// how an accepted task ended, or why the wait stopped
 type taskResultMsg struct {
 	taskID string
 	resp   task.ResultResponse
@@ -229,13 +208,12 @@ func (m peersModel) refresh() peersModel {
 
 func (m peersModel) Init() tea.Cmd { return tea.Batch(peersRefreshCmd(), transferTickCmd()) }
 
-// capturesTextInput reports whether a keystroke belongs to a text field
-// (file path or task kind) rather than to the dashboard's own shortcuts.
+// whether keys go to a text field (file path or task kind) instead of the shortcuts
 func (m peersModel) capturesTextInput() bool {
 	return m.mode == peersPickFile || m.mode == peersPickKind
 }
 
-// helpText is the footer hint for whichever step of the flow is showing.
+// the footer help for the step that's showing
 func (m peersModel) helpText() string {
 	switch m.mode {
 	case peersPickFile:
@@ -318,8 +296,7 @@ func (m peersModel) Update(msg tea.Msg) (peersModel, tea.Cmd) {
 		return m, nil
 
 	case manifestBuiltMsg:
-		// A cancel during hashing leaves the flow; a late result must not
-		// yank the tab back into the confirm step.
+		// cancelled while hashing, so a late result mustn't pull the tab back to confirm
 		if m.mode != peersBuilding || msg.path != m.path {
 			return m, nil
 		}
@@ -463,8 +440,7 @@ func (m peersModel) updatePickFile(key tea.KeyMsg) (peersModel, tea.Cmd) {
 	case tea.KeyEsc:
 		return m.cancelFlow(), nil
 	case tea.KeyCtrlU:
-		// Dropping a file pastes at the cursor rather than replacing, so
-		// two drops concatenate into one nonsense path. This is the undo.
+		// a second dropped file is glued onto the first path, so this clears it
 		m.input.SetValue("")
 		m.flowErr = nil
 		return m, nil
@@ -540,8 +516,7 @@ func (m peersModel) cancelFlow() peersModel {
 	return m
 }
 
-// startWait gives the next dispatch or result wait a context esc can cancel,
-// ending any previous one.
+// gives the next task wait a context that esc can cancel, ending the previous one
 func (m peersModel) startWait() (peersModel, context.Context) {
 	if m.stopTask != nil {
 		m.stopTask()
@@ -551,7 +526,7 @@ func (m peersModel) startWait() (peersModel, context.Context) {
 	return m, ctx
 }
 
-// outputPreview keeps a task's output to one short line for the status note.
+// a task's output cut to one short line for the status note
 func outputPreview(out []byte) string {
 	const limit = 200
 	s := []rune(strings.Join(strings.Fields(string(out)), " "))
@@ -583,13 +558,8 @@ func newPathInput() textinput.Model {
 	return ti
 }
 
-// expandPath resolves a leading ~ so a typed path behaves the way it does
-// in a shell. Anything else is left alone.
-//
-// It also undoes what a terminal does to a dragged-in file: dropping a file
-// onto a terminal pastes its path as text, and terminals disagree about
-// spaces — some wrap the whole path in quotes, others backslash-escape.
-// Neither form opens as-is.
+// expands a leading ~ and undoes the quotes or backslashes a terminal adds to a dropped file
+// e.g. '/home/me/my file.mp4' or /home/me/my\ file.mp4 gives /home/me/my file.mp4
 func expandPath(p string) string {
 	p = strings.TrimSpace(p)
 	if len(p) >= 2 {
@@ -597,9 +567,7 @@ func expandPath(p string) string {
 			p = p[1 : len(p)-1]
 		}
 	}
-	// Backslash-escaped spaces are a Unix shell convention. On Windows the
-	// backslash is the path separator, so unescaping there would corrupt
-	// perfectly good paths.
+	// not on Windows: backslash is its path separator, so unescaping would break real paths
 	if runtime.GOOS != "windows" {
 		p = strings.ReplaceAll(p, `\ `, " ")
 	}
@@ -638,8 +606,7 @@ func timeAgo(t time.Time) string {
 	}
 }
 
-// humanBytes is for display only — the manifest always carries exact byte
-// counts.
+// a byte count for the screen, e.g. 1.5 GiB; the manifest keeps exact counts
 func humanBytes(n int64) string {
 	const unit = 1024
 	if n < unit {
@@ -719,9 +686,7 @@ func (m peersModel) View() string {
 	return renderPane("PEERS", strings.Join(rows, "\n"), width, height)
 }
 
-// sendView renders the send flow: which peer, which file, and — once it's
-// hashed — what the manifest actually says. The chunk breakdown is shown
-// deliberately: it's the part of the design worth being able to see.
+// the send screen: which peer, which file, and once hashed, what the manifest says
 func (m peersModel) sendView() string {
 	muted := lipgloss.NewStyle().Foreground(style.Muted)
 	accent := lipgloss.NewStyle().Foreground(style.Accent).Bold(true)
@@ -761,8 +726,7 @@ func (m peersModel) sendView() string {
 	return strings.Join(lines, "\n")
 }
 
-// taskView renders the task flow: which peer, which kind, and whether we're
-// still waiting for its verdict.
+// the task screen: which peer, which kind, and whether we're still waiting for yes or no
 func (m peersModel) taskView() string {
 	muted := lipgloss.NewStyle().Foreground(style.Muted)
 	accent := lipgloss.NewStyle().Foreground(style.Accent).Bold(true)
@@ -793,8 +757,7 @@ func (m peersModel) manifestView(muted, accent lipgloss.Style) string {
 		muted.Render("sha256 ") + shortHash(mf.SHA256),
 	}
 
-	// A few chunk hashes, not all of them — enough to make the structure
-	// concrete without turning the pane into a wall of hex.
+	// show a few chunk hashes, not a wall of them
 	const preview = 3
 	for i, c := range mf.Chunks {
 		if i >= preview {
@@ -813,9 +776,7 @@ func shortHash(h string) string {
 	return h[:16] + "…"
 }
 
-// transferBar renders a fixed-width progress bar. Deliberately not
-// overview.go's meter — that one colours by load, where high is bad; here
-// a full bar is the good outcome.
+// a fixed-width progress bar where full is good, unlike Overview's load meter
 func transferBar(frac float64, width int) string {
 	if frac < 0 {
 		frac = 0
@@ -831,9 +792,8 @@ func transferBar(frac float64, width int) string {
 		lipgloss.NewStyle().Foreground(style.Muted).Render(strings.Repeat("░", width-filled))
 }
 
-// transfersView lists every transfer this node is running, in either
-// direction. Inbound ones appear with no interaction at all — the peer
-// started them, so this is the only place they surface.
+// every transfer this node is running, both ways
+// incoming ones were started by the peer, so this is the only place they show
 func (m peersModel) transfersView() string {
 	if len(m.active) == 0 {
 		return ""
@@ -859,9 +819,8 @@ func (m peersModel) transfersView() string {
 		case t.Done:
 			status = lipgloss.NewStyle().Foreground(greenColor).Render("done  " + humanBytes(t.Total))
 		case t.Verifying:
-			// Every byte has arrived, so the bar would read 100% — but the
-			// receiver still flushes to disk and re-hashes the whole file,
-			// which takes a while on a large one and looks like a hang.
+			// all bytes are in but the file is still being checked,
+			// so without this the bar sits at 100% and looks stuck
 			status = lipgloss.NewStyle().Foreground(style.Accent).Render(
 				"verifying…  " + humanBytes(t.Total) + " received, checking the whole file")
 		default:
@@ -876,9 +835,8 @@ func (m peersModel) transfersView() string {
 	return strings.Join(rows, "\n")
 }
 
-// speedSuffix is the average rate since the transfer began, plus an ETA once
-// there's enough to go on. Empty in the first second, where bytes/elapsed
-// swings wildly.
+// average speed since the start plus time left, e.g. "  12.0 MiB/s  ETA 30s"
+// empty in the first second, when the speed jumps around too much
 func speedSuffix(t Transfer, now time.Time) string {
 	if t.Started.IsZero() || t.BytesDone <= 0 {
 		return ""
@@ -906,19 +864,15 @@ func truncate(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
-// checkSinglePath rejects the result of dropping several files onto the
-// terminal. Each drop pastes at the cursor instead of replacing, so two
-// drops arrive as one string with a second absolute path embedded in the
-// middle — which then fails deep inside os.Open with a confusing ENOTDIR
-// about a path the user never typed.
+// refuses two dropped files glued into one path
+// or os.Open fails later with a confusing error about a path nobody typed
 func checkSinglePath(p string) error {
 	multi := fmt.Errorf("looks like more than one file was dropped — ctrl+u to clear, then drop one")
 
 	sep := string(os.PathSeparator)
 
-	// Two copies of the home dir means a second path got pasted onto the
-	// end of the first. Counting matters: a legitimate path can contain the
-	// home dir once (/mnt/backup/home/user/...), never twice.
+	// the home folder twice means a second path was glued on;
+	// a real path can hold it once, e.g. /mnt/backup/home/user/..., never twice
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		if strings.Count(p, home+sep) > 1 {
 			return multi
@@ -936,13 +890,12 @@ func checkSinglePath(p string) error {
 	return nil
 }
 
-// trustMarker shows whether a peer may send this node files: allowed,
-// blocked, or no decision recorded (the profile's default applies).
+// whether a peer may send this node files: allowed, blocked, or no choice yet (the default applies)
 func (m peersModel) trustMarker(stableID string) string {
 	return decisionMarker(m.trusted, stableID)
 }
 
-// taskTrustMarker is trustMarker for the separate task ACL.
+// the same marker, for who may send tasks
 func (m peersModel) taskTrustMarker(stableID string) string {
 	return decisionMarker(m.taskTrust, stableID)
 }
@@ -959,9 +912,8 @@ func decisionMarker(decisions map[string]bool, stableID string) string {
 	}
 }
 
-// routeCell shows how traffic to a peer is travelling, padded to a fixed
-// width so the columns after it stay aligned. A relayed path is far slower
-// than a direct one, so it's coloured as a warning.
+// how traffic reaches a peer, e.g. direct or relay, padded so later columns line up
+// relay is much slower than direct, so it's shown as a warning
 func routeCell(p discovery.Peer) string {
 	const width = 10
 	r := p.Route()

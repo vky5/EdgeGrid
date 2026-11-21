@@ -9,9 +9,8 @@ import (
 	"strings"
 )
 
-// prevIdle/prevTotal hold the last /proc/stat sample. CPU time in /proc is
-// cumulative since boot, so a single reading says nothing about current
-// load — only the delta between two readings does.
+// the last /proc/stat reading
+// those counts add up since boot, so only the change between two readings shows current load
 var prevIdle, prevTotal uint64
 
 func cpuUsage() float64 {
@@ -72,8 +71,8 @@ func memUsage() float64 {
 	return clamp((total - available) / total)
 }
 
-// parseMeminfoValue pulls the number out of a "MemTotal:  16316456 kB" line.
-// The unit is always kB, and the ratio is unit-free, so it's never converted.
+// pulls the number out of a meminfo line, e.g. "MemTotal:  16316456 kB" gives 16316456
+// always kB, and only the ratio is used, so it's never converted
 func parseMeminfoValue(line string) float64 {
 	fields := strings.Fields(line)
 	if len(fields) < 2 {

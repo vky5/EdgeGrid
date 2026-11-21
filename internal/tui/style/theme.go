@@ -1,5 +1,4 @@
-// Package style holds lipgloss styles shared across every TUI screen, so
-// onboarding and dashboard look like one product instead of two.
+// Package style holds the colours and styles every TUI screen shares, so they look like one app.
 package style
 
 import "github.com/charmbracelet/lipgloss"
@@ -54,14 +53,10 @@ var (
 			Padding(0, 1)
 )
 
-// Screen lays out a full-terminal app frame: a header bar spanning the full
-// width, the given body centered in the remaining vertical space, and a
-// footer hint bar — the same chrome used by every full-screen program in
-// this TUI so onboarding and the dashboard read as one product.
+// a full-screen frame: header bar on top, body centred, help bar at the bottom
 func Screen(width, height int, title, step, body, help string) string {
 	if width <= 0 || height <= 0 {
-		// No WindowSizeMsg yet (first frame) — render unplaced so there's
-		// still something on screen instead of a blank frame.
+		// size not known yet on the first frame, so draw it unplaced rather than blank
 		return HeaderBar.Render(title) + "\n\n" + body + "\n\n" + FooterBar.Render(help)
 	}
 

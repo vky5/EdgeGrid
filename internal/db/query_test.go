@@ -5,8 +5,7 @@ import (
 	"time"
 )
 
-// seedRow inserts a row directly, bypassing RecordStart/RecordFinish, so
-// the test controls started_at/finished_at exactly.
+// adds a row straight to the table, so the test sets the start and finish times exactly
 func seedRow(t *testing.T, s *Store, dir Direction, peer string, size int64, status Status, startedAt, finishedAt int64) {
 	t.Helper()
 	_, err := s.db.Exec(

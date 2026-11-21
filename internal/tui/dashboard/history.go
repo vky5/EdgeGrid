@@ -12,22 +12,19 @@ import (
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
-// historyRefreshInterval is how often the History tab re-reads the
-// transfer database.
+// how often the History tab reads the transfer database again
 const historyRefreshInterval = 5 * time.Second
 
-// historyLimit bounds how many recent rows are shown — no scrolling yet.
+// how many recent transfers are shown; there's no scrolling yet
 const historyLimit = 20
 
-// TotalsFunc reports total bytes sent/received and average throughput.
-// node.Node.HistoryTotals satisfies it.
+// gives total bytes sent and received and the average speed, e.g. node.Node.HistoryTotals
 type TotalsFunc func() (db.Totals, error)
 
-// RecentTransfersFunc lists the most recent recorded transfers, newest
-// first. node.Node.RecentTransfers satisfies it.
+// lists recent transfers, newest first, e.g. node.Node.RecentTransfers
 type RecentTransfersFunc func(limit int) ([]db.TransferSummary, error)
 
-// HistoryFuncs connects the History tab to this node's transfer database.
+// connects the History tab to this node's transfer database
 type HistoryFuncs struct {
 	Totals TotalsFunc
 	Recent RecentTransfersFunc

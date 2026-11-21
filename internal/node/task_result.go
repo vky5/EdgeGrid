@@ -11,12 +11,11 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 )
 
-// resultTimeout bounds one result exchange; both messages are tiny.
+// how long one ask for a result may take; both messages are tiny
 const resultTimeout = 10 * time.Second
 
-// receiveResult answers a dispatcher asking how a task it sent us went. The
-// requester is identified by Tailscale, never by anything it says, and only
-// the dispatcher recorded for the task gets an answer.
+// answers a peer asking how a task it sent us went
+// who is asking comes from Tailscale, and only the node that sent the task gets an answer
 func (a *Node) receiveResult(who *apitype.WhoIsResponse, conn net.Conn) {
 	var requester string
 	if who != nil && who.Node != nil {
@@ -33,8 +32,8 @@ func (a *Node) receiveResult(who *apitype.WhoIsResponse, conn net.Conn) {
 	}
 }
 
-// lookupResult maps a stored row to the wire answer. Missing, someone else's,
-// and unreadable all get the same lost answer: a peer can't tell them apart.
+// turns a saved task row into the answer sent back
+// a missing task and someone else's task get the same answer, so a peer can't guess IDs
 func (a *Node) lookupResult(taskID, requester string) task.ResultResponse {
 	unknown := task.ResultResponse{Status: task.StatusLost, Error: task.NoRecord}
 	if a.history == nil || requester == "" {

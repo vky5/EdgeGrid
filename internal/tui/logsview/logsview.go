@@ -1,7 +1,5 @@
-// Package logsview is the log viewer overlay opened by the "/logs" command
-// from the dashboard — reads through node.TailLog, the same function the
-// plain `edgegrid logs` subcommand uses, so there's one place that knows
-// where a node's logs live and how they're tailed.
+// Package logsview is the log overlay that "/logs" opens over the dashboard.
+// it reads through node.TailLog, like `edgegrid logs`, so only one place knows where logs live
 package logsview
 
 import (
@@ -14,14 +12,14 @@ import (
 
 const maxLines = 1000
 
-// CloseMsg is emitted when the user dismisses the overlay.
+// sent when the user closes the overlay
 type CloseMsg struct{}
 
 type Model struct {
 	viewport viewport.Model
 }
 
-// New loads the current tail of dataDir's log file via node.TailLog.
+// opens the overlay on the last lines of dataDir's log file
 func New(dataDir string, width, height int) Model {
 	vp := viewport.New(width, height)
 	content, err := node.TailLog(dataDir, maxLines)

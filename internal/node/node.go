@@ -1,3 +1,5 @@
+// Package node is one EdgeGrid node: it joins the tailnet, talks to peers,
+// and sends and receives files and tasks.
 package node
 
 import (
@@ -16,7 +18,7 @@ import (
 	"tailscale.com/tsnet"
 )
 
-// historyFile is this node's local SQLite database, relative to DataDir.
+// this node's SQLite database file, inside the data folder
 const historyFile = "edgegrid.db"
 
 func NewWithLogging(
@@ -38,19 +40,7 @@ func NewWithLogging(
 	return nodeAgent, closeLog, nil
 }
 
-// Entire lifecycle of the application
-//
-// The package is split by concern; this file is only the core (construction,
-// tsnet access, Start, Close). Everything else lives beside it:
-//
-//	peer.go          the hello handshake: selfHello, handlePeer (routes a
-//	                 connection by its Intent), dialAndGreet
-//	blob_send.go     SendBlob: dial a peer and stream a file to it
-//	blob_receive.go  receiveBlob: take an inbound file into the inbox
-//	acl.go           who may send this node a file: the ACL, the size cap,
-//	                 and checkAccept, the policy applied to every offer
-//	transfers.go     the registry of in-flight transfers the TUI polls
-//	config.go, ident.go, profile.go, log.go   profiles, identity, token files
+// one running EdgeGrid node: its tailnet connection, database and task runner
 type Node struct {
 	cfg         *Config
 	tsnetServer *tsnet.Server
@@ -66,49 +56,41 @@ type Node struct {
 	stopRuns context.CancelFunc
 	runs     sync.WaitGroup // Close waits on this so no task outlives the node
 
-	// history is this node's local transfer database, nil if it never opened.
+	// the local database of transfers and tasks, nil if it never opened
 	history *db.Store
 }
 
-// returns tailscale IP address of this node or "" if tsnet is not running
+// this node's Tailscale IPv4 address, or "" if tsnet is not running
 func (a *Node) TailscaleIP() string { return a.tailscaleIP }
 
-// NodeID is this node's persistent identity (see nodeident).
+// this node's own ID, the same across restarts
 func (a *Node) NodeID() string { return a.nodeID }
 
-// TailscaleHostname is the hostname this node presents on the tailnet — the
-// name that shows up in peers' Peers tabs and the Tailscale admin console.
+// the name this node shows on the tailnet, in peers' Peers tabs and the Tailscale admin console
 func (a *Node) TailscaleHostname() string { return a.cfg.TailscaleHostname }
 
-// LocalClient exposes tsnet's local API — Status() for membership/liveness,
-// WhoIs() for attributing an inbound connection to a tailnet peer (used by
-// internal/discovery). Callers outside this package go through this instead
-// of reaching into tsnetServer directly, since that field is unexported.
+// the Tailscale client other packages use to list peers and ask who is calling
 func (a *Node) LocalClient() (*local.Client, error) {
 	return a.tsnetServer.LocalClient()
 }
 
-// Listen opens a listener reachable only from other tailnet members — see
-// internal/discovery, which uses this for the peer-discovery port. Traffic
-// stays inside the tailnet; tsnet never exposes it to the public internet.
+// opens a port only other tailnet members can reach, e.g. the peer port 9797
+// it is never open to the public internet
 func (a *Node) Listen(network, addr string) (net.Listener, error) {
 	return a.tsnetServer.Listen(network, addr)
 }
 
-// Dial opens a connection to another tailnet member through tsnet's own
-// userspace stack. This must not be net.Dial: tsnet has no TUN device, so
-// tailnet IPs are not in the kernel routing table and a plain dial leaves
-// via the default route into CGNAT space, where it hangs until TCP times
-// out.
+// connects to another node through tsnet
+// a plain net.Dial would leave by the normal route and hang until TCP gives up
 func (a *Node) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	return a.tsnetServer.Dial(ctx, network, addr)
 }
 
-// dialTimeout bounds reaching a peer. Without it a dial to an unreachable
-// tailnet IP blocks for the kernel's full TCP timeout.
+// how long to try reaching a peer before giving up
+// so a dial to an offline node doesn't wait for the full TCP timeout
 const dialTimeout = 15 * time.Second
 
-// Build the Node struct and authenticate tsnet
+// joins the tailnet and builds the Node
 func New(ctx context.Context, cfg *Config, onProgress func(string)) (*Node, error) {
 	ts := &tsnet.Server{
 		Dir:      filepath.Join(cfg.DataDir, "tsnet"),
@@ -151,12 +133,11 @@ func New(ctx context.Context, cfg *Config, onProgress func(string)) (*Node, erro
 
 	history, err := db.Open(filepath.Join(cfg.DataDir, historyFile))
 	if err != nil {
-		// Best-effort: a node that can't record history should still transfer files
+		// a node that can't record history should still send and receive files
 		log.Printf("warning: could not open history database, transfers will not be recorded: %v", err)
 	} else {
-		// Marks rows left in progress by a crash as interrupted (transfers) or
-		// lost (tasks). Independent,
-		// so one failing must not skip the other.
+		// mark what a crash left half-done: transfers as interrupted, tasks as lost
+		// two separate steps, so one failing doesn't skip the other
 		if err := history.ReconcileStaleTransfers(); err != nil {
 			log.Printf("warning: could not reconcile stale transfer records: %v", err)
 		}
@@ -203,7 +184,7 @@ func (a *Node) Start(ctx context.Context) error {
 		log.Printf("discovery: snapshot: %v", err)
 	}
 
-	// This greeting is not periodic and it is for inital handshake and record keeping
+	// greet each online peer once at startup, not on a timer
 	for _, p := range peers {
 		if !p.Online {
 			continue
@@ -222,11 +203,8 @@ func (a *Node) Start(ctx context.Context) error {
 	return nil
 }
 
-// Close shuts the agent down. It is intentionally idempotent because more than
-// one path can legitimately ask the same agent to close — the background runner
-// noticing Start returned, and the caller's own deferred cleanup. Only the first
-// call should release tsnet, so later calls are no-ops and we never double-close
-// the same handle.
+// shuts the node down; calling it again does nothing
+// so the background runner and the caller's defer can both call it
 func (a *Node) Close() {
 	a.closeOnce.Do(func() {
 		log.Println("shutting down EdgeGrid services")

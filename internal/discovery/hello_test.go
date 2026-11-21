@@ -38,11 +38,8 @@ func TestHelloCarriesIntentOverTheWire(t *testing.T) {
 	}
 }
 
-// A node built before Intent existed sends a hello without the field. It
-// must still decode, landing on the empty intent — which node.handlePeer
-// treats as a plain hello. This is the whole backward-compatibility claim,
-// so it's pinned against raw bytes rather than a round trip through
-// WriteHello, which would always include the field.
+// a hello from an older node has no intent field and must still decode, as a plain hello
+// built from raw bytes, since WriteHello would always add the field
 func TestHelloWithoutIntentFieldDecodesAsEmpty(t *testing.T) {
 	body := []byte(`{"node_id":"old-node"}`)
 	var buf bytes.Buffer
@@ -63,9 +60,7 @@ func TestHelloWithoutIntentFieldDecodesAsEmpty(t *testing.T) {
 	}
 }
 
-// An intent this build has never heard of must decode cleanly rather than
-// erroring — the receiver handles it as a plain hello, it does not reject
-// the connection.
+// an unknown intent still decodes, and is handled as a plain hello, not refused
 func TestUnknownIntentDecodesWithoutError(t *testing.T) {
 	var buf bytes.Buffer
 	if err := WriteHello(&buf, Hello{NodeID: "future-node", Intent: "something-new"}); err != nil {
@@ -85,8 +80,7 @@ func TestReadHelloRejectsOversizedLength(t *testing.T) {
 	var prefix [4]byte
 	binary.BigEndian.PutUint32(prefix[:], maxHelloSize+1)
 	buf.Write(prefix[:])
-	// No body — an oversized length must be rejected before ReadHello ever
-	// tries to read (and block on) a body that isn't there.
+	// no body: a too-big length must be refused before ReadHello waits for a body that never comes
 
 	if _, err := ReadHello(&buf); err == nil {
 		t.Error("expected an error for a length prefix over maxHelloSize, got nil")

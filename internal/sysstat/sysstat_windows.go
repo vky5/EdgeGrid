@@ -8,22 +8,19 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Both calls come from kernel32. NewLazySystemDLL resolves only out of
-// System32, which is what keeps this from being a DLL-planting hole the way
-// a plain LoadLibrary by name would be.
+// both calls come from kernel32, loaded only from System32
+// so a DLL dropped next to the binary can't be picked up instead
 var (
 	kernel32               = windows.NewLazySystemDLL("kernel32.dll")
 	procGetSystemTimes     = kernel32.NewProc("GetSystemTimes")
 	procGlobalMemoryStatus = kernel32.NewProc("GlobalMemoryStatusEx")
 )
 
-// prevIdle/prevBusy hold the last GetSystemTimes sample. Like Linux's
-// /proc/stat these are cumulative since boot, so only the delta between two
-// samples describes current load.
+// the last GetSystemTimes reading
+// those counts add up since boot, so only the change between two readings shows current load
 var prevIdle, prevBusy uint64
 
-// fileTime is Windows' FILETIME: a 64-bit tick count split across two
-// 32-bit halves.
+// Windows' FILETIME: one 64-bit tick count split into two 32-bit halves
 type fileTime struct {
 	low  uint32
 	high uint32
@@ -42,8 +39,7 @@ func cpuUsage() float64 {
 		return 0
 	}
 
-	// Kernel time already includes idle time, so busy work is
-	// (kernel - idle) + user.
+	// kernel time already includes idle, so busy is (kernel - idle) + user
 	idleTicks := idle.uint64()
 	busyTicks := (kernel.uint64() - idleTicks) + user.uint64()
 
@@ -58,8 +54,7 @@ func cpuUsage() float64 {
 	return clamp(float64(diffBusy) / float64(total))
 }
 
-// memoryStatusEx mirrors Windows' MEMORYSTATUSEX. length must be set to the
-// struct's own size before the call, which is how the API versions itself.
+// Windows' MEMORYSTATUSEX; length must be set to the struct's size before the call
 type memoryStatusEx struct {
 	length               uint32
 	memoryLoad           uint32
@@ -81,6 +76,6 @@ func memUsage() float64 {
 		return 0
 	}
 
-	// memoryLoad is already the percentage in use, computed by the kernel.
+	// already the percent in use, worked out by Windows
 	return clamp(float64(status.memoryLoad) / 100.0)
 }

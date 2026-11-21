@@ -4,7 +4,7 @@ package node
 
 import "golang.org/x/sys/windows"
 
-// "available" honours per-user disk quotas, unlike the volume's total free space.
+// free space this user can write to, after any per-user disk quota
 func freeBytes(path string) (uint64, error) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
