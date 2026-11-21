@@ -51,8 +51,8 @@ type TaskRecord struct {
 	Error        string
 	StartedAt    time.Time
 	FinishedAt   time.Time // zero while running
-	Attempts     int       // how many times this node has gone back to ask
-	NextCheckAt  time.Time // when to ask next; zero for tasks this node received
+	Attempts     int       // how many times we've gone back to ask, e.g. 2
+	NextCheckAt  time.Time // when to ask next, e.g. 09:30; zero for tasks this node received
 }
 
 // adds a row for a task that just started
@@ -118,8 +118,13 @@ func (s *Store) ReceivedTaskFor(taskID, requesterID string) (TaskRecord, error) 
 		taskID, RoleReceived, requesterID)
 }
 
-// DueSentTasks lists up to limit sent tasks still running whose next check
-// is at or before now, the most overdue first.
+// sent tasks still running whose next check has come, up to limit, most overdue first
+//
+//	now 10:00, limit 100
+//	slow     running   next check 09:30   listed first
+//	hello    running   next check 09:55   listed second
+//	slower   running   next check 10:20   not yet
+//	big      done                         never
 func (s *Store) DueSentTasks(now time.Time, limit int) ([]TaskRecord, error) {
 	rows, err := s.db.Query(
 		`SELECT `+taskColumns+` FROM tasks
@@ -145,9 +150,13 @@ func (s *Store) DueSentTasks(now time.Time, limit int) ([]TaskRecord, error) {
 	return out, nil
 }
 
-// ClaimSentTask counts one more check on a due sent task and moves its next
-// check to next. It returns false if the task is no longer running or no
-// longer due, for example because someone else claimed it first.
+// counts one more check on a due sent task and moves its next check to next
+// false if it finished or isn't due any more, e.g. another process claimed it first
+//
+//	row before: running, attempts 0, next check 09:10
+//	ClaimSentTask(id, 09:11, 09:31)  true    row: attempts 1, next check 09:31
+//	ClaimSentTask(id, 09:11, 09:31)  false   next check is 09:31 now, so not due
+//	after B answers done:            false   not running any more
 func (s *Store) ClaimSentTask(taskID string, now, next time.Time) (bool, error) {
 	res, err := s.db.Exec(
 		`UPDATE tasks SET attempts = attempts + 1, next_check_at = ?
@@ -171,7 +180,7 @@ func (s *Store) taskRow(query string, args ...any) (TaskRecord, error) {
 	return r, err
 }
 
-// readTask fills a TaskRecord from one row selected with taskColumns.
+// fills a TaskRecord from one row selected with taskColumns
 func readTask(row interface{ Scan(...any) error }) (TaskRecord, error) {
 	var (
 		r        TaskRecord

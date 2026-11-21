@@ -11,11 +11,18 @@ import (
 	"github.com/edgegrid/edgegrid/internal/task"
 )
 
-// maxCheckWait is the longest gap between two checks on a sent task.
+// the longest gap between two checks on a sent task, a day
 const maxCheckWait = 24 * time.Hour
 
-// checkWait is how long to wait before the next check, given how many checks
-// have already been made: 10 minutes, doubled each time, at most a day.
+// how long to wait before the next check, from how many checks came before
+// 10 minutes, doubled each time, at most a day
+//
+//	attempts   wait          time since sent
+//	0          10 min        10 min
+//	1          20 min        30 min
+//	2          40 min        1 h 10 min
+//	7          21 h 20 min   1 day 18 h 30 min
+//	8 or more  1 day         then once a day
 func checkWait(attempts int) time.Duration {
 	wait := db.FirstCheckAfter // time between sending a task and first time feeder checks on it
 	for i := 0; i < attempts; i++ {
@@ -27,36 +34,49 @@ func checkWait(attempts int) time.Duration {
 	return wait
 }
 
-// shouldGiveUp reports whether a sent task is too old to keep asking about:
-// the other node has thrown its result away by now.
+// whether a sent task is too old to keep asking about
+// the node that ran it keeps results 7 days, so asking after that can't help
+// e.g. sent 2026-11-14 09:00: false until 2026-11-21 09:00, true from then on
 func shouldGiveUp(startedAt, now time.Time) bool {
 	return now.Sub(startedAt) >= task.ResultRetention
 }
 
-// askFunc asks peer how the task taskID went. Node.askResult is the real one.
+// asks the other computer how one task went; a.askResult in real use, a fake in tests
+//
+//	ask(ctx, alpha5-297b, "fba47d80-…") → {Status: "done", Output: "hello from B\n"}, nil
+//	ask(ctx, alpha5-297b, "fba47d80-…") → {Status: "running"}, nil
+//	ask(ctx, alpha5-297b, "fba47d80-…") → {Status: "lost", Error: "no record of this task"}, nil
+//	ask(ctx, alpha5-297b, "fba47d80-…") → {}, "context deadline exceeded"   (B didn't answer)
 type askFunc func(ctx context.Context, peer discovery.Peer, taskID string) (task.ResultResponse, error)
 
-// checkSentTask asks the node that ran a sent task how it went, and stores the
-// answer once the task is over. peers is who is on the network right now,
-// keyed by Tailscale ID. If the node can't be reached, the task is left for
-// its next check, unless it is old enough to give up on.
-/*
-peers := map[string]discovery.Peer{
-    "nK7xQ2CNTRL": {
-        ID:       "nK7xQ2CNTRL",
-        Hostname: "alpha5-297b",                 // your 2nd-cluster profile, B
-        IP:       netip.MustParseAddr("100.96.191.21"),
-        Online:   true,
-    },
-    "nP3mR8CNTRL": {
-        ID:       "nP3mR8CNTRL",
-        Hostname: "old-laptop",
-        IP:       netip.MustParseAddr("100.70.12.5"),
-        Online:   false,                         // known to Tailscale, but switched off
-        LastSeen: time.Date(2026, 11, 19, 22, 4, 0, 0, time.Local),
-    },
-}
-*/
+// asks the node that ran a sent task how it went, and saves the answer once the task is over
+// peers is who is on the network right now, by Tailscale ID, e.g.
+//
+//	peers := map[string]discovery.Peer{
+//		"nK7xQ2CNTRL": {
+//			ID:       "nK7xQ2CNTRL",
+//			Hostname: "alpha5-297b",
+//			IP:       netip.MustParseAddr("100.x.y.z"),
+//			Online:   true, // dialled
+//		},
+//		"nP3mR8CNTRL": {
+//			ID:       "nP3mR8CNTRL",
+//			Hostname: "old-laptop",
+//			IP:       netip.MustParseAddr("100.x.y.z"),
+//			Online:   false, // known to Tailscale but switched off: skipped, unless the task is 7 days old
+//			LastSeen: time.Date(2026, 11, 19, 22, 4, 0, 0, time.Local),
+//		},
+//	}
+//
+// what happens to the row, for a task sent to alpha5-297b:
+//
+//	answer                          row afterwards
+//	running                         left alone, however old the task is
+//	done, "hello from B"            done, output saved
+//	failed or lost, with a reason   the same status and reason
+//	no answer, sent 2 days ago      left for its next check
+//	no answer, sent 8 days ago      lost, "no answer from alpha5-297b"
+//	this node shutting down         left alone
 func (a *Node) checkSentTask(ctx context.Context, ask askFunc, rec db.TaskRecord, peers map[string]discovery.Peer, now time.Time) {
 	peer, found := peers[rec.PeerID]
 	tooOld := shouldGiveUp(rec.StartedAt, now)

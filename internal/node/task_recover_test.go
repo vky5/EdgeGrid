@@ -54,10 +54,10 @@ func TestShouldGiveUpAfterSevenDays(t *testing.T) {
 	}
 }
 
-// bravo is the node that ran the task in these tests.
+// the node that ran the task in these tests
 var bravo = discovery.Peer{ID: "bravo-id", Hostname: "bravo", Online: true}
 
-// sentRow records a task sent to bravo and returns its row, aged by age.
+// records a task sent to bravo and returns its row, made age old, e.g. 8 days
 func sentRow(t *testing.T, n *Node, age time.Duration) db.TaskRecord {
 	t.Helper()
 	tk, _ := task.New("slow", task.Requirements{})
@@ -70,7 +70,7 @@ func sentRow(t *testing.T, n *Node, age time.Duration) db.TaskRecord {
 	return rec
 }
 
-// answers returns an ask that always gives resp and err, counting its calls.
+// a fake ask that always gives resp and err, and counts its calls
 func answers(resp task.ResultResponse, err error) (askFunc, *int) {
 	calls := 0
 	return func(context.Context, discovery.Peer, string) (task.ResultResponse, error) {
@@ -79,6 +79,7 @@ func answers(resp task.ResultResponse, err error) (askFunc, *int) {
 	}, &calls
 }
 
+// the sent row for rec as it is in the database now
 func rowAfter(t *testing.T, n *Node, rec db.TaskRecord) db.TaskRecord {
 	t.Helper()
 	got, err := n.history.Task(db.RoleSent, rec.TaskID)
@@ -88,8 +89,10 @@ func rowAfter(t *testing.T, n *Node, rec db.TaskRecord) db.TaskRecord {
 	return got
 }
 
+// one day, for ageing tasks
 const day = 24 * time.Hour
 
+// peer list with bravo online
 var online = map[string]discovery.Peer{bravo.ID: bravo}
 
 func TestCheckStoresAFinishedAnswer(t *testing.T) {
