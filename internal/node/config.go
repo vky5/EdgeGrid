@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 )
 
@@ -27,6 +28,21 @@ type Config struct {
 
 	TailscaleAuthKey  string // tsnet auth key for joining the tailnet (optional; falls back to interactive login)
 	TailscaleHostname string // name on the tailnet (default: OS hostname plus a random suffix)
+
+	TaskCheckWorkers int // how many sent tasks we check on at once, e.g. TASK_CHECK_WORKERS=10
+}
+
+// sent tasks checked at once when TASK_CHECK_WORKERS isn't set
+const defaultTaskCheckWorkers = 5
+
+// reads TASK_CHECK_WORKERS, falling back to 5
+// e.g. "3" → 3; "", "0" or "lots" → 5
+func taskCheckWorkers() int {
+	n, err := strconv.Atoi(os.Getenv("TASK_CHECK_WORKERS"))
+	if err != nil || n < 1 {
+		return defaultTaskCheckWorkers
+	}
+	return n
 }
 
 // picks the data folder: --data-dir, then DATA_DIR, then the active profile, then ./data
@@ -93,6 +109,7 @@ func loadConfigOnce() *Config {
 		ProfileName:       profileName,
 		TailscaleAuthKey:  firstNonEmpty(*tsAuthKey, os.Getenv("TS_AUTHKEY")),
 		TailscaleHostname: finalTailscaleHostname,
+		TaskCheckWorkers:  taskCheckWorkers(),
 	}
 }
 
