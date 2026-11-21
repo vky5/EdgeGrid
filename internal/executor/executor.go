@@ -14,6 +14,7 @@ type RuntimeName string
 const RuntimeBare RuntimeName = "bare"
 
 // one kind of task: what to fetch and what to run
+// e.g. {"kind":"hello","runtime":"bare","entrypoint":["echo","hello world"]}
 type Definition struct {
 	Kind       string      `json:"kind"`
 	Runtime    RuntimeName `json:"runtime"`
@@ -38,10 +39,10 @@ type Runtime interface {
 type Executor struct {
 	defs     map[string]Definition
 	runtimes map[RuntimeName]Runtime
-	workRoot string // each run gets a fresh dir under here, removed afterwards
+	workRoot string // each run gets a fresh dir under here, removed afterwards, e.g. ~/.edgegrid/<profile>/runs
 }
 
-// reads the list of task kinds from a JSON file
+// reads the list of task kinds from a JSON file, e.g. ~/.edgegrid/<profile>/tasks.json
 func LoadDefinitions(path string) ([]Definition, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {

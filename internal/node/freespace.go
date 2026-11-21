@@ -15,6 +15,7 @@ const spaceHeadroom uint64 = 256 << 20
 var freeBytesFunc = freeBytes
 
 // refuses a file that won't fit on the inbox's disk, so the sender hears why up front
+// e.g. a 1 GiB file with 900 MiB free: "need 1.2 GiB (file 1.0 GiB plus 256.0 MiB spare), have 900.0 MiB"
 // if free space can't be read the file is allowed, and no space is set aside
 func (a *Node) checkSpace(label string, size int64) error {
 	dir := filepath.Join(a.cfg.DataDir, "inbox")

@@ -16,6 +16,7 @@ type Config struct {
 }
 
 // picks the data folder: --data-dir, then DATA_DIR, then the active profile, then ./data
+// e.g. no flag or env and profile primary active gives ~/.edgegrid/primary
 // the flag and env come first so they still win once a profile is active
 func ResolveDataDir(flagVal string) string {
 	dir, _ := resolveDataDir(flagVal)

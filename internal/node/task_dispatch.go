@@ -15,8 +15,9 @@ import (
 	"github.com/edgegrid/edgegrid/internal/task"
 )
 
-// offers a task to each peer in turn and stops at the first that accepts
-// returns that peer, so the caller knows whom to ask for the result; a peer that is offline or refuses is skipped
+// offers a task to each peer in turn and returns the first that accepts, so the caller knows whom to ask for the result
+// e.g. alpha5-297b is offline and bravo accepts: bravo comes back
+// if none accept, the error ends with "no peer accepted the task"
 func (a *Node) DispatchTask(ctx context.Context, peers []discovery.Peer, t *task.Task) (discovery.Peer, error) {
 	var errs []error
 

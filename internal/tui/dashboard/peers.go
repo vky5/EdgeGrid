@@ -20,7 +20,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
-// how often the Peers tab asks Tailscale for the peer list again
+// how often the Peers tab asks Tailscale for the peer list again, every 5s
 const peersRefreshInterval = 5 * time.Second
 
 // the type sent with a file picked in the TUI; blob never reads it, the receiver can
@@ -61,9 +61,9 @@ type TaskFuncs struct {
 
 // one transfer happening now, either way; a copy of node.Transfer
 type Transfer struct {
-	Direction string // "sending" or "receiving"
-	Peer      string
-	Frac      float64
+	Direction string  // "sending" or "receiving"
+	Peer      string  // e.g. alpha5-297b when sending, the peer's node ID when receiving
+	Frac      float64 // how far along, e.g. 0.5 is halfway
 	BytesDone int64
 	Total     int64
 	Verifying bool // all bytes are in; the receiver is saving and checking the file
@@ -76,7 +76,7 @@ type Transfer struct {
 // the tab asks for it on a tick, so a transfer never waits on the screen
 type TransfersFunc func() []Transfer
 
-// how often the transfer panel reads progress again; fast enough to look live
+// how often the transfer panel reads progress again, every 300ms, so it looks live
 const transferPollInterval = 300 * time.Millisecond
 
 // the Peers tab: every EdgeGrid node Tailscale knows about
@@ -95,18 +95,18 @@ type peersModel struct {
 	input     textinput.Model
 	path      string
 	manifest  *blob.Manifest
-	flowErr   error
+	flowErr   error // e.g. bravo: refused: this node cannot run task kind "resnet"
 	send      SendFunc
 	trust     TrustFuncs
 	trusted   map[string]bool
 	tasks     TaskFuncs
 	taskTrust map[string]bool
-	kind      string
+	kind      string             // the task kind typed in, e.g. hello
 	taskID    string             // set once the peer accepted; the result wait is on
 	stopTask  context.CancelFunc // ends the dispatch or result wait, never the task
 	transfers TransfersFunc
 	active    []Transfer
-	sendNote  string
+	sendNote  string // the line under the list, e.g. "sent 1.5 GiB to alpha5-297b"
 }
 
 func newPeersModel(lc *local.Client, send SendFunc, transfers TransfersFunc) peersModel {
@@ -527,6 +527,7 @@ func (m peersModel) startWait() (peersModel, context.Context) {
 }
 
 // a task's output cut to one short line for the status note
+// e.g. "hello\nworld\n" gives "hello world"; past 200 characters it ends in …
 func outputPreview(out []byte) string {
 	const limit = 200
 	s := []rune(strings.Join(strings.Fields(string(out)), " "))
@@ -890,7 +891,7 @@ func checkSinglePath(p string) error {
 	return nil
 }
 
-// whether a peer may send this node files: allowed, blocked, or no choice yet (the default applies)
+// whether a peer may send this node files: ✓ allowed, ✗ blocked, or · no choice yet (the default applies)
 func (m peersModel) trustMarker(stableID string) string {
 	return decisionMarker(m.trusted, stableID)
 }

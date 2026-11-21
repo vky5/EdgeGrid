@@ -11,7 +11,7 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 )
 
-// how long one ask for a result may take; both messages are tiny
+// how long one ask for a result may take, 10s; both messages are tiny
 const resultTimeout = 10 * time.Second
 
 // answers a peer asking how a task it sent us went
@@ -33,7 +33,8 @@ func (a *Node) receiveResult(who *apitype.WhoIsResponse, conn net.Conn) {
 }
 
 // turns a saved task row into the answer sent back
-// a missing task and someone else's task get the same answer, so a peer can't guess IDs
+// a missing task and someone else's task both get {"status":"lost","error":"no record of this task"}
+// so a peer can't guess IDs
 func (a *Node) lookupResult(taskID, requester string) task.ResultResponse {
 	unknown := task.ResultResponse{Status: task.StatusLost, Error: task.NoRecord}
 	if a.history == nil || requester == "" {

@@ -10,6 +10,7 @@ type TaskSlot struct {
 }
 
 // marks the slot busy if it's free; false means another task got it first
+// e.g. a second offer is then refused with "this node is already running a task"
 func (ts *TaskSlot) TryClaim() bool {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()

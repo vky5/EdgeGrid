@@ -48,12 +48,12 @@ func (s ResultStatus) valid() bool {
 // whether the sender can stop asking: the run ended, or never will
 func (s ResultStatus) Finished() bool { return s != StatusRunning }
 
-// asks the node that ran a task how it went
+// asks the node that ran a task how it went, e.g. {"task_id":"3f2b8c1e-…"}
 type ResultRequest struct {
 	TaskID string `json:"task_id"`
 }
 
-// the answer from the node that ran the task
+// the answer from the node that ran the task, e.g. {"status":"lost","error":"no record of this task"}
 // Output is set only for done, Error only for failed and lost
 type ResultResponse struct {
 	Status ResultStatus `json:"status"`
@@ -62,6 +62,7 @@ type ResultResponse struct {
 }
 
 // nil for a successful run, otherwise why the task gave no output
+// e.g. lost with NoRecord gives "task lost: no record of this task"
 func (r ResultResponse) Err() error {
 	switch r.Status {
 	case StatusDone:

@@ -12,10 +12,10 @@ import (
 
 // another EdgeGrid node on the tailnet, as Tailscale sees it
 type Peer struct {
-	ID       string // Tailscale's stable device ID, not node.Node.NodeID()
-	Hostname string
-	DNSName  string // MagicDNS name, ends with a dot
-	IP       netip.Addr
+	ID       string     // Tailscale's stable device ID, not node.Node.NodeID()
+	Hostname string     // e.g. alpha5-297b
+	DNSName  string     // MagicDNS name, ends with a dot, e.g. alpha5-297b.<tailnet>.ts.net.
+	IP       netip.Addr // e.g. 100.x.y.z
 
 	Online   bool
 	LastSeen time.Time // only meaningful when !Online

@@ -12,10 +12,10 @@ import (
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
-// how often the History tab reads the transfer database again
+// how often the History tab reads the transfer database again, every 5s
 const historyRefreshInterval = 5 * time.Second
 
-// how many recent transfers are shown; there's no scrolling yet
+// how many recent transfers are shown, the last 20; there's no scrolling yet
 const historyLimit = 20
 
 // gives total bytes sent and received and the average speed, e.g. node.Node.HistoryTotals

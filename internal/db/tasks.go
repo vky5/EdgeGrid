@@ -40,17 +40,18 @@ type TaskRecord struct {
 	TaskID       string
 	Role         Role
 	PeerID       string
-	PeerHostname string
-	Kind         string
+	PeerHostname string // e.g. bravo
+	Kind         string // e.g. hello
 	Status       TaskStatus
 	Output       []byte
-	Error        string
+	Error        string // e.g. "node restarted" for a run lost to a restart
 	StartedAt    time.Time
 	FinishedAt   time.Time // zero while running
 }
 
 // adds a row for a task that just started
 // the peer is the node running it for a sent task, and the sender for a received one
+// e.g. sending hello to bravo adds a "sent" row with peer bravo, status running
 func (s *Store) RecordTaskStart(role Role, taskID, peerID, peerHostname, kind string) error {
 	_, err := s.db.Exec(
 		`INSERT INTO tasks (task_id, role, peer_id, peer_hostname, kind, status, started_at)
@@ -98,6 +99,7 @@ func (s *Store) Task(role Role, taskID string) (TaskRecord, error) {
 }
 
 // finds a task this node ran, only if the one asking is the node that sent it
+// e.g. a third node asking about bravo's task gets ErrTaskNotFound
 func (s *Store) ReceivedTaskFor(taskID, requesterID string) (TaskRecord, error) {
 	return s.scanTask(
 		`SELECT task_id, role, peer_id, peer_hostname, kind, status, output, error, started_at, finished_at
@@ -128,7 +130,7 @@ func (s *Store) scanTask(query string, args ...any) (TaskRecord, error) {
 	return r, nil
 }
 
-// marks tasks this node was running itself as lost; call once at startup
+// marks tasks this node was running itself as lost with the error "node restarted"; call once at startup
 // those runs died with the old process; tasks sent elsewhere stay running, since a restart here doesn't stop them
 func (s *Store) ReconcileStaleTasks() error {
 	_, err := s.db.Exec(

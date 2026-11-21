@@ -26,7 +26,7 @@ const aclDir = "acl"
 // the rule for peers with no file: "allow" or "deny"; missing or anything else means deny
 const aclDefaultFile = "acl.default"
 
-// a file holding a byte count that replaces the default size limit
+// a file holding a byte count that replaces the default size limit, e.g. 1073741824 for 1 GiB
 const maxBlobBytesFile = "max_blob_bytes"
 
 // the biggest file a peer may send, 10 GB, a guess; max_blob_bytes overrides it
@@ -56,7 +56,7 @@ func maxBlobBytes(dataDir string) int64 {
 	return defaultMaxBlobBytes
 }
 
-// every saved file decision, peer ID to allowed, for the TUI
+// every saved file decision, peer ID to allowed, for the TUI, e.g. nPvV3wCNTRL: allow
 // a peer with no file is missing from the map, not false
 func (a *Node) TrustedPeers() map[string]bool {
 	out := map[string]bool{}
@@ -72,6 +72,7 @@ func (a *Node) SetTrust(stableID, hostname string, allow bool) error {
 }
 
 // decides whether to take a file a peer is offering: ACL, size limit, free space
+// e.g. "this node is not accepting files from you", or "file is 20000000000 bytes; this node accepts at most 10737418240"
 // the error text goes to the sender, so it never shows local paths or settings
 func (a *Node) checkAccept(stableID, label string, m *blob.Manifest) error {
 	dataDir := a.cfg.DataDir

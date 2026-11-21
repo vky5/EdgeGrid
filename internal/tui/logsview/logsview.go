@@ -10,6 +10,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
+// how many log lines the overlay shows, the last 1000
 const maxLines = 1000
 
 // sent when the user closes the overlay
@@ -19,7 +20,7 @@ type Model struct {
 	viewport viewport.Model
 }
 
-// opens the overlay on the last lines of dataDir's log file
+// opens the overlay on the end of dataDir's log file, e.g. ~/.edgegrid/primary/edgegrid.log
 func New(dataDir string, width, height int) Model {
 	vp := viewport.New(width, height)
 	content, err := node.TailLog(dataDir, maxLines)

@@ -19,7 +19,7 @@ const taskWireVersion = 1
 // the biggest task offer we read, 64 KB, so a peer can't make us allocate more
 const maxTaskSize = 64 * 1024
 
-// a peer's task used a version this node doesn't speak
+// a peer's task used a version this node doesn't speak, e.g. version 2 when we only know 1
 // the only read failure that still gets a refusal back; others get no answer
 var ErrUnsupportedVersion = errors.New("task: unsupported version")
 
@@ -31,7 +31,7 @@ type Requirements struct {
 	GPU      bool  `json:"gpu,omitempty"`
 }
 
-// what a sender offers a peer to run
+// what a sender offers a peer to run, e.g. {"id":"3f2b8c1e-…","kind":"hello","requirements":{}}
 // Kind and Requirements are the real fields; running it is still a hardcoded no-op for v1
 type Task struct {
 	ID           string       `json:"id"`
@@ -51,6 +51,7 @@ func New(kind string, req Requirements) (*Task, error) {
 }
 
 // checks the ID, kind and requirements before accept ever sees them
+// e.g. a task with no kind fails with "task: kind is empty"
 func (t *Task) Validate() error {
 	if t.ID == "" {
 		return errors.New("task: id is empty")
@@ -95,6 +96,7 @@ func WriteTask(w io.Writer, t *Task) error {
 
 // reads one task, checking the version before the body
 // and refusing an oversized length before making room for it
+// e.g. a 70000-byte length fails with "task: length 70000 exceeds max 65536"
 func ReadTask(r io.Reader) (*Task, error) {
 	var hdr [5]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
@@ -123,6 +125,7 @@ func WriteVerdict(w io.Writer, refusal error) error { return blob.WriteVerdict(w
 func ReadVerdict(r io.Reader) error                 { return blob.ReadVerdict(r) }
 
 // what the sender gets back when a peer says no to a task
+// e.g. "peer refused the transfer: this node is already running a task"
 type RefusedError = blob.RefusedError
 
 // sends a task and waits for the peer's yes or no

@@ -32,6 +32,7 @@ const maxHelloSize = 64 * 1024
 const helloTimeout = 5 * time.Second
 
 // what a node says about itself when it connects: its EdgeGrid ID and what it wants
+// e.g. {"node_id":"node-a","intent":"blob"}
 // it's the peer's own word, unlike Tailscale's WhoIs, so it picks the handler but never decides what the peer is allowed to do
 type Hello struct {
 	NodeID string     `json:"node_id"`

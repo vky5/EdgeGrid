@@ -19,6 +19,7 @@ var (
 )
 
 // sent when the user presses enter on a command that isn't empty
+// e.g. typing /profile primary sends "profile primary"
 type SubmitMsg struct {
 	Command string
 }

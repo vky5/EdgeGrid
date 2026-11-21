@@ -26,13 +26,14 @@ type ChunkInfo struct {
 // a file described as a list of chunks, in order
 type Manifest struct {
 	Name      string      `json:"name,omitempty"` // the sender's filename, e.g. report.pdf
-	MediaType string      `json:"media_type"`
-	Size      int64       `json:"size"`   // total blob size, sum of chunk lengths
-	SHA256    string      `json:"sha256"` // hash of the whole file, catches a chunk written in the wrong place
+	MediaType string      `json:"media_type"`     // e.g. application/octet-stream
+	Size      int64       `json:"size"`           // total blob size, sum of chunk lengths
+	SHA256    string      `json:"sha256"`         // hash of the whole file, catches a chunk written in the wrong place
 	Chunks    []ChunkInfo `json:"chunks"`
 }
 
 // reads the file once and hashes every chunk and the whole file
+// e.g. a 10 MiB file with 4 MiB chunks gives 3 chunks: 4, 4 and 2 MiB
 func BuildManifest(path, mediaType string, chunkSize int) (*Manifest, error) {
 	if chunkSize <= 0 {
 		chunkSize = DefaultChunkSize

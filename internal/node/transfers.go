@@ -11,10 +11,10 @@ import (
 	"github.com/edgegrid/edgegrid/internal/db"
 )
 
-// how long the manifest and the yes-or-no answer may take, before any chunk moves
+// how long the manifest and the yes-or-no answer may take, 15s, before any chunk moves
 const verdictTimeout = 15 * time.Second
 
-// how long a transfer may go with no chunk moving
+// how long a transfer may go with no chunk moving, 60s
 // it restarts on every chunk, so only a stalled transfer hits it, not a slow one
 const idleTimeout = 60 * time.Second
 
@@ -119,7 +119,8 @@ func recordTransferStart(h *db.Store, dir db.Direction, peerID, peerHostname, na
 	return id, true
 }
 
-// saves how a transfer ended; a refusal gets its own status, apart from other failures
+// saves how a transfer ended, e.g. done, failed or refused
+// a refusal gets its own status, apart from other failures
 func recordTransferFinish(h *db.Store, id int64, ok bool, err error, refused bool, sha256 string) {
 	if !ok {
 		return

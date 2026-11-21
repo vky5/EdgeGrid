@@ -259,7 +259,7 @@ func stripFlag(args []string, flag string) []string {
 	return out
 }
 
-// runs `edgegrid task send <kind> [input-json]`
+// runs `edgegrid task send <kind> [input-json]`, e.g. edgegrid task send hello
 func runTask(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: edgegrid task <send>")
@@ -351,7 +351,7 @@ func runTaskSend(kind string, input json.RawMessage) {
 	os.Stdout.Write(resp.Output)
 }
 
-// runs `edgegrid profile list|use <name>|current`
+// runs `edgegrid profile list|use <name>|current`, e.g. edgegrid profile use primary
 func runProfile(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: edgegrid profile <list|use|current> [name]")
@@ -394,8 +394,8 @@ func runProfile(args []string) {
 	}
 }
 
-// prints the end of the log file, e.g. the last 200 lines
-// it goes through node.Tail so every log reader agrees on where logs are
+// prints the end of the log file, the last 200 lines unless -n says otherwise, e.g. edgegrid logs -n 50
+// it goes through node.TailLog so every log reader agrees on where logs are
 func runLogs(args []string) {
 	fs := flag.NewFlagSet("logs", flag.ExitOnError)
 	dataDir := fs.String("data-dir", "", "directory for node identity and log files (default ./data)")

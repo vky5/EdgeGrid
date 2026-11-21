@@ -18,7 +18,7 @@ import (
 	"tailscale.com/tsnet"
 )
 
-// this node's SQLite database file, inside the data folder
+// this node's SQLite database file, inside the data folder, e.g. ~/.edgegrid/<profile>/edgegrid.db
 const historyFile = "edgegrid.db"
 
 func NewWithLogging(
@@ -60,13 +60,14 @@ type Node struct {
 	history *db.Store
 }
 
-// this node's Tailscale IPv4 address, or "" if tsnet is not running
+// this node's Tailscale IPv4 address, e.g. 100.x.y.z, or "" if tsnet is not running
 func (a *Node) TailscaleIP() string { return a.tailscaleIP }
 
 // this node's own ID, the same across restarts
 func (a *Node) NodeID() string { return a.nodeID }
 
 // the name this node shows on the tailnet, in peers' Peers tabs and the Tailscale admin console
+// e.g. alpha5-297b
 func (a *Node) TailscaleHostname() string { return a.cfg.TailscaleHostname }
 
 // the Tailscale client other packages use to list peers and ask who is calling
@@ -80,13 +81,13 @@ func (a *Node) Listen(network, addr string) (net.Listener, error) {
 	return a.tsnetServer.Listen(network, addr)
 }
 
-// connects to another node through tsnet
+// connects to another node through tsnet, e.g. Dial(ctx, "tcp", "100.x.y.z:9797")
 // a plain net.Dial would leave by the normal route and hang until TCP gives up
 func (a *Node) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	return a.tsnetServer.Dial(ctx, network, addr)
 }
 
-// how long to try reaching a peer before giving up
+// how long to try reaching a peer before giving up, 15s
 // so a dial to an offline node doesn't wait for the full TCP timeout
 const dialTimeout = 15 * time.Second
 

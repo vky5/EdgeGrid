@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// what a Tailscale peer ID looks like
+// what a Tailscale peer ID looks like, e.g. nPvV3wCNTRL
 // it becomes a filename, so anything else is refused
 var stableIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 

@@ -9,7 +9,7 @@ import (
 // one saved transfer, for the TUI to show
 type TransferSummary struct {
 	Direction    Direction
-	PeerHostname string
+	PeerHostname string // e.g. alpha5-297b
 	FileName     string
 	FileSize     int64
 	Status       Status

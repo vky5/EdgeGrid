@@ -10,9 +10,11 @@ import (
 )
 
 // the file listing the task kinds this node can run, inside the data folder
+// e.g. [{"kind":"hello","runtime":"bare","entrypoint":["echo","hello world"]}]
 const taskRegistryFile = "tasks.json"
 
 // the folder holding each run's own working folder, inside the data folder
+// e.g. runs/run-1234567, removed when that run ends
 const taskRunsDir = "runs"
 
 // builds the task runner, and never fails

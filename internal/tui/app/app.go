@@ -28,8 +28,8 @@ var commands = []string{"logs", "profile"}
 // the whole TUI, what cmd/edgegrid runs
 type App struct {
 	dataDir     string
-	profileName string // fixed at start-up, never read again for the footer
-	hostname    string // this node's Tailscale name, shown in the footer
+	profileName string // e.g. primary; fixed at start-up, never read again for the footer
+	hostname    string // this node's Tailscale name, shown in the footer, e.g. alpha5-297b
 
 	dashboard dashboard.Dashboard
 	cmdbar    cmdbar.Model

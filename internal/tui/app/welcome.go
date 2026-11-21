@@ -43,16 +43,17 @@ type welcomeAnimTickMsg struct{}
 // seq is the message it was set for, so an old timer doesn't wipe a newer message
 type settingsStatusExpiredMsg struct{ seq int }
 
-// how long a save message or error stays on screen
+// how long a save message or error stays on screen, 4s
 const settingsStatusTTL = 4 * time.Second
 
+// a made-up name for a new profile, e.g. cluster-3f9a
 func randomProfileName() string {
 	b := make([]byte, 2)
 	_, _ = crand.Read(b)
 	return "cluster-" + hex.EncodeToString(b)
 }
 
-// the data folder for a profile name, e.g. "" gives ./data
+// the data folder for a profile name, e.g. "primary" gives ~/.edgegrid/primary and "" gives ./data
 // it ignores the active profile, since the settings form edits the one under the cursor
 func profileDataDir(name string) string {
 	if name == "" {
@@ -369,7 +370,7 @@ type welcomeModel struct {
 	// what the user chose, read after the screen exits
 	action      WelcomeAction
 	profileName string
-	authKey     string // join key typed on the join screen; "" means log in through the browser
+	authKey     string // join key typed on the join screen, e.g. tskey-auth-...; "" means log in through the browser
 
 	// Network-role screen (subMode 7) and auth-key entry (subMode 8).
 	roleIdx int
@@ -815,8 +816,8 @@ func (m welcomeModel) updateProfileSettings(msg tea.Msg) (welcomeModel, tea.Cmd)
 	return m, cmd
 }
 
-// moveSettingsField commits the field being edited and moves the cursor by
-// delta, wrapping at both ends.
+// saves the field being edited and moves the cursor, wrapping at both ends
+// e.g. delta -1 on the first field goes to the last one
 func (m welcomeModel) moveSettingsField(delta int) (welcomeModel, tea.Cmd) {
 	m = m.saveSettingsField()
 	n := len(m.settingsFields)
@@ -828,7 +829,7 @@ func (m welcomeModel) moveSettingsField(delta int) (welcomeModel, tea.Cmd) {
 	return m, textinput.Blink
 }
 
-// setSettingsStatus shows a status line and schedules it to clear itself.
+// shows a status line that clears itself after 4s
 func (m welcomeModel) setSettingsStatus(text string) (welcomeModel, tea.Cmd) {
 	m.settingsStatus = text
 	m.settingsStatusSeq++
@@ -838,7 +839,7 @@ func (m welcomeModel) setSettingsStatus(text string) (welcomeModel, tea.Cmd) {
 	})
 }
 
-// finishSettings writes the form and reports the outcome in the status line.
+// writes the form and says how it went in the status line
 func (m welcomeModel) finishSettings() (welcomeModel, tea.Cmd) {
 	if err := m.persistProfileSettings(); err != nil {
 		return m.setSettingsStatus("save failed: " + err.Error())
@@ -935,7 +936,7 @@ func (m welcomeModel) persistProfileSettings() error {
 	return nil
 }
 
-// whether this profile has joined the tailnet before
+// whether this profile has joined the tailnet before, e.g. ~/.edgegrid/primary/tailscale.ip exists
 func profileHasJoined(name string) bool {
 	return node.HasJoined(profileDataDir(name))
 }

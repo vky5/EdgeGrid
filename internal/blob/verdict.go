@@ -21,6 +21,7 @@ const (
 const maxReasonLen = 1024
 
 // what the sender gets back when the receiver says no
+// e.g. "peer refused the transfer: this node is not accepting files from you"
 type RefusedError struct {
 	Reason string
 }

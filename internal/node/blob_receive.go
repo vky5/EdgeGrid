@@ -19,7 +19,7 @@ import (
 // the longest any incoming transfer may run, 30 minutes, even while chunks keep arriving
 const blobReceiveTimeout = 30 * time.Minute
 
-// saves a file a peer sends into the inbox, if this node allows it
+// saves a file a peer sends into the inbox, if this node allows it, e.g. ~/.edgegrid/<profile>/inbox/a.txt
 // every check happens before the verdict, so a refusal reaches the sender as a reason, not a dropped connection
 func (a *Node) receiveBlob(who *apitype.WhoIsResponse, hello discovery.Hello, conn net.Conn) {
 	began := time.Now()

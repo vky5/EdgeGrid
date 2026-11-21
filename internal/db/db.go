@@ -12,7 +12,7 @@ import (
 // the table layout version this code expects, saved inside the database file
 const schemaVersion = 2
 
-// this node's local database of transfers and tasks
+// this node's local database of transfers and tasks, e.g. ~/.edgegrid/primary/edgegrid.db
 // SQLite lets one writer in at a time; the settings below make others wait instead of fail
 type Store struct {
 	db *sql.DB

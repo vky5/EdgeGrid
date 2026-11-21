@@ -17,7 +17,7 @@ type Identity struct {
 }
 
 // reads this node's ID from node.id, or makes and saves one the first time
-// the same ID is reused across restarts
+// e.g. a 32-character hex string, reused across restarts
 func LoadOrCreateIdentity(dataDir string) (*Identity, error) {
 	if raw := LoadToken(dataDir, identFile); raw != "" {
 		var id Identity
@@ -72,6 +72,7 @@ func EnsurePollNonce(dataDir string) (string, error) {
 }
 
 // reads a saved value from a file in the data folder, or "" if there is none
+// e.g. hostname.suffix gives the 4-character suffix like 3f9a
 func LoadToken(dataDir, filename string) string {
 	data, err := os.ReadFile(filepath.Join(dataDir, filename))
 	if err != nil {

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 )
 
-// the folder that says which peers may send this node tasks, laid out like acl
+// the folder that says which peers may send this node tasks, laid out like acl, e.g. <DataDir>/acl-tasks/<StableID>
 // kept apart from the file ACL, since trusting a peer with files says nothing about tasks
 const taskACLDir = "acl-tasks"
 
@@ -46,7 +46,7 @@ func (a *Node) SetTaskTrust(stableID, hostname string, allow bool) error {
 	return taskACL.set(a.cfg.DataDir, stableID, hostname, allow)
 }
 
-// refuses a task from a peer the task ACL doesn't allow
+// refuses a task from a peer the task ACL doesn't allow, with "this node is not accepting tasks from you"
 // there is no CPU or memory check yet
 func (a *Node) checkTaskAccept(stableID, label string) error {
 	dataDir := a.cfg.DataDir
