@@ -10,7 +10,17 @@ import (
 )
 
 // the file listing the task kinds this node can run, inside the data folder
-// e.g. [{"kind":"hello","runtime":"bare","entrypoint":["echo","hello world"]}]
+//
+//	// ~/.edgegrid/primary/tasks.json
+//	[
+//	  {"kind":"hello", "runtime":"bare", "entrypoint":["echo","hello world"]},
+//	  {"kind":"echo",  "runtime":"bare", "entrypoint":["cat"]},
+//	  {"kind":"fail",  "runtime":"bare", "entrypoint":["sh","-c","echo boom >&2; exit 3"]}
+//	]
+//
+//	file missing          → logged, this node runs no task kinds
+//	broken JSON           → logged as a warning, no task kinds
+//	"hello" listed twice  → "executor: kind \"hello\" defined twice", no task kinds
 const taskRegistryFile = "tasks.json"
 
 // the folder holding each run's own working folder, inside the data folder

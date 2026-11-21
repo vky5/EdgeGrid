@@ -16,6 +16,11 @@ const maxChunkSize = 64 << 20 // 64 MiB
 
 // how far a transfer has got
 // the totals come from the manifest, so they're known before the first chunk moves
+//
+//	// report.pdf, 10 MiB in 3 chunks
+//	{ChunksDone: 0, ChunksTotal: 3, BytesDone: 0,        BytesTotal: 10485760}                   // Frac() 0
+//	{ChunksDone: 2, ChunksTotal: 3, BytesDone: 8388608,  BytesTotal: 10485760}                   // Frac() 0.8
+//	{ChunksDone: 3, ChunksTotal: 3, BytesDone: 10485760, BytesTotal: 10485760, Verifying: true}  // 100%, checking the whole file
 type Progress struct {
 	ChunksDone  int
 	ChunksTotal int

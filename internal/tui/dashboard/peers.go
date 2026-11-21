@@ -60,9 +60,13 @@ type TaskFuncs struct {
 }
 
 // one transfer happening now, either way; a copy of node.Transfer
+//
+//	{Direction: "sending", Peer: "bravo", Frac: 0.8, BytesDone: 8388608, Total: 10485760}   // shown with speed and ETA
+//	{Direction: "receiving", Peer: "alpha5-a720", Frac: 1, BytesDone: 4096, Total: 4096, Verifying: true}
+//	{Direction: "receiving", Peer: "alpha5-a720", Done: true, Err: "blob: refused: …"}   // gone after 8s
 type Transfer struct {
 	Direction string  // "sending" or "receiving"
-	Peer      string  // e.g. alpha5-297b when sending, the peer's node ID when receiving
+	Peer      string  // the peer's hostname, e.g. alpha5-297b; its node ID only if Tailscale gave no name
 	Frac      float64 // how far along, e.g. 0.5 is halfway
 	BytesDone int64
 	Total     int64
@@ -81,6 +85,16 @@ const transferPollInterval = 300 * time.Millisecond
 
 // the Peers tab: every EdgeGrid node Tailscale knows about
 // online means Tailscale sees it, not that this node has talked to it
+//
+//	sending task hello to bravo: x on bravo, type hello, enter
+//	mode: peersPickKind     target: bravo  kind: ""       taskID: ""
+//	mode: peersDispatching  target: bravo  kind: "hello"  taskID: ""             // waiting for yes or no
+//	mode: peersDispatching  target: bravo  kind: "hello"  taskID: "3f2b8c1e-…"   // bravo said yes, asking for the result
+//	mode: peersBrowsing     sendNote: "bravo finished \"hello\": hello world"    // flow over, back to the list
+//
+//	sending a file: s on bravo, drop report.pdf, enter, enter
+//	mode: peersPickFile → peersBuilding (hashing) → peersReady (manifest shown) → peersSending
+//	mode: peersBrowsing     sendNote: "sent 10.0 MiB to bravo"
 type peersModel struct {
 	lc            *local.Client
 	peers         []discovery.Peer
@@ -95,7 +109,7 @@ type peersModel struct {
 	input     textinput.Model
 	path      string
 	manifest  *blob.Manifest
-	flowErr   error // e.g. bravo: refused: this node cannot run task kind "resnet"
+	flowErr   error // e.g. bravo: peer refused the transfer: this node cannot run task kind "resnet"
 	send      SendFunc
 	trust     TrustFuncs
 	trusted   map[string]bool
@@ -152,6 +166,14 @@ func dispatchTaskCmd(ctx context.Context, dispatch func(context.Context, discove
 }
 
 // how an accepted task ended, or why the wait stopped
+// what the tab shows for each, with bravo running kind hello
+//
+//	resp done, Output "hello world\n"        → note  "bravo finished \"hello\": hello world"
+//	resp done, no output                    → note  "bravo finished \"hello\": (no output)"
+//	resp failed, "bare: [sh -c …]: exit status 3 …"
+//	                                        → error "bravo: task failed: bare: [sh -c …]: exit status 3 …"
+//	resp lost, "node restarted"             → error "bravo: task lost: node restarted"
+//	err ErrAwaitTimeout                      → error "bravo: gave up waiting for the task result — the task may still be running there"
 type taskResultMsg struct {
 	taskID string
 	resp   task.ResultResponse
@@ -901,6 +923,12 @@ func (m peersModel) taskTrustMarker(stableID string) string {
 	return decisionMarker(m.taskTrust, stableID)
 }
 
+// one peer's mark from a saved decisions map
+//
+//	decisions := map[string]bool{"nPvV3wCNTRL": true, "nP3mR8CNTRL": false}
+//	decisionMarker(decisions, "nPvV3wCNTRL")   → "✓" green, bravo is allowed
+//	decisionMarker(decisions, "nP3mR8CNTRL")   → "✗" red, old-laptop is blocked
+//	decisionMarker(decisions, "nT9wL4CNTRL")   → "·" grey, no file, the default applies
 func decisionMarker(decisions map[string]bool, stableID string) string {
 	allowed, decided := decisions[stableID]
 	switch {

@@ -17,7 +17,12 @@ type Identity struct {
 }
 
 // reads this node's ID from node.id, or makes and saves one the first time
-// e.g. a 32-character hex string, reused across restarts
+// the ID is reused across restarts, and is what this node sends as node_id in its hello
+//
+//	// ~/.edgegrid/primary/node.id
+//	{"node_id":"4be0c3a1d9f27e6b8a5c0d1e2f3a4b5c"}
+//
+//	node.id missing, empty or not JSON   → a new ID is made and saved over it
 func LoadOrCreateIdentity(dataDir string) (*Identity, error) {
 	if raw := LoadToken(dataDir, identFile); raw != "" {
 		var id Identity

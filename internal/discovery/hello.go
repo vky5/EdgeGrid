@@ -32,8 +32,15 @@ const maxHelloSize = 64 * 1024
 const helloTimeout = 5 * time.Second
 
 // what a node says about itself when it connects: its EdgeGrid ID and what it wants
-// e.g. {"node_id":"node-a","intent":"blob"}
 // it's the peer's own word, unlike Tailscale's WhoIs, so it picks the handler but never decides what the peer is allowed to do
+//
+//	{"node_id":"4be0c3a1d9f27e6b8a5c0d1e2f3a4b5c","intent":"hello"}    // alpha5-297b greeting at startup, nothing follows
+//	{"node_id":"4be0c3a1d9f27e6b8a5c0d1e2f3a4b5c","intent":"blob"}     // a file manifest comes next
+//	{"node_id":"4be0c3a1d9f27e6b8a5c0d1e2f3a4b5c","intent":"task"}     // a task offer comes next
+//	{"node_id":"4be0c3a1d9f27e6b8a5c0d1e2f3a4b5c","intent":"result"}   // a result request comes next
+//	{"node_id":"e81f5a2c7d3b9046a1c8f2e5d7b3a910","intent":"hello"}    // bravo's answer; the listener always answers "hello"
+//
+// node_id is the 32-character hex string from the sender's node.id file
 type Hello struct {
 	NodeID string     `json:"node_id"`
 	Intent IntentType `json:"intent"`
@@ -57,6 +64,10 @@ func WriteHello(w io.Writer, h Hello) error {
 }
 
 // reads one hello, refusing one that's too big before reading it
+//
+//	00 00 00 3e {"node_id":"4be0…4b5c","intent":"task"}   → Hello{NodeID: "4be0…4b5c", Intent: "task"}
+//	00 01 11 70 …                                          → "discovery: hello length 70000 exceeds max 65536"
+//	peer hangs up after 2 bytes                            → "discovery: read hello length: unexpected EOF"
 func ReadHello(r io.Reader) (Hello, error) {
 	var prefix [4]byte
 	if _, err := io.ReadFull(r, prefix[:]); err != nil {

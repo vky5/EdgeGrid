@@ -11,6 +11,27 @@ import (
 )
 
 // another EdgeGrid node on the tailnet, as Tailscale sees it
+//
+//	discovery.Peer{
+//		ID:       "nPvV3wCNTRL",
+//		Hostname: "bravo",
+//		DNSName:  "bravo.<tailnet>.ts.net.",
+//		IP:       netip.MustParseAddr("100.x.y.z"),
+//		Online:   true,
+//		CurAddr:  "192.168.1.20:41641",            // same Wi-Fi, so Route() is "direct"
+//	}
+//	discovery.Peer{
+//		ID:       "nT9wL4CNTRL",
+//		Hostname: "alpha5-a720",
+//		Online:   true,
+//		Relay:    "mum",                           // no direct path yet, so Route() is "relay"
+//	}
+//	discovery.Peer{
+//		ID:       "nP3mR8CNTRL",
+//		Hostname: "old-laptop",
+//		Online:   false,                           // known to Tailscale, but switched off; Route() is ""
+//		LastSeen: time.Date(2026, 11, 19, 22, 4, 0, 0, time.Local),
+//	}
 type Peer struct {
 	ID       string     // Tailscale's stable device ID, not node.Node.NodeID()
 	Hostname string     // e.g. alpha5-297b
@@ -29,6 +50,12 @@ type Peer struct {
 // how traffic to this peer goes right now: "direct", "relay", "peer relay", or "" if there's no path
 // e.g. an idle peer can read "relay" until traffic flows, then switch to "direct"
 // a relay is much slower than direct, so it's worth showing
+//
+//	Online: false, CurAddr: "192.168.1.20:41641"    → ""            offline wins, even with an old address
+//	Online: true,  CurAddr: "192.168.1.20:41641"    → "direct"
+//	Online: true,  PeerRelay: "<relay ip:port>"     → "peer relay"
+//	Online: true,  Relay: "mum"                     → "relay"
+//	Online: true,  nothing set                      → ""
 func (p Peer) Route() string {
 	switch {
 	case !p.Online:
@@ -46,6 +73,13 @@ func (p Peer) Route() string {
 
 // lists every EdgeGrid node on the tailnet except this one, offline ones too
 // it only asks Tailscale, so a node that just started sees its peers before talking to any
+//
+//	on alpha5-297b, Tailscale knows bravo (tagged, online), old-laptop (tagged, offline) and my-phone (no tag)
+//
+//	[]discovery.Peer{
+//		{ID: "nP3mR8CNTRL", Hostname: "old-laptop", Online: false},   // offline peers are kept
+//		{ID: "nPvV3wCNTRL", Hostname: "bravo", Online: true},
+//	}   // sorted by ID; my-phone is left out, it isn't tagged tag:edgegrid
 func Snapshot(ctx context.Context, lc *local.Client) ([]Peer, error) {
 	st, err := lc.Status(ctx)
 	if err != nil {

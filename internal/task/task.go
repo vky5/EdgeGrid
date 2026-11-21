@@ -31,8 +31,13 @@ type Requirements struct {
 	GPU      bool  `json:"gpu,omitempty"`
 }
 
-// what a sender offers a peer to run, e.g. {"id":"3f2b8c1e-…","kind":"hello","requirements":{}}
-// Kind and Requirements are the real fields; running it is still a hardcoded no-op for v1
+// what a sender offers a peer to run, as JSON on the wire
+// Requirements are sent but not checked yet
+//
+//	{"id":"3f2b8c1e-9a4d-4c71-b2e5-7d1f0a6c9e38","kind":"hello","requirements":{}}
+//	    // edgegrid task send hello: no input, so "input" is left out
+//	{"id":"a7d40e19-5c2b-4f86-9e13-62b8d0f4c5a7","kind":"echo","requirements":{"cpu_cores":2},"input":{"x":1}}
+//	    // edgegrid task send echo '{"x":1}': the input reaches the program on stdin
 type Task struct {
 	ID           string       `json:"id"`
 	Kind         string       `json:"kind"` // must match with exectuor.go defintions
@@ -51,7 +56,13 @@ func New(kind string, req Requirements) (*Task, error) {
 }
 
 // checks the ID, kind and requirements before accept ever sees them
-// e.g. a task with no kind fails with "task: kind is empty"
+// the error goes back to the sender as the refusal reason
+//
+//	ID: "",    Kind: "hello"                   → "task: id is empty"
+//	ID: "abc", Kind: "hello"                   → "task: id is not a valid uuid: invalid UUID length: 3"
+//	ID: "3f2b8c1e-…", Kind: ""                 → "task: kind is empty"
+//	ID: "3f2b8c1e-…", Kind: "hello", CPUCores: -1  → "task: negative cpu_cores -1"
+//	ID: "3f2b8c1e-…", Kind: "resnet"           → nil; whether this node can run it is accept's job
 func (t *Task) Validate() error {
 	if t.ID == "" {
 		return errors.New("task: id is empty")
@@ -96,7 +107,10 @@ func WriteTask(w io.Writer, t *Task) error {
 
 // reads one task, checking the version before the body
 // and refusing an oversized length before making room for it
-// e.g. a 70000-byte length fails with "task: length 70000 exceeds max 65536"
+//
+//	01 00 00 00 4e {"id":"3f2b8c1e-…","kind":"hello",…}   → the Task
+//	02 …                                                    → "task: unsupported version: peer sent 2, this node speaks 1"
+//	01 00 01 11 70 …                                        → "task: length 70000 exceeds max 65536"
 func ReadTask(r io.Reader) (*Task, error) {
 	var hdr [5]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
@@ -130,6 +144,11 @@ type RefusedError = blob.RefusedError
 
 // sends a task and waits for the peer's yes or no
 // a *RefusedError means the peer said no; any other error means the connection failed
+//
+//	nil                                                                   → bravo took it and is running it
+//	*RefusedError "peer refused the transfer: this node is already running a task"
+//	*RefusedError "peer refused the transfer: this node cannot run task kind \"resnet\""
+//	"blob: read verdict: EOF"                                             → bravo hung up without answering
 func Offer(rw io.ReadWriter, t *Task) error {
 	if err := WriteTask(rw, t); err != nil {
 		return err

@@ -53,8 +53,15 @@ type ResultRequest struct {
 	TaskID string `json:"task_id"`
 }
 
-// the answer from the node that ran the task, e.g. {"status":"lost","error":"no record of this task"}
+// the answer from the node that ran the task
 // Output is set only for done, Error only for failed and lost
+//
+//	{"status":"running"}                                      // still going, ask again later
+//	{"status":"done","output":"aGVsbG8gd29ybGQK"}             // kind hello printed "hello world\n" (base64 on the wire)
+//	{"status":"failed","error":"bare: [sh -c echo boom \u003e\u00262; exit 3]: exit status 3 (stderr: \"boom\\n\")"}
+//	                                                          // kind fail exited 3; Go's JSON escapes > and & as \u003e \u0026
+//	{"status":"lost","error":"node restarted"}                // bravo restarted mid-run
+//	{"status":"lost","error":"no record of this task"}        // pruned after a week, never existed, or someone else's
 type ResultResponse struct {
 	Status ResultStatus `json:"status"`
 	Output []byte       `json:"output,omitempty"`
@@ -62,7 +69,13 @@ type ResultResponse struct {
 }
 
 // nil for a successful run, otherwise why the task gave no output
-// e.g. lost with NoRecord gives "task lost: no record of this task"
+//
+//	Status: "done", Output: "hello world\n"          → nil
+//	Status: "running"                               → "task is still running"
+//	Status: "failed", Error: ""                     → "task failed"
+//	Status: "failed", Error: "bare: [sh -c echo boom >&2; exit 3]: exit status 3 (stderr: \"boom\\n\")"
+//	                                                → "task failed: bare: [sh -c echo boom >&2; exit 3]: …"
+//	Status: "lost", Error: "no record of this task" → "task lost: no record of this task"
 func (r ResultResponse) Err() error {
 	switch r.Status {
 	case StatusDone:
@@ -142,6 +155,11 @@ func readResultFrame(r io.Reader, v any) error {
 
 // asks the peer how a task went and reads the answer
 // an error means the connection failed; a task the peer doesn't know comes back as lost
+//
+//	peer answers {"status":"done","output":"aGVsbG8gd29ybGQK"}   → ResultResponse{Status: "done", Output: "hello world\n"}, nil
+//	peer answers {"status":"lost","error":"node restarted"}     → ResultResponse{Status: "lost", …}, nil; not a Go error
+//	peer answers {"status":"paused"}                            → "task: peer sent unknown result status \"paused\""
+//	peer answers with version 1                                 → "task: unsupported version: peer sent 1, this node speaks 2"
 func AskResult(rw io.ReadWriter, taskID string) (ResultResponse, error) {
 	if err := writeResultFrame(rw, ResultRequest{TaskID: taskID}); err != nil {
 		return ResultResponse{}, err
@@ -158,6 +176,9 @@ func AskResult(rw io.ReadWriter, taskID string) (ResultResponse, error) {
 
 // reads one ask and answers it from lookup
 // a task ID that isn't a valid ID is answered as lost without calling lookup
+//
+//	{"task_id":"3f2b8c1e-9a4d-4c71-b2e5-7d1f0a6c9e38"}   → whatever lookup returns, e.g. {"status":"running"}
+//	{"task_id":"../../etc/passwd"}                     → {"status":"lost","error":"no record of this task"}, lookup not called
 func ServeResult(rw io.ReadWriter, lookup func(taskID string) ResultResponse) error {
 	var req ResultRequest
 	if err := readResultFrame(rw, &req); err != nil {

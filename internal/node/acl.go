@@ -56,8 +56,13 @@ func maxBlobBytes(dataDir string) int64 {
 	return defaultMaxBlobBytes
 }
 
-// every saved file decision, peer ID to allowed, for the TUI, e.g. nPvV3wCNTRL: allow
+// every saved file decision, peer ID to allowed, for the TUI
 // a peer with no file is missing from the map, not false
+//
+//	map[string]bool{
+//		"nPvV3wCNTRL": true,    // bravo, allowed
+//		"nP3mR8CNTRL": false,   // old-laptop, blocked
+//	}                         // alpha5-a720 has no file, so it isn't here and acl.default decides
 func (a *Node) TrustedPeers() map[string]bool {
 	out := map[string]bool{}
 	for id, e := range aclList(a.cfg.DataDir) {
@@ -72,8 +77,14 @@ func (a *Node) SetTrust(stableID, hostname string, allow bool) error {
 }
 
 // decides whether to take a file a peer is offering: ACL, size limit, free space
-// e.g. "this node is not accepting files from you", or "file is 20000000000 bytes; this node accepts at most 10737418240"
 // the error text goes to the sender, so it never shows local paths or settings
+//
+//	peer, file                                       answer
+//	old-laptop, acl file says allow=false            "this node is not accepting files from you"
+//	alpha5-a720, no acl file, no acl.default         "this node is not accepting files from you"
+//	bravo allowed, 20000000000-byte file             "file is 20000000000 bytes; this node accepts at most 10737418240"
+//	bravo allowed, 1 GiB file, 900 MiB free          "not enough free space on this node: need 1.2 GiB (…), have 900.0 MiB"
+//	bravo allowed, report.pdf 10 MiB, plenty free    nil
 func (a *Node) checkAccept(stableID, label string, m *blob.Manifest) error {
 	dataDir := a.cfg.DataDir
 

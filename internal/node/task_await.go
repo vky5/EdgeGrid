@@ -33,6 +33,16 @@ var ErrAwaitTimeout = errors.New("gave up waiting for the task result")
 
 // keeps asking the peer until the task is over, then saves and returns the result
 // a failed ask, e.g. the peer is offline, is tried again, not taken as the task failing
+//
+//	asks to bravo        answer                       what happens
+//	at 0s                running                      wait 1s
+//	at 1s                (can't connect)              not a failure, wait 2s
+//	at 3s                running                      wait 4s
+//	at 7s                done, "hello world\n"         saved on the "sent" row and returned
+//
+//	still running at 10 min      → ErrAwaitTimeout, "gave up waiting for the task result"
+//	last ask failed at 10 min    → "gave up waiting for the task result (last error: …)"
+//	bravo answers failed or lost → returned with a nil error; resp.Err() says why
 func (a *Node) AwaitResult(ctx context.Context, peer discovery.Peer, taskID string) (task.ResultResponse, error) {
 	resp, err := awaitResult(
 		ctx,

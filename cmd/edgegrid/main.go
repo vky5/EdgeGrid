@@ -286,8 +286,21 @@ func runTask(args []string) {
 	}
 }
 
-// sends a task to every online peer and waits for each result, for trying it by hand
+// offers a task to the online peers until one takes it, then waits for that one result, for trying it by hand
 // it only needs the tailnet, not the listener, since it never receives anything
+//
+//	$ edgegrid task send hello              // bravo online, old-laptop offline and skipped
+//	dispatching task 3f2b8c1e-9a4d-4c71-b2e5-7d1f0a6c9e38 (hello) to 1 peer(s)...
+//	accepted by bravo, waiting for the result (Ctrl+C stops waiting, not the task)
+//	hello world
+//
+//	$ edgegrid task send fail               // exits 1
+//	…
+//	bravo: task failed: bare: [sh -c echo boom >&2; exit 3]: exit status 3 (stderr: "boom\n")
+//
+//	$ edgegrid task send resnet             // nobody has it in tasks.json, exits 1
+//	dispatch failed: bravo: peer refused the transfer: this node cannot run task kind "resnet"
+//	no peer accepted the task
 func runTaskSend(kind string, input json.RawMessage) {
 	cfg := node.LoadConfig()
 
