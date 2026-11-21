@@ -31,6 +31,10 @@ const (
 // a blob transfer; they fail loudly here instead of being truncated.
 const MaxTaskOutput = 64 << 10
 
+// FirstCheckAfter is how long after sending a task this node first goes back
+// to ask about it, if nothing is waiting for the answer by then.
+const FirstCheckAfter = 10 * time.Minute
+
 // ErrTaskNotFound is returned when no row matches — including a row that
 // exists but belongs to a different peer, so callers can't probe for IDs.
 var ErrTaskNotFound = errors.New("db: task not found")
@@ -47,15 +51,23 @@ type TaskRecord struct {
 	Error        string
 	StartedAt    time.Time
 	FinishedAt   time.Time // zero while running
+	Attempts     int       // how many times this node has gone back to ask
+	NextCheckAt  time.Time // when to ask next; zero for tasks this node received
 }
 
 // RecordTaskStart inserts a running row. peer is the executor for RoleSent and
-// the dispatcher for RoleReceived.
+// the dispatcher for RoleReceived. A sent task gets its first check
+// FirstCheckAfter from now.
 func (s *Store) RecordTaskStart(role Role, taskID, peerID, peerHostname, kind string) error {
+	now := time.Now().UTC()
+	var next sql.NullInt64
+	if role == RoleSent {
+		next = sql.NullInt64{Int64: now.Add(FirstCheckAfter).Unix(), Valid: true}
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO tasks (task_id, role, peer_id, peer_hostname, kind, status, started_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		taskID, role, peerID, peerHostname, kind, TaskRunning, time.Now().UTC().Unix(),
+		`INSERT INTO tasks (task_id, role, peer_id, peer_hostname, kind, status, started_at, next_check_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		taskID, role, peerID, peerHostname, kind, TaskRunning, now.Unix(), next,
 	)
 	if err != nil {
 		return fmt.Errorf("db: record task start: %w", err)
@@ -90,33 +102,90 @@ func (s *Store) RecordTaskFinish(role Role, taskID string, status TaskStatus, ou
 	return nil
 }
 
+// taskColumns is every column readTask expects, in its order.
+const taskColumns = `task_id, role, peer_id, peer_hostname, kind, status, output, error,
+	started_at, finished_at, attempts, next_check_at`
+
 // Task returns this node's row for taskID in the given role.
 func (s *Store) Task(role Role, taskID string) (TaskRecord, error) {
-	return s.scanTask(
-		`SELECT task_id, role, peer_id, peer_hostname, kind, status, output, error, started_at, finished_at
-		 FROM tasks WHERE task_id = ? AND role = ?`, taskID, role)
+	return s.taskRow(`SELECT `+taskColumns+` FROM tasks WHERE task_id = ? AND role = ?`, taskID, role)
 }
 
 // ReceivedTaskFor is the lookup behind answering a result request: it matches
 // only when requesterID is the peer that dispatched the task.
 func (s *Store) ReceivedTaskFor(taskID, requesterID string) (TaskRecord, error) {
-	return s.scanTask(
-		`SELECT task_id, role, peer_id, peer_hostname, kind, status, output, error, started_at, finished_at
-		 FROM tasks WHERE task_id = ? AND role = ? AND peer_id = ?`, taskID, RoleReceived, requesterID)
+	return s.taskRow(
+		`SELECT `+taskColumns+` FROM tasks WHERE task_id = ? AND role = ? AND peer_id = ?`,
+		taskID, RoleReceived, requesterID)
 }
 
-func (s *Store) scanTask(query string, args ...any) (TaskRecord, error) {
+// DueSentTasks lists up to limit sent tasks still running whose next check
+// is at or before now, the most overdue first.
+func (s *Store) DueSentTasks(now time.Time, limit int) ([]TaskRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT `+taskColumns+` FROM tasks
+		 WHERE role = ? AND status = ? AND next_check_at <= ?
+		 ORDER BY next_check_at LIMIT ?`,
+		RoleSent, TaskRunning, now.UTC().Unix(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list due tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var out []TaskRecord
+	for rows.Next() {
+		r, err := readTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: list due tasks: %w", err)
+	}
+	return out, nil
+}
+
+// ClaimSentTask counts one more check on a due sent task and moves its next
+// check to next. It returns false if the task is no longer running or no
+// longer due, for example because someone else claimed it first.
+func (s *Store) ClaimSentTask(taskID string, now, next time.Time) (bool, error) {
+	res, err := s.db.Exec(
+		`UPDATE tasks SET attempts = attempts + 1, next_check_at = ?
+		 WHERE task_id = ? AND role = ? AND status = ? AND next_check_at <= ?`,
+		next.UTC().Unix(), taskID, RoleSent, TaskRunning, now.UTC().Unix())
+	if err != nil {
+		return false, fmt.Errorf("db: claim task: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("db: claim task: %w", err)
+	}
+	return n == 1, nil
+}
+
+func (s *Store) taskRow(query string, args ...any) (TaskRecord, error) {
+	r, err := readTask(s.db.QueryRow(query, args...))
+	if errors.Is(err, sql.ErrNoRows) {
+		return TaskRecord{}, ErrTaskNotFound
+	}
+	return r, err
+}
+
+// readTask fills a TaskRecord from one row selected with taskColumns.
+func readTask(row interface{ Scan(...any) error }) (TaskRecord, error) {
 	var (
 		r        TaskRecord
 		output   []byte
 		errMsg   sql.NullString
 		started  int64
 		finished sql.NullInt64
+		next     sql.NullInt64
 	)
-	err := s.db.QueryRow(query, args...).Scan(
-		&r.TaskID, &r.Role, &r.PeerID, &r.PeerHostname, &r.Kind, &r.Status, &output, &errMsg, &started, &finished)
+	err := row.Scan(&r.TaskID, &r.Role, &r.PeerID, &r.PeerHostname, &r.Kind, &r.Status,
+		&output, &errMsg, &started, &finished, &r.Attempts, &next)
 	if errors.Is(err, sql.ErrNoRows) {
-		return TaskRecord{}, ErrTaskNotFound
+		return TaskRecord{}, err
 	}
 	if err != nil {
 		return TaskRecord{}, fmt.Errorf("db: read task: %w", err)
@@ -125,6 +194,9 @@ func (s *Store) scanTask(query string, args ...any) (TaskRecord, error) {
 	r.StartedAt = time.Unix(started, 0)
 	if finished.Valid {
 		r.FinishedAt = time.Unix(finished.Int64, 0)
+	}
+	if next.Valid {
+		r.NextCheckAt = time.Unix(next.Int64, 0)
 	}
 	return r, nil
 }

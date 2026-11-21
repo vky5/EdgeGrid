@@ -37,9 +37,12 @@ CREATE TABLE tasks (
 	error         TEXT,
 	started_at    INTEGER NOT NULL,
 	finished_at   INTEGER,
+	attempts      INTEGER NOT NULL DEFAULT 0,
+	next_check_at INTEGER,
 	PRIMARY KEY (task_id, role)
 );
 CREATE INDEX idx_tasks_started_at ON tasks(started_at);
+CREATE INDEX idx_tasks_next_check_at ON tasks(next_check_at);
 `
 
 // migrations[i] takes the schema from version i to i+1.
