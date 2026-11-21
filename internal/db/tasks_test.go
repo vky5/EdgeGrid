@@ -182,3 +182,90 @@ func TestOpenUpgradesAV1Database(t *testing.T) {
 		t.Errorf("tasks table missing after upgrade: %v", err)
 	}
 }
+
+func TestSentTaskGetsAFirstCheckAndReceivedDoesNot(t *testing.T) {
+	s := openTest(t)
+	before := time.Now().Add(-time.Second)
+	s.RecordTaskStart(RoleSent, "out", "p", "h", "k")
+	s.RecordTaskStart(RoleReceived, "in", "p", "h", "k")
+
+	out, _ := s.Task(RoleSent, "out")
+	if out.Attempts != 0 || out.NextCheckAt.Before(before.Add(FirstCheckAfter)) || out.NextCheckAt.After(time.Now().Add(FirstCheckAfter)) {
+		t.Errorf("sent row: attempts %d, next check %v, want 0 and about %v from now", out.Attempts, out.NextCheckAt, FirstCheckAfter)
+	}
+	if in, _ := s.Task(RoleReceived, "in"); !in.NextCheckAt.IsZero() {
+		t.Errorf("received row has a next check: %v", in.NextCheckAt)
+	}
+}
+
+func TestDueSentTasksListsOnlyRunningSentTasksThatAreDue(t *testing.T) {
+	s := openTest(t)
+	s.RecordTaskStart(RoleSent, "due", "p", "h", "k")
+	s.RecordTaskStart(RoleSent, "done", "p", "h", "k")
+	s.RecordTaskFinish(RoleSent, "done", TaskDone, []byte("ok"), "")
+	s.RecordTaskStart(RoleReceived, "in", "p", "h", "k")
+
+	if due, _ := s.DueSentTasks(time.Now(), 10); len(due) != 0 {
+		t.Errorf("before the first check: %d due, want 0", len(due))
+	}
+	due, err := s.DueSentTasks(time.Now().Add(FirstCheckAfter+time.Minute), 10)
+	if err != nil || len(due) != 1 || due[0].TaskID != "due" || due[0].PeerID != "p" {
+		t.Errorf("after the first check: %+v, err %v, want only the running sent task", due, err)
+	}
+}
+
+func TestDueSentTasksRespectsTheLimitAndMostOverdueFirst(t *testing.T) {
+	s := openTest(t)
+	later := time.Now().Add(FirstCheckAfter + time.Hour)
+	for _, id := range []string{"a", "b", "c"} {
+		s.RecordTaskStart(RoleSent, id, "p", "h", "k")
+	}
+	// push "a" later so "b" and "c" are the most overdue
+	if ok, _ := s.ClaimSentTask("a", later, later.Add(-30*time.Minute)); !ok {
+		t.Fatal("claim a")
+	}
+	due, err := s.DueSentTasks(later, 2)
+	if err != nil || len(due) != 2 {
+		t.Fatalf("due = %+v, err %v, want 2", due, err)
+	}
+	for _, r := range due {
+		if r.TaskID == "a" {
+			t.Errorf("the least overdue task was listed ahead of older ones: %+v", due)
+		}
+	}
+}
+
+func TestClaimSentTaskOnlyOncePerDueCheck(t *testing.T) {
+	s := openTest(t)
+	s.RecordTaskStart(RoleSent, "t", "p", "h", "k")
+	now := time.Now().Add(FirstCheckAfter + time.Minute)
+	next := now.Add(20 * time.Minute)
+
+	if ok, err := s.ClaimSentTask("t", now, next); !ok || err != nil {
+		t.Fatalf("first claim: %v, %v", ok, err)
+	}
+	if ok, _ := s.ClaimSentTask("t", now, next); ok {
+		t.Error("claimed twice for the same check")
+	}
+	if due, _ := s.DueSentTasks(now, 10); len(due) != 0 {
+		t.Errorf("a claimed task is still listed as due: %+v", due)
+	}
+	r, _ := s.Task(RoleSent, "t")
+	if r.Attempts != 1 || r.NextCheckAt.Unix() != next.Unix() {
+		t.Errorf("after claim: attempts %d, next %v, want 1 and %v", r.Attempts, r.NextCheckAt, next)
+	}
+}
+
+func TestClaimSentTaskSkipsFinishedAndReceivedTasks(t *testing.T) {
+	s := openTest(t)
+	s.RecordTaskStart(RoleSent, "fin", "p", "h", "k")
+	s.RecordTaskFinish(RoleSent, "fin", TaskDone, nil, "")
+	s.RecordTaskStart(RoleReceived, "in", "p", "h", "k")
+	now := time.Now().Add(FirstCheckAfter + time.Minute)
+
+	for _, id := range []string{"fin", "in", "missing"} {
+		if ok, err := s.ClaimSentTask(id, now, now.Add(time.Hour)); ok || err != nil {
+			t.Errorf("%s: claimed = %v, err = %v, want false", id, ok, err)
+		}
+	}
+}

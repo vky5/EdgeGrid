@@ -31,6 +31,10 @@ const (
 // bigger output should go as a file; here it fails instead of being cut short
 const MaxTaskOutput = 64 << 10
 
+// how long after sending a task we first go back and ask about it
+// e.g. sent at 09:00, first check at 09:10; the live wait covers those 10 minutes
+const FirstCheckAfter = 10 * time.Minute
+
 // no matching task, including one that belongs to a different peer
 // a missing task and someone else's task look the same, so a peer can't guess IDs
 var ErrTaskNotFound = errors.New("db: task not found")
@@ -47,15 +51,23 @@ type TaskRecord struct {
 	Error        string
 	StartedAt    time.Time
 	FinishedAt   time.Time // zero while running
+	Attempts     int       // how many times we've gone back to ask, e.g. 2
+	NextCheckAt  time.Time // when to ask next, e.g. 09:30; zero for tasks this node received
 }
 
 // adds a row for a task that just started
 // the peer is the node running it for a sent task, and the sender for a received one
+// a sent task gets its first check 10 minutes from now (FirstCheckAfter)
 func (s *Store) RecordTaskStart(role Role, taskID, peerID, peerHostname, kind string) error {
+	now := time.Now().UTC()
+	var next sql.NullInt64
+	if role == RoleSent {
+		next = sql.NullInt64{Int64: now.Add(FirstCheckAfter).Unix(), Valid: true}
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO tasks (task_id, role, peer_id, peer_hostname, kind, status, started_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		taskID, role, peerID, peerHostname, kind, TaskRunning, time.Now().UTC().Unix(),
+		`INSERT INTO tasks (task_id, role, peer_id, peer_hostname, kind, status, started_at, next_check_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		taskID, role, peerID, peerHostname, kind, TaskRunning, now.Unix(), next,
 	)
 	if err != nil {
 		return fmt.Errorf("db: record task start: %w", err)
@@ -90,32 +102,98 @@ func (s *Store) RecordTaskFinish(role Role, taskID string, status TaskStatus, ou
 	return nil
 }
 
+// every column readTask expects, in its order
+const taskColumns = `task_id, role, peer_id, peer_hostname, kind, status, output, error,
+	started_at, finished_at, attempts, next_check_at`
+
 // this node's row for one task, as sender or as the one running it
 func (s *Store) Task(role Role, taskID string) (TaskRecord, error) {
-	return s.scanTask(
-		`SELECT task_id, role, peer_id, peer_hostname, kind, status, output, error, started_at, finished_at
-		 FROM tasks WHERE task_id = ? AND role = ?`, taskID, role)
+	return s.taskRow(`SELECT `+taskColumns+` FROM tasks WHERE task_id = ? AND role = ?`, taskID, role)
 }
 
 // finds a task this node ran, only if the one asking is the node that sent it
 func (s *Store) ReceivedTaskFor(taskID, requesterID string) (TaskRecord, error) {
-	return s.scanTask(
-		`SELECT task_id, role, peer_id, peer_hostname, kind, status, output, error, started_at, finished_at
-		 FROM tasks WHERE task_id = ? AND role = ? AND peer_id = ?`, taskID, RoleReceived, requesterID)
+	return s.taskRow(
+		`SELECT `+taskColumns+` FROM tasks WHERE task_id = ? AND role = ? AND peer_id = ?`,
+		taskID, RoleReceived, requesterID)
 }
 
-func (s *Store) scanTask(query string, args ...any) (TaskRecord, error) {
+// sent tasks still running whose next check has come, up to limit, most overdue first
+//
+//	now 10:00, limit 100
+//	slow     running   next check 09:30   listed first
+//	hello    running   next check 09:55   listed second
+//	slower   running   next check 10:20   not yet
+//	big      done                         never
+func (s *Store) DueSentTasks(now time.Time, limit int) ([]TaskRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT `+taskColumns+` FROM tasks
+		 WHERE role = ? AND status = ? AND next_check_at <= ?
+		 ORDER BY next_check_at LIMIT ?`,
+		RoleSent, TaskRunning, now.UTC().Unix(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list due tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var out []TaskRecord
+	for rows.Next() {
+		r, err := readTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: list due tasks: %w", err)
+	}
+	return out, nil
+}
+
+// counts one more check on a due sent task and moves its next check to next
+// false if it finished or isn't due any more, e.g. another process claimed it first
+//
+//	row before: running, attempts 0, next check 09:10
+//	ClaimSentTask(id, 09:11, 09:31)  true    row: attempts 1, next check 09:31
+//	ClaimSentTask(id, 09:11, 09:31)  false   next check is 09:31 now, so not due
+//	after B answers done:            false   not running any more
+func (s *Store) ClaimSentTask(taskID string, now, next time.Time) (bool, error) {
+	res, err := s.db.Exec(
+		`UPDATE tasks SET attempts = attempts + 1, next_check_at = ?
+		 WHERE task_id = ? AND role = ? AND status = ? AND next_check_at <= ?`,
+		next.UTC().Unix(), taskID, RoleSent, TaskRunning, now.UTC().Unix())
+	if err != nil {
+		return false, fmt.Errorf("db: claim task: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("db: claim task: %w", err)
+	}
+	return n == 1, nil
+}
+
+func (s *Store) taskRow(query string, args ...any) (TaskRecord, error) {
+	r, err := readTask(s.db.QueryRow(query, args...))
+	if errors.Is(err, sql.ErrNoRows) {
+		return TaskRecord{}, ErrTaskNotFound
+	}
+	return r, err
+}
+
+// fills a TaskRecord from one row selected with taskColumns
+func readTask(row interface{ Scan(...any) error }) (TaskRecord, error) {
 	var (
 		r        TaskRecord
 		output   []byte
 		errMsg   sql.NullString
 		started  int64
 		finished sql.NullInt64
+		next     sql.NullInt64
 	)
-	err := s.db.QueryRow(query, args...).Scan(
-		&r.TaskID, &r.Role, &r.PeerID, &r.PeerHostname, &r.Kind, &r.Status, &output, &errMsg, &started, &finished)
+	err := row.Scan(&r.TaskID, &r.Role, &r.PeerID, &r.PeerHostname, &r.Kind, &r.Status,
+		&output, &errMsg, &started, &finished, &r.Attempts, &next)
 	if errors.Is(err, sql.ErrNoRows) {
-		return TaskRecord{}, ErrTaskNotFound
+		return TaskRecord{}, err
 	}
 	if err != nil {
 		return TaskRecord{}, fmt.Errorf("db: read task: %w", err)
@@ -124,6 +202,9 @@ func (s *Store) scanTask(query string, args ...any) (TaskRecord, error) {
 	r.StartedAt = time.Unix(started, 0)
 	if finished.Valid {
 		r.FinishedAt = time.Unix(finished.Int64, 0)
+	}
+	if next.Valid {
+		r.NextCheckAt = time.Unix(next.Int64, 0)
 	}
 	return r, nil
 }

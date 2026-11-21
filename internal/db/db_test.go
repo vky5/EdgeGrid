@@ -2,7 +2,9 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -164,5 +166,29 @@ func TestReconcileStaleTransfersInterruptsInProgressRows(t *testing.T) {
 	}
 	if status != string(StatusDone) {
 		t.Errorf("already-done row status = %q, want unchanged %q", status, StatusDone)
+	}
+}
+
+// 40 writers at once all succeed, none fail with "database is locked"
+func TestConcurrentWritesWaitInsteadOfFailing(t *testing.T) {
+	s := openTest(t)
+	errs := make(chan error, 40)
+	var wg sync.WaitGroup
+	for i := range 40 {
+		wg.Go(func() {
+			id := fmt.Sprintf("t%d", i)
+			if err := s.RecordTaskStart(RoleSent, id, "p", "h", "k"); err != nil {
+				errs <- err
+				return
+			}
+			if err := s.RecordTaskFinish(RoleSent, id, TaskDone, []byte("ok"), ""); err != nil {
+				errs <- err
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }

@@ -196,6 +196,8 @@ func (a *Node) Start(ctx context.Context) error {
 		}(p)
 	}
 
+	a.startTaskChecks(ctx)
+
 	log.Println("starting EdgeGrid services")
 	<-ctx.Done()
 	return nil
