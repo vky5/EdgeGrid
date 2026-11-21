@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Direction is which way a transfer moved relative to this node.
+// which way a transfer went, from this node's side
 type Direction string
 
 const (
@@ -14,8 +14,8 @@ const (
 	Inbound  Direction = "inbound"
 )
 
-// Status is where a transfer row stands. A stale InProgress row is a
-// crash, not a transfer still running — see ReconcileStaleTransfers.
+// where a transfer stands, e.g. in_progress, done, failed
+// an in_progress row left over from before a restart means a crash, not a running transfer
 type Status string
 
 const (
@@ -26,8 +26,8 @@ const (
 	StatusInterrupted Status = "interrupted"
 )
 
-// RecordStart inserts a row with status in_progress and returns its id.
-// sha256 starts empty — it means "confirmed", not "claimed".
+// adds a row for a transfer that just began and returns its id
+// the hash starts empty, since a hash means the file was checked, not just promised
 func (s *Store) RecordStart(dir Direction, peerID, peerHostname, fileName string, fileSize int64) (int64, error) {
 	res, err := s.db.Exec(
 		`INSERT INTO transfers (direction, peer_id, peer_hostname, file_name, file_size, sha256, status, started_at)
@@ -40,8 +40,7 @@ func (s *Store) RecordStart(dir Direction, peerID, peerHostname, fileName string
 	return res.LastInsertId()
 }
 
-// RecordFinish updates a row's status and finished_at. sha256 is kept
-// only when status is StatusDone — anything else, it's dropped.
+// saves how a transfer ended; the hash is kept only if it succeeded
 func (s *Store) RecordFinish(id int64, status Status, errMsg, sha256 string) error {
 	var errVal sql.NullString
 	if errMsg != "" {
@@ -60,8 +59,8 @@ func (s *Store) RecordFinish(id int64, status Status, errMsg, sha256 string) err
 	return nil
 }
 
-// ReconcileStaleTransfers marks every in_progress row interrupted. Call
-// once at startup — such a row predates this process, so it's a crash.
+// marks every in_progress transfer as interrupted; call once at startup
+// such a row is from before this process started, so it was a crash
 func (s *Store) ReconcileStaleTransfers() error {
 	_, err := s.db.Exec(
 		`UPDATE transfers SET status = ?, finished_at = ? WHERE status = ?`,

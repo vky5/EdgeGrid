@@ -109,9 +109,8 @@ func TestValidateRejectsBadTasks(t *testing.T) {
 	}
 }
 
-// Validate runs before accept, so a malformed task never reaches policy —
-// the refusal reason should say what was actually wrong, not "busy" or
-// whatever accept would have said.
+// a malformed task is refused before accept runs
+// so the reason says what was wrong, not "busy" or whatever accept would say
 func TestProcessTaskRefusesAnInvalidTaskWithoutCallingAccept(t *testing.T) {
 	dispatcher, target := net.Pipe()
 	defer dispatcher.Close()
@@ -143,9 +142,8 @@ func TestProcessTaskRefusalReachesTheOfferer(t *testing.T) {
 	defer dispatcher.Close()
 	defer target.Close()
 
-	// ProcessTask's own return value isn't checked here — it's determined after
-	// WriteVerdict, which is what unblocks Offer below, so asserting on it
-	// in this goroutine would race with the test function returning.
+	// ProcessTask's return value isn't checked here
+	// it is set after the verdict unblocks Offer, so checking it would race with the test ending
 	go func() {
 		_, _ = ProcessTask(target, func(*Task) error {
 			return errors.New("busy")
@@ -166,8 +164,7 @@ func TestProcessTaskRefusalReachesTheOfferer(t *testing.T) {
 	}
 }
 
-// header writes [version][length] the way WriteTask would, so tests can
-// hand-build a body after it without going through json.Marshal.
+// writes [version][length] like WriteTask, so a test can hand-build the body after it
 func header(version byte, length uint32) []byte {
 	hdr := make([]byte, 5)
 	hdr[0] = version
@@ -206,8 +203,8 @@ func TestReadTaskRejectsAWrongVersionBeforeReadingTheBody(t *testing.T) {
 	}
 }
 
-// A version mismatch is the one read failure ProcessTask can still answer
-// cleanly — it knows exactly how many bytes it consumed to find out.
+// a wrong version is the one read failure that can still get an answer
+// only the header was read, so the connection is still in a known place
 func TestProcessTaskRefusesAWrongVersionInsteadOfHanging(t *testing.T) {
 	dispatcher, target := net.Pipe()
 	defer dispatcher.Close()
@@ -217,9 +214,8 @@ func TestProcessTaskRefusesAWrongVersionInsteadOfHanging(t *testing.T) {
 		_, _ = ProcessTask(target, func(*Task) error { return nil })
 	}()
 
-	// Hand-write a header with the wrong version, bypassing WriteTask. The
-	// body is never read — ReadTask rejects before getting that far — so
-	// this Write stays pending until the deferred Close unblocks it.
+	// a header with the wrong version, written by hand
+	// the body is never read, so this write waits until the deferred Close
 	go func() {
 		_, _ = dispatcher.Write(append(header(taskWireVersion+1, 2), []byte("{}")...))
 	}()

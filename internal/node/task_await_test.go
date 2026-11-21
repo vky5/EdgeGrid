@@ -14,7 +14,7 @@ import (
 
 var fastPlan = pollPlan{first: time.Millisecond, max: 5 * time.Millisecond, giveUp: 2 * time.Second}
 
-// scripted returns each answer in turn, then repeats the last.
+// a fake ask that returns each answer in turn, then repeats the last
 func scripted(answers ...func() (task.ResultResponse, error)) (func(context.Context) (task.ResultResponse, error), *int) {
 	calls := 0
 	return func(context.Context) (task.ResultResponse, error) {

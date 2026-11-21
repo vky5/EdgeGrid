@@ -6,8 +6,7 @@ import (
 	"time"
 )
 
-// fakeDeadlineConn only records SetDeadline calls — refreshDeadline never
-// touches Read/Write/Close, so nothing else needs implementing.
+// a fake connection that only records deadlines, the one thing refreshDeadline touches
 type fakeDeadlineConn struct {
 	net.Conn
 	last time.Time
@@ -29,8 +28,7 @@ func TestRefreshDeadlineUsesIdleWindowWhenFarFromCeiling(t *testing.T) {
 	}
 }
 
-// Near the ceiling, refreshing must not push the deadline past it — that's
-// the whole point of having a ceiling at all.
+// near the overall limit, a refresh must not push the deadline past it
 func TestRefreshDeadlineClampsToCeiling(t *testing.T) {
 	c := &fakeDeadlineConn{}
 	began := time.Now().Add(-59 * time.Second)

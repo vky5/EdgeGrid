@@ -18,8 +18,7 @@ func onlinePeer(id, host string) discovery.Peer {
 	return discovery.Peer{ID: id, Hostname: host, Online: true}
 }
 
-// modelWith builds a browsing-state peers model without touching Tailscale
-// — newPeersModel would try to read live membership.
+// a Peers tab on the browsing step that never asks Tailscale for peers
 func modelWith(peers ...discovery.Peer) peersModel {
 	return peersModel{peers: peers, width: 100, height: 24}
 }
@@ -52,8 +51,7 @@ func TestCursorMovesAndClampsAtBothEnds(t *testing.T) {
 	}
 }
 
-// A shrinking peer list must not leave the cursor pointing past the end —
-// the 5s refresh can drop a peer at any moment.
+// the cursor must stay on the list when it shrinks; the 5s refresh can drop a peer any time
 func TestRefreshClampsCursorWhenListShrinks(t *testing.T) {
 	m := modelWith(onlinePeer("a", "alpha"), onlinePeer("b", "bravo"))
 	m.cursor = 1
@@ -80,9 +78,8 @@ func TestSendRefusesOfflinePeer(t *testing.T) {
 	}
 }
 
-// The send target is captured by value when the flow starts. If it were an
-// index into peers, the 5s refresh reordering the list mid-flow would
-// silently retarget the send at a different machine.
+// the peer picked for a send stays the same when the 5s refresh reorders the list
+// or the file would go to a different machine
 func TestTargetSurvivesPeerListReordering(t *testing.T) {
 	m := modelWith(onlinePeer("a", "alpha"), onlinePeer("b", "bravo"))
 	m.cursor = 1
@@ -100,8 +97,7 @@ func TestTargetSurvivesPeerListReordering(t *testing.T) {
 	}
 }
 
-// Keystrokes must reach the path field instead of the dashboard's own
-// shortcuts, but only while that field is focused.
+// keys go to the path field instead of the shortcuts, but only while it's focused
 func TestCapturesTextInputOnlyWhileTypingAPath(t *testing.T) {
 	m := modelWith(onlinePeer("a", "alpha"))
 	if m.capturesTextInput() {
@@ -182,7 +178,7 @@ func TestMissingFileReturnsToThePrompt(t *testing.T) {
 	}
 }
 
-// Cancelling during a long hash must not be undone when the result lands.
+// a cancel during a long hash stays cancelled when the hash finishes
 func TestLateManifestResultDoesNotResurrectACancelledFlow(t *testing.T) {
 	content := "abc"
 	path := filepath.Join(t.TempDir(), "payload.bin")
@@ -232,8 +228,7 @@ func TestHumanBytes(t *testing.T) {
 	}
 }
 
-// Dropping a file onto a terminal pastes its path as text, quoted or
-// backslash-escaped depending on the terminal.
+// a file dropped onto a terminal arrives quoted or with backslashes, depending on the terminal
 func TestExpandPathHandlesDraggedInPaths(t *testing.T) {
 	cases := map[string]string{
 		`'/home/v/my file.bin'`: "/home/v/my file.bin",
@@ -248,9 +243,8 @@ func TestExpandPathHandlesDraggedInPaths(t *testing.T) {
 	}
 }
 
-// Dropping a second file pastes at the cursor rather than replacing, so two
-// drops arrive concatenated. That must be caught before os.Open reports a
-// confusing ENOTDIR about a path the user never typed.
+// two dropped files glued into one path are refused
+// or os.Open fails later with a confusing error about a path nobody typed
 func TestMultipleDroppedFilesAreRejected(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -276,8 +270,8 @@ func TestMultipleDroppedFilesAreRejected(t *testing.T) {
 	}
 }
 
-// "a" flips a peer between allowed and blocked, keyed on the peer's ID —
-// which is the Tailscale StableID, not anything the peer says about itself.
+// "a" flips a peer between allowed and blocked
+// keyed by Tailscale's ID for the peer, not anything the peer says about itself
 func TestTrustToggleAllowsThenBlocks(t *testing.T) {
 	store := map[string]bool{}
 	m := modelWith(onlinePeer("stable-1", "alpha"))
@@ -310,8 +304,7 @@ func TestTrustToggleAllowsThenBlocks(t *testing.T) {
 	}
 }
 
-// At 100% the receiver is still flushing and re-hashing the whole file. The
-// panel must say so rather than show a full bar that looks hung.
+// at 100% the receiver is still checking the file, so the panel says so instead of a full bar that looks stuck
 func TestTransferPanelSaysVerifyingAtOneHundredPercent(t *testing.T) {
 	m := modelWith()
 	m.active = []Transfer{{Direction: "receiving", Peer: "alpha", Frac: 1, BytesDone: 100, Total: 100, Verifying: true}}

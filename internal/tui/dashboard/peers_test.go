@@ -25,9 +25,8 @@ func TestTimeAgo(t *testing.T) {
 	}
 }
 
-// A nil local.Client (tsnet's local API unavailable) must render an error
-// state, not panic — cmd/edgegrid/main.go passes nil here when
-// Node.LocalClient fails, rather than refusing to start the dashboard.
+// with no Tailscale client the tab shows an error instead of crashing
+// main.go passes nil when Node.LocalClient fails, rather than not starting the dashboard
 func TestPeersModelWithNilClientDoesNotPanic(t *testing.T) {
 	m := newPeersModel(nil, nil, nil)
 	m = m.WithSize(80, 20)

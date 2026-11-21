@@ -21,23 +21,17 @@ import (
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
-// WelcomeAction is what the user picked before the welcome screen exited.
-// Welcome runs as its own bubbletea program *before* node.LoadConfig, so the
-// choice it returns still gets to decide which data dir the node comes up on
-// — that's why there's no "restart" action here. The old welcome lived inside
-// App, after tsnet was already bound to a data dir, so every profile switch
-// had to exec-restart the process (see execRestart in main.go). Choosing
-// first removes that round trip for the initial pick; execRestart still
-// exists for the "/profile" cmdbar switch mid-session, which genuinely can't
-// avoid it.
+// what the user picked on the welcome screen
+// welcome runs before node.LoadConfig, so the pick still decides the data folder and needs no restart;
+// only "/profile" later in the dashboard has to restart the process
 type WelcomeAction int
 
 const (
-	// WelcomeQuit means the user pressed q/ctrl+c — do nothing further.
+	// the user pressed q or ctrl+c; do nothing more
 	WelcomeQuit WelcomeAction = iota
-	// WelcomeStart means boot the node and hand over to the dashboard.
+	// start the node and open the dashboard
 	WelcomeStart
-	// WelcomeLogs means print this profile's log tail instead of booting.
+	// print the end of this profile's log instead of starting
 	WelcomeLogs
 )
 
@@ -45,14 +39,11 @@ type welcomeBenchmarkTickMsg struct{}
 
 type welcomeAnimTickMsg struct{}
 
-// settingsStatusExpiredMsg clears the settings save/error line after a few
-// seconds. It carries the seq of the message it was scheduled for, so a save
-// made while an earlier tick is still in flight doesn't get wiped early by it
-// — and pressing ctrl+s twice re-shows the line instead of leaving a stale one
-// on screen with no way to tell the second save happened.
+// clears the settings save message after a few seconds
+// seq is the message it was set for, so an old timer doesn't wipe a newer message
 type settingsStatusExpiredMsg struct{ seq int }
 
-// settingsStatusTTL is how long a save confirmation or error stays up.
+// how long a save message or error stays on screen
 const settingsStatusTTL = 4 * time.Second
 
 func randomProfileName() string {
@@ -61,10 +52,8 @@ func randomProfileName() string {
 	return "cluster-" + hex.EncodeToString(b)
 }
 
-// profileDataDir resolves a profile name to its data dir without consulting
-// the *active* profile — the settings form edits whichever profile the cursor
-// is on, which is usually not the active one. "" is the default ./data dir,
-// matching node.ResolveDataDir's last fallback.
+// the data folder for a profile name, e.g. "" gives ./data
+// it ignores the active profile, since the settings form edits the one under the cursor
 func profileDataDir(name string) string {
 	if name == "" {
 		return "./data"
@@ -122,10 +111,7 @@ func getRowStyle(y int, height int) lipgloss.Style {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("#8b5cf6"))
 	}
 
-	// Mathematically interpolate RGB values row-by-row
-	// Start: Cyan (0, 242, 254)
-	// Mid: Purple (139, 92, 246)
-	// End: Pink (244, 63, 94)
+	// colour fades row by row: cyan (0, 242, 254), purple (139, 92, 246), pink (244, 63, 94)
 	var r, g, b float64
 	t := float64(y) / float64(height-1)
 
@@ -150,7 +136,7 @@ func render3DGoGlobe(width, height int, activeNode int, angleA, angleB float64) 
 		return "[Globe canvas too small]"
 	}
 
-	// Create text buffer based on dynamic width & height
+	// one character and one style per screen cell
 	charBuffer := make([][]rune, height)
 	styleBuffer := make([][]lipgloss.Style, height)
 	for y := 0; y < height; y++ {
@@ -164,7 +150,7 @@ func render3DGoGlobe(width, height int, activeNode int, angleA, angleB float64) 
 	coordStyle := lipgloss.NewStyle().Foreground(style.Accent).Bold(true)
 	workerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
 	hybridStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
-	activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Bold(true) // Neon active node color
+	activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Bold(true) // the highlighted node
 
 	// Map active index to node ID
 	activeNodeID := "C1"
@@ -181,7 +167,7 @@ func render3DGoGlobe(width, height int, activeNode int, angleA, angleB float64) 
 		activeNodeID = "C5"
 	}
 
-	// Generate sphere unit coordinates with 12 lat and 24 long (264 points, 20% denser)
+	// dots on the globe: 11 rings of 24, 264 points
 	numLat := 12
 	numLong := 24
 	var spherePoints []point3D
@@ -203,7 +189,7 @@ func render3DGoGlobe(width, height int, activeNode int, angleA, angleB float64) 
 		{"C2", "W1"}, {"C4", "W2"}, {"C3", "W3"}, {"C5", "W4"},
 	}
 
-	// Generate connection dots in 3D space with high density (25 steps) to form solid-looking lines
+	// 26 dots along each link, so it reads as a solid line
 	var linePoints []point3D
 	for _, conn := range connections {
 		p1 := getNodePosition(conn[0])
@@ -220,7 +206,7 @@ func render3DGoGlobe(width, height int, activeNode int, angleA, angleB float64) 
 		}
 	}
 
-	// Dynamic radius scaled down slightly (x 0.85) to add breathing margins
+	// globe size, shrunk to 85% to leave a margin
 	R := (float64(height)/2.0 - 0.5) * 0.85
 	maxRFromWidth := (float64(width) / 5.2) * 0.85
 	if R > maxRFromWidth {
@@ -239,7 +225,7 @@ func render3DGoGlobe(width, height int, activeNode int, angleA, angleB float64) 
 		y2 := p.y*math.Cos(angleB) - z1*math.Sin(angleB)
 		z2 := p.y*math.Sin(angleB) + z1*math.Cos(angleB)
 
-		// 2.45 aspect ratio correction factor to make the globe a perfect circle on terminal fonts
+		// terminal cells are about 2.45x taller than wide, so stretch x to keep the globe round
 		projX := int(math.Round(float64(width)/2.0 + x1*R*2.45))
 		projY := int(math.Round(float64(height)/2.0 + y2*R))
 
@@ -337,10 +323,10 @@ func renderLeftPanel(width, height int, activeNode int, angleA, angleB float64) 
 		`| _|  |  | (_ | _| | (_ |   /| ||  | |`,
 		`|___|___/ \___|___| \___|_|_\___|___/`,
 	}
-	
+
 	logoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
 	subStyle := lipgloss.NewStyle().Foreground(style.Muted).Bold(true)
-	
+
 	var lines []string
 	for _, l := range logo {
 		lines = append(lines, logoStyle.Render(l))
@@ -358,12 +344,12 @@ func renderLeftPanel(width, height int, activeNode int, angleA, angleB float64) 
 		"",
 		render3DGoGlobe(width, globeHeight, activeNode, angleA, angleB),
 	)
-	
+
 	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, content)
 }
 
-// welcomeModel is the pre-boot Home/Welcome screen.
+// the welcome screen shown before the node starts
 type welcomeModel struct {
 	width, height int
 	selectedIdx   int // 0 = Choose previous profile, 1 = Diagnostics, 2 = Logs
@@ -375,15 +361,15 @@ type welcomeModel struct {
 	profileOffset       int      // scrolling viewport offset for profile list
 	selectedProfileName string   // selected profile for submenu option
 	submenuIdx          int      // cursor for submenu options
-	statusMsg           string   // error surfaced on the create-profile / submenu screens
+	statusMsg           string   // error shown on the new-profile and submenu screens
 	input               textinput.Model
 	activeNode          int
 	angleA, angleB      float64
 
-	// What the user chose, read by Welcome's caller after the program exits.
+	// what the user chose, read after the screen exits
 	action      WelcomeAction
 	profileName string
-	authKey     string // tsnet auth key typed on the join screen; "" means interactive login
+	authKey     string // join key typed on the join screen; "" means log in through the browser
 
 	// Network-role screen (subMode 7) and auth-key entry (subMode 8).
 	roleIdx int
@@ -399,19 +385,13 @@ type welcomeModel struct {
 	settingsVals   map[string]string
 	settingsStatus string
 	settingsDir    string
-	// settingsStatusSeq rises on every new status line so a pending expiry
-	// tick can tell whether it still refers to the message on screen.
+	// goes up with each new save message, so a timer can tell if its message is still showing
 	settingsStatusSeq int
 }
 
-// RunWelcome shows the landing page and blocks until the user picks
-// something. It must run before node.LoadConfig: choosing a profile here sets
-// the active profile (or DATA_DIR for the default entry), and LoadConfig
-// resolves the data dir exactly once per process.
-//
-// profileName is "" for the default ./data entry or when the user quit.
-// authKey is "" unless the user pasted one on the join screen, in which case
-// it must reach tsnet before Up — see node.Config.TailscaleAuthKey.
+// shows the welcome screen until the user picks; must run before node.LoadConfig,
+// since picking a profile sets the data folder and LoadConfig reads it only once
+// AuthKey is "" unless pasted on the join screen, and must reach tsnet before it starts
 func RunWelcome() (choice WelcomeChoice, err error) {
 	final, err := tea.NewProgram(newWelcomeModel(), tea.WithAltScreen()).Run()
 	if err != nil {
@@ -424,15 +404,14 @@ func RunWelcome() (choice WelcomeChoice, err error) {
 	return w.Result(), nil
 }
 
-// WelcomeChoice is what the landing page decided.
+// what the welcome screen decided
 type WelcomeChoice struct {
 	Action      WelcomeAction
 	ProfileName string
 	AuthKey     string
 }
 
-// newWelcomeModel builds the welcome screen. It touches no node state, so it
-// is safe to construct before node.LoadConfig.
+// builds the welcome screen; it touches no node state, so it's safe before node.LoadConfig
 func newWelcomeModel() welcomeModel {
 	ti := textinput.New()
 	ti.Placeholder = "cluster-name"
@@ -444,8 +423,7 @@ func newWelcomeModel() welcomeModel {
 	return welcomeModel{input: ti}
 }
 
-// Result reports what the user chose. ProfileName is "" when they picked the
-// default ./data entry or quit without choosing.
+// what the user chose; ProfileName is "" for the default ./data or a quit
 func (m welcomeModel) Result() WelcomeChoice {
 	return WelcomeChoice{Action: m.action, ProfileName: m.profileName, AuthKey: m.authKey}
 }
@@ -465,8 +443,7 @@ func (m welcomeModel) update(msg tea.Msg) (welcomeModel, tea.Cmd) {
 		return m, nil
 	}
 
-	// Global quit. Guarded on the text-entry submodes so typing "q" into a
-	// profile name or an API token doesn't kill the program mid-word.
+	// quit from anywhere, except while typing, so a "q" in a name or token doesn't quit
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.String() {
 		case "ctrl+c":
@@ -533,13 +510,8 @@ func (m welcomeModel) update(msg tea.Msg) (welcomeModel, tea.Cmd) {
 			case "enter":
 				val := strings.TrimSpace(m.input.Value())
 				if val != "" {
-					// UseProfile creates the dir, so a brand-new name is
-					// usable immediately — but "usable" means landing on the
-					// same submenu an existing profile does, not skipping
-					// straight to starting. A fresh profile has never joined
-					// a tailnet, so it needs the chance to pick "join an
-					// existing network" and paste a key before tsnet ever
-					// gets a chance to fall back to interactive login.
+					// a new profile goes to the same submenu, not straight to starting,
+					// so it can pick "join an existing network" and paste a key before tsnet falls back to browser login
 					if err := node.UseProfile(val); err != nil {
 						m.statusMsg = "could not create profile: " + err.Error()
 						return m, nil
@@ -634,11 +606,6 @@ func (m welcomeModel) update(msg tea.Msg) (welcomeModel, tea.Cmd) {
 					}
 				}
 
-				// Always the submenu now. The old code branched here on
-				// whether the profile had been through the onboarding wizard,
-				// sending un-onboarded ones straight into it — that wizard
-				// (internal/tui/onboarding) was deleted in 22acea4, so there
-				// is no second path left to take.
 				m.selectedProfileName = selected
 				m.statusMsg = ""
 				m.subMode = 3
@@ -706,10 +673,7 @@ func (m welcomeModel) update(msg tea.Msg) (welcomeModel, tea.Cmd) {
 				m.subMode = 7
 				return m, nil
 			case "enter":
-				// Blank is allowed and meaningful: tsnet falls back to
-				// interactive login, which is the same path the first node
-				// takes. Better than refusing to proceed when someone has a
-				// browser open and no key to hand.
+				// blank is allowed: tsnet falls back to browser login, like the first node does
 				m.authKey = strings.TrimSpace(m.input.Value())
 				m.action = WelcomeStart
 				return m, tea.Quit
@@ -731,22 +695,16 @@ func (m welcomeModel) update(msg tea.Msg) (welcomeModel, tea.Cmd) {
 		}
 	}
 
-	// The dispatch above only runs for key presses, so the settings screen
-	// needs its non-key messages routed here: the status-expiry tick, and the
-	// blink that makes its text cursor visible at all.
+	// the code above only handles keys, so the settings screen gets its other messages here,
+	// e.g. the save-message timer and the cursor blink
 	if m.subMode == 6 {
 		return m.updateProfileSettings(msg)
 	}
 	return m, nil
 }
 
-// settingsFieldFiles maps each settings-form label to the file it persists
-// to inside the profile's data dir. Every field gets its own 0600 file —
-// the convention tailscaleapi.LoadCredentials already reads. There is
-// deliberately no settings.json: the old ProfileSettings struct carried an
-// Apply() that wrote cfg.NATSPort / cfg.Server.Port / cfg.Client.Executor,
-// none of which exist on node.Config any more, and a schema that can drift
-// out of sync with the struct it configures is worse than no schema.
+// each settings label and the file it's saved in, e.g. "Tailscale API Client ID" in ts_api_client_id
+// one 0600 file per field, the way tailscaleapi.LoadCredentials reads them
 var settingsFieldFiles = map[string]string{
 	"Tailscale API Client ID":     "ts_api_client_id",
 	"Tailscale API Client Secret": "ts_api_client_secret",
@@ -756,12 +714,8 @@ var settingsFieldFiles = map[string]string{
 	"Require Approval":            "require_approval",
 }
 
-// settingsFieldOrder is the form's display order. The ts_api_* fields lead
-// because they are the only ones with a live consumer: setting Client ID,
-// Client Secret and Tailnet together is what makes
-// tailscaleapi.LoadCredentials return non-nil, which is what puts the Tokens
-// tab in the dashboard. Nothing else writes those files, so before this form
-// existed the only way to enable Tokens was to create them by hand.
+// the order fields show in the form
+// the Tailscale API fields come first: they're the only ones read, and Client ID, Secret and Tailnet together add the Tokens tab
 var settingsFieldOrder = []string{
 	"Tailscale API Client ID",
 	"Tailscale API Client Secret",
@@ -771,30 +725,24 @@ var settingsFieldOrder = []string{
 	"Require Approval",
 }
 
-// inertSettingsFields save and reload correctly but are read by nothing: the
-// coordinator HTTP server "API Port" configured and the join-approval flow
-// behind "Require Approval" were both deleted in 22acea4. They are marked as
-// such in the UI rather than rendered like working knobs — a form that
-// silently accepts a setting nothing honours produces a bug report months
-// later with no failing code path to find.
+// fields that are saved but nothing reads yet, so the form marks them
+// or someone would set them and wonder why nothing changed
 var inertSettingsFields = map[string]bool{
 	"API Port":         true,
 	"Require Approval": true,
 }
 
-// secretSettingsFields are masked when not being edited.
+// fields hidden with dots unless being edited
 var secretSettingsFields = map[string]bool{
 	"Tailscale API Client Secret": true,
 }
 
-// isChoiceField reports whether a field is picked from a list rather than
-// typed, so key handling routes to the selector instead of the text input.
+// whether a field is picked from a list instead of typed, e.g. "Require Approval"
 func isChoiceField(name string) bool { return name == "Require Approval" }
 
 func (m welcomeModel) updateProfileSettings(msg tea.Msg) (welcomeModel, tea.Cmd) {
 	if exp, ok := msg.(settingsStatusExpiredMsg); ok {
-		// Only the newest scheduled tick may clear the line; older ones belong
-		// to messages that have already been replaced.
+		// only the newest timer clears the message; older ones belong to replaced messages
 		if exp.seq == m.settingsStatusSeq {
 			m.settingsStatus = ""
 		}
@@ -929,9 +877,7 @@ func (m welcomeModel) focusSettingsField() welcomeModel {
 		m.input.Blur()
 		return m
 	}
-	// The secret is echoed normally while it has focus — you cannot verify a
-	// pasted OAuth secret you cannot see, and it is masked again the moment
-	// the cursor leaves the field.
+	// the secret shows in full while being edited, so a pasted one can be checked; it's hidden again on leaving the field
 	val := m.settingsVals[name]
 	m.input.SetValue(val)
 	m.input.SetCursor(len(val))
@@ -962,14 +908,9 @@ func (m *welcomeModel) openProfileSettings() {
 	m.subMode = 6
 }
 
-// persistProfileSettings writes every field to its own file under the
-// profile dir. Clearing a field removes its file rather than leaving an empty
-// one: LoadToken treats missing and empty the same, but a zero-byte
-// ts_api_client_secret on disk reads as a live credential that happens to be
-// blank, which is a worse thing to find in a data dir than nothing at all.
-// Callers commit the focused field with saveSettingsField first; this
-// deliberately does not, so it writes exactly what settingsVals holds rather
-// than silently folding in whatever the text input happens to contain.
+// saves each field to its own file, and deletes the file when a field is cleared
+// an empty secret file looks like a real but blank login, worse than no file
+// callers save the focused field first; this writes only what settingsVals holds
 func (m welcomeModel) persistProfileSettings() error {
 	if v := strings.TrimSpace(m.settingsVals["API Port"]); v != "" {
 		n, err := strconv.Atoi(strings.TrimPrefix(v, ":"))
@@ -994,14 +935,12 @@ func (m welcomeModel) persistProfileSettings() error {
 	return nil
 }
 
-// profileHasJoined reports whether this profile has ever completed a tailnet
-// bring-up — see node.HasJoined.
+// whether this profile has joined the tailnet before
 func profileHasJoined(name string) bool {
 	return node.HasJoined(profileDataDir(name))
 }
 
-// profileHasTailscaleAPI reports whether this profile can mint join keys —
-// the same three files tailscaleapi.LoadCredentials requires.
+// whether this profile can make join keys: the same three files tailscaleapi.LoadCredentials needs
 func profileHasTailscaleAPI(name string) bool {
 	dir := profileDataDir(name)
 	return node.LoadToken(dir, "ts_api_client_id") != "" &&
@@ -1009,12 +948,8 @@ func profileHasTailscaleAPI(name string) bool {
 		node.LoadToken(dir, "ts_api_tailnet") != ""
 }
 
-// networkRoleOptions is the fork shown before a node's first bring-up. The two
-// differ in one real, already-implemented way: the first node holds the
-// Tailscale API credentials and mints join keys for everyone else, which is
-// exactly what puts the Tokens tab on its dashboard. Deliberately not called
-// "cluster" or "coordinator" — both name subsystems this branch deleted, and
-// would read as a control-plane role that no longer exists.
+// the choice shown before a node's first start: new network or join one
+// the only difference is the first node holds the Tailscale API login and makes join keys for the rest
 var networkRoleOptions = []struct {
 	name string
 	desc string
@@ -1023,12 +958,7 @@ var networkRoleOptions = []struct {
 	{"Join an existing network", "Paste an auth key minted by the first node."},
 }
 
-// mainMenuOptions is the landing menu. "Setup New Node (Onboarding Wizard)"
-// and "Connect to Remote Coordinator" used to sit at the top of this list;
-// both are gone because the packages behind them (internal/tui/onboarding,
-// internal/tui/app/connect.go) were deleted in 22acea4 along with the
-// coordinator they talked to. What survives is everything that only needs a
-// local data dir.
+// the main menu on the welcome screen
 var mainMenuOptions = []struct {
 	name string
 	desc string
@@ -1060,10 +990,7 @@ func (m *welcomeModel) triggerSelection() tea.Cmd {
 	return nil
 }
 
-// submenuOptions is what you can do with the profile under the cursor.
-// "Open Dashboard (Monitor Only)" is absent for the same reason as the two
-// missing main-menu entries: it connected a read-only client to a remote
-// coordinator over HTTP, and there is no coordinator to connect to.
+// what you can do with the profile under the cursor
 var submenuOptions = []struct {
 	name string
 	desc string
@@ -1076,12 +1003,8 @@ var submenuOptions = []struct {
 func (m *welcomeModel) triggerSubmenu() tea.Cmd {
 	switch m.submenuIdx {
 	case 0:
-		// The empty name is the default ./data entry, which UseProfile
-		// rejects outright ("profile name required"). Rather than silently
-		// leaving whatever profile was already active — which is what the old
-		// code did, so picking "default" quietly booted the wrong data dir —
-		// say so through DATA_DIR, which node.ResolveDataDir honours ahead of
-		// the active profile but still behind an explicit --data-dir flag.
+		// "" is the default ./data, which UseProfile refuses, so set DATA_DIR instead
+		// or the last active profile would start; --data-dir still wins over DATA_DIR
 		if m.selectedProfileName == "" {
 			if err := os.Setenv("DATA_DIR", "./data"); err != nil {
 				m.statusMsg = "could not select default data dir: " + err.Error()
@@ -1093,10 +1016,8 @@ func (m *welcomeModel) triggerSubmenu() tea.Cmd {
 		}
 		m.profileName = m.selectedProfileName
 
-		// A profile that already reached the tailnet skips the role screen
-		// entirely: neither "new network" nor "join" describes a node that is
-		// already a member, and tsnet ignores an auth key once its state store
-		// holds a node anyway (see tsnet.Server.AuthKey's doc).
+		// a profile that already joined skips the role screen:
+		// neither choice fits it, and tsnet ignores a join key once it has joined
 		if profileHasJoined(m.selectedProfileName) {
 			m.action = WelcomeStart
 			return tea.Quit
@@ -1114,10 +1035,8 @@ func (m *welcomeModel) triggerSubmenu() tea.Cmd {
 	return nil
 }
 
-// triggerRole acts on the network-role choice. "New network" only warns when
-// the API credentials are missing — it does not block, because a node can
-// perfectly well come up first and be given credentials afterwards; it just
-// cannot mint keys for anyone until it has them.
+// acts on the new-or-join choice; "new network" without an API login only warns,
+// since the login can be added later, it just can't make keys until then
 func (m *welcomeModel) triggerRole() tea.Cmd {
 	if m.roleIdx == 0 {
 		if !profileHasTailscaleAPI(m.selectedProfileName) {
@@ -1147,14 +1066,14 @@ func renderMainMenu(m welcomeModel, width int) string {
 		style.Title.Render("SELECT RUN MODE:"),
 		"",
 	)
-	
+
 	for i, opt := range mainMenuOptions {
 		if i > 0 {
 			lines = append(lines, "", "  "+style.Help.Render(strings.Repeat("┄", width-8)), "")
 		} else {
 			lines = append(lines, "")
 		}
-		
+
 		var title, prefix string
 		if m.selectedIdx == i {
 			prefix = style.Selected.Render("› ")
@@ -1163,7 +1082,7 @@ func renderMainMenu(m welcomeModel, width int) string {
 			prefix = style.Help.Render("  ")
 			title = opt.name
 		}
-		
+
 		lines = append(lines,
 			fmt.Sprintf("%s%s", prefix, title),
 			fmt.Sprintf("    %s", style.Help.Render(opt.desc)),
@@ -1218,12 +1137,7 @@ func renderProfileSelect(m welcomeModel, width int) string {
 		}
 		dirPath := profileDataDir(name)
 
-		// Replaces the old "[onboarded]" marker, which keyed off admin.token
-		// / node.token — coordinator credentials that nothing issues any more,
-		// so every profile would read as not-onboarded forever. These two say
-		// something still true: whether the dir has a node identity, and
-		// whether Configure Settings has been filled in far enough for the
-		// dashboard's Tokens tab to appear.
+		// show whether the profile has a node ID and a Tailscale API login (which adds the Tokens tab)
 		var tags []string
 		if node.LoadToken(dirPath, "node.id") != "" {
 			tags = append(tags, lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("[node id]"))
@@ -1347,9 +1261,8 @@ func renderProfileSettings(m welcomeModel, width int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
-// maskSecret shows only the tail of a stored credential — enough to tell two
-// secrets apart when checking which one a profile holds, not enough to be
-// worth shoulder-surfing.
+// a secret as dots plus its last 4 characters, e.g. ••••••••a1b2
+// enough to tell two apart, not enough to be worth reading over a shoulder
 func maskSecret(s string) string {
 	if len(s) <= 4 {
 		return strings.Repeat("•", len(s))
@@ -1385,14 +1298,14 @@ func renderProfileSubmenu(m welcomeModel, width int) string {
 		style.Title.Render("PROFILE OPTIONS: "+displayName),
 		"",
 	)
-	
+
 	for i, opt := range submenuOptions {
 		if i > 0 {
 			lines = append(lines, "", "  "+style.Help.Render(strings.Repeat("┄", width-8)), "")
 		} else {
 			lines = append(lines, "")
 		}
-		
+
 		var prefix, title string
 		if m.submenuIdx == i {
 			prefix = style.Selected.Render("› ")
@@ -1401,7 +1314,7 @@ func renderProfileSubmenu(m welcomeModel, width int) string {
 			prefix = style.Help.Render("  ")
 			title = opt.name
 		}
-		
+
 		lines = append(lines,
 			fmt.Sprintf("%s%s", prefix, title),
 			fmt.Sprintf("    %s", style.Help.Render(opt.desc)),
@@ -1479,7 +1392,7 @@ func renderBenchmark(m welcomeModel, width int) string {
 	if !m.benchmarkActive {
 		statusText = "Diagnostics Complete! "
 	}
-	
+
 	var lines []string
 	lines = append(lines,
 		style.Title.Render("SYSTEM DIAGNOSTICS:"),
@@ -1488,7 +1401,7 @@ func renderBenchmark(m welcomeModel, width int) string {
 		renderProgressBar(m.benchmarkProgress, width-10),
 		"",
 	)
-	
+
 	var logLines []string
 	for _, logLine := range m.benchmarkLogs {
 		logLines = append(logLines, lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Render(logLine))
@@ -1548,7 +1461,7 @@ func (m welcomeModel) View() string {
 	if bodyHeight < 1 {
 		bodyHeight = 1
 	}
-	
+
 	colWidth := (m.width - 1) / 2
 	if colWidth < 30 {
 		colWidth = 30
@@ -1580,7 +1493,7 @@ func (m welcomeModel) View() string {
 	case 9:
 		rightContent = renderNeedsSettings(m, colWidth)
 	}
-		
+
 	rightLines := strings.Split(lipgloss.Place(colWidth, bodyHeight, lipgloss.Center, lipgloss.Center, rightContent), "\n")
 
 	var rows []string
@@ -1594,11 +1507,11 @@ func (m welcomeModel) View() string {
 		if i < len(rightLines) {
 			rightStr = rightLines[i]
 		}
-		
+
 		leftPadded := lipgloss.PlaceHorizontal(colWidth, lipgloss.Center, leftStr)
 		rightPadded := lipgloss.PlaceHorizontal(colWidth, lipgloss.Left, rightStr)
-		
-		rows = append(rows, leftPadded + divider + rightPadded)
+
+		rows = append(rows, leftPadded+divider+rightPadded)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }

@@ -7,25 +7,22 @@ import (
 	"io"
 )
 
-// A receiver answers every manifest with a verdict before any chunk moves:
+// the receiver's yes or no to a manifest, sent before any chunk moves:
 //
 //	[1 byte: 0 accept, 1 refuse][2-byte reason length][reason bytes]
 //
-// Without it, refusing meant hanging up, which a sender cannot tell apart
-// from a crash or a dropped network — it would just see a broken pipe partway
-// through a large transfer, or block until its deadline.
+// without it a refusal is just a hang-up, which the sender can't tell from a crash
 const (
 	verdictAccept byte = 0
 	verdictRefuse byte = 1
 )
 
-// maxReasonLen bounds a refusal reason so a hostile peer can't make us read
-// an arbitrary amount of text into an error message.
+// the longest refusal reason we'll read, 1024 bytes, so a peer can't send us endless text
 const maxReasonLen = 1024
 
-// RefusedError is what a sender gets back when the receiver declines.
-type RefusedError struct{
-	Reason string 
+// what the sender gets back when the receiver says no
+type RefusedError struct {
+	Reason string
 }
 
 func (e *RefusedError) Error() string { // defining error so it can be used direclty for error
@@ -35,9 +32,8 @@ func (e *RefusedError) Error() string { // defining error so it can be used dire
 	return "peer refused the transfer: " + e.Reason
 }
 
-// WriteVerdict sends the receiver's answer. A nil refusal accepts; otherwise
-// the error's text goes to the sender as the reason, so it must be safe to
-// show them.
+// sends the receiver's answer: nil means yes, an error means no
+// the error text goes to the sender as the reason, so it must be safe to show them
 func WriteVerdict(w io.Writer, refusal error) error {
 	status, reason := verdictAccept, ""
 	if refusal != nil {
@@ -58,8 +54,7 @@ func WriteVerdict(w io.Writer, refusal error) error {
 	return nil
 }
 
-// ReadVerdict reads the receiver's answer: nil means go ahead, a
-// *RefusedError means it declined, anything else is a transport failure.
+// reads the receiver's answer: nil is yes, *RefusedError is no, any other error is a broken connection
 func ReadVerdict(r io.Reader) error {
 	var hdr [3]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {

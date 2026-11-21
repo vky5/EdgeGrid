@@ -11,7 +11,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/task"
 )
 
-// askResultThroughHandlePeer drives the real handlePeer -> receiveResult path.
+// asks for a result through the real handlePeer -> receiveResult path
 func askResultThroughHandlePeer(t *testing.T, n *Node, stableID, taskID string) task.ResultResponse {
 	t.Helper()
 	asker, receiver := net.Pipe()
@@ -91,8 +91,7 @@ func TestResultReportsAFailedRun(t *testing.T) {
 	}
 }
 
-// Another peer asking for a real task ID must get the same answer as for an
-// ID that doesn't exist.
+// another peer asking about a real task must get the same answer as for an ID that doesn't exist
 func TestResultIsHiddenFromAnyoneButTheDispatcher(t *testing.T) {
 	n, _ := nodeForTasks(t)
 	trust(t, n, "friend")

@@ -11,13 +11,12 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 )
 
-// selfHello is what this node says about itself on a connection
+// what this node says about itself when it connects, with what it wants
 func (a *Node) selfHello(intent discovery.IntentType) discovery.Hello {
 	return discovery.Hello{NodeID: a.NodeID(), Intent: intent}
 }
 
-// handlePeer routes an identified, greeted connection by what the peer said
-// it wanted. The dispatch lives here rather than in discovery
+// hands a connection to the right handler for what the peer wants, e.g. send a file
 func (a *Node) handlePeer(who *apitype.WhoIsResponse, hello discovery.Hello, conn net.Conn) {
 	defer conn.Close() // close TCP connection after anything
 
@@ -30,7 +29,7 @@ func (a *Node) handlePeer(who *apitype.WhoIsResponse, hello discovery.Hello, con
 		a.receiveResult(who, conn)
 
 	default:
-		// IntentHello, empty (a peer older than the field)
+		// a plain hello, or a peer too old to send what it wants
 		// TODO record the peer somewhere (could be store or memory)
 	}
 }

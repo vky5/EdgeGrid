@@ -1,6 +1,3 @@
-// Package nodelog is the single place that knows where a node's logs live
-// on disk. `edgegrid logs` (plain CLI) and the TUI's /logs command both read
-// through Tail — one implementation, not two copies of "how to get logs."
 package node
 
 import (
@@ -13,17 +10,14 @@ import (
 
 const filename = "edgegrid.log"
 
-// Path returns where a node's log file lives under its data directory.
+// where a node's log file is, inside its data folder
 func LogPath(dataDir string) string {
 	return filepath.Join(dataDir, filename)
 }
 
-// Setup makes the standard log package write to dataDir's log file, so every
-// existing log.Printf call in the codebase — tsnet status, NATS connects, join
-// events — is persisted without any of those call sites changing. In headless
-// mode logs are also mirrored to stdout; in TUI mode they stay file-only so
-// Bubble Tea can own the terminal. Returns a close func to flush the file on
-// shutdown.
+// sends every log.Printf to the log file, and to the terminal too unless the TUI is showing
+// e.g. tsnet status, NATS connects and join events all land in edgegrid.log
+// the returned func closes the file on shutdown
 func SetupLog(dataDir string, tuiMode bool) (closeFn func() error, err error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, err
@@ -41,7 +35,7 @@ func SetupLog(dataDir string, tuiMode bool) (closeFn func() error, err error) {
 	return f.Close, nil
 }
 
-// Tail returns up to the last maxLines lines of a node's log file.
+// the last lines of a node's log file, for `edgegrid logs` and the TUI's /logs
 func TailLog(dataDir string, maxLines int) (string, error) {
 	data, err := os.ReadFile(LogPath(dataDir))
 	if err != nil {

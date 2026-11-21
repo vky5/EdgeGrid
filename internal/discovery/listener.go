@@ -11,48 +11,39 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 )
 
-// Port is the fixed, well-known TCP port every EdgeGrid node listens on for
-// peer discovery. Fixed, not configurable: a node would need to already be
-// talking to a peer to learn a dynamic port, which is circular.
+// the TCP port every EdgeGrid node listens on, 9797
+// fixed, since a node can't learn a peer's port without already talking to it
 const Port = 9797
 
-// IdentifyPeer resolves who's on the other end of conn via Tailscale's
-// local WhoIs API. Nothing conn sends is trusted here — identity comes from
-// the tailnet's control plane, not from what the remote side claims.
+// asks Tailscale who is on the other end of the connection
+// nothing the peer says is trusted here, so a peer can't claim to be someone else
 func IdentifyPeer(ctx context.Context, lc *local.Client, conn net.Conn) (*apitype.WhoIsResponse, error) {
 	return lc.WhoIs(ctx, conn.RemoteAddr().String())
 }
 
-// Server accepts connections on a discovery listener, identifies each one
-// via WhoIs, and exchanges a Hello with it.
+// takes connections from peers, asks Tailscale who each one is, and swaps hellos
 type Server struct {
 	ln   net.Listener  // to .accept() TCP connection
 	lc   *local.Client // to ask tailscale who peer is (IdentityPeer())
 	self Hello         // message node says about itself
 
-	// OnPeer is called once a connection is identified and the hello
-	// exchange succeeds. The handler owns conn and must close it. If nil,
-	// the connection is closed immediately after the exchange.
+	// runs after a peer is identified and hellos are swapped; it must close conn
+	// if nil, the connection is closed right after the hello
 	OnPeer func(who *apitype.WhoIsResponse, hello Hello, conn net.Conn)
 
 	Logf func(format string, args ...any)
 
-	// HelloTimeout overrides helloTimeout when non-zero — for tests that
-	// want the "peer never sent hello" path without the production wait.
+	// replaces the 5s hello wait when set, so a test of a silent peer doesn't wait 5s
 	HelloTimeout time.Duration
 }
 
-// NewServer wraps an already-open listener (from node.Node.Listen) and a
-// Tailscale local client (from node.Node.LocalClient). self is what this
-// node reports during the hello exchange (see Hello), normally
-// node.Node.NodeID(). Server does not open the listener itself, so closing
-// ln from the outside is what makes Serve's Accept loop return.
+// wraps a listener that's already open, e.g. from node.Node.Listen
+// self is the hello this node sends; closing ln is what stops Serve
 func NewServer(ln net.Listener, lc *local.Client, self Hello) *Server {
 	return &Server{ln: ln, lc: lc, self: self, Logf: func(string, ...any) {}}
 }
 
-// Serve accepts connections until ln is closed or ctx is cancelled — both
-// are a clean shutdown, not a failure.
+// takes connections until ln is closed or ctx is cancelled; both are a clean stop, not an error
 func (s *Server) Serve(ctx context.Context) error {
 	done := make(chan struct{})
 	defer close(done)

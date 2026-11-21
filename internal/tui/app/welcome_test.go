@@ -37,8 +37,7 @@ func TestSettingsRoundTripEnablesTokensTab(t *testing.T) {
 		t.Fatalf("persist: %v", err)
 	}
 
-	// The whole point of the form: these files are what LoadCredentials reads,
-	// and a non-nil client is what puts the Tokens tab in the dashboard.
+	// these files are what LoadCredentials reads, and a client from it adds the Tokens tab
 	if tailscaleapi.LoadCredentials(dir) == nil {
 		t.Fatal("LoadCredentials nil after save — Tokens tab would stay hidden")
 	}
@@ -52,7 +51,7 @@ func TestSettingsRoundTripEnablesTokensTab(t *testing.T) {
 		}
 	}
 
-	// Clearing a credential removes the file rather than leaving an empty one.
+	// clearing a field deletes its file instead of leaving it empty
 	m2.settingsVals["Tailscale API Client Secret"] = ""
 	if err := m2.persistProfileSettings(); err != nil {
 		t.Fatalf("persist after clear: %v", err)
@@ -84,14 +83,12 @@ func TestDefaultProfileDirIsLocalData(t *testing.T) {
 	}
 }
 
-// The status line must clear itself, and a timer scheduled for an earlier
-// message must not wipe a later one — otherwise a second ctrl+s inside the TTL
-// shows its confirmation and then loses it to the first save's stale tick.
+// the save message clears itself, and an old timer doesn't wipe a newer message
+// e.g. a second ctrl+s soon after the first keeps its message
 func TestSettingsStatusExpiry(t *testing.T) {
 	var m welcomeModel
 
-	// The seq is read off the model rather than by running the returned cmd:
-	// tea.Tick actually sleeps, and this behaviour is about ordering, not time.
+	// read seq from the model instead of running the cmd: tea.Tick really sleeps
 	m, cmd := m.setSettingsStatus("saved once")
 	if cmd == nil {
 		t.Fatal("setSettingsStatus returned no expiry command")
@@ -121,9 +118,7 @@ func TestSettingsStatusExpiry(t *testing.T) {
 	}
 }
 
-// Non-key messages must reach the settings screen at all; the subMode==6
-// dispatch used to sit inside a KeyMsg guard, which swallowed both the expiry
-// tick and the text cursor's blink.
+// messages that aren't keys still reach the settings screen, e.g. the expiry tick and the cursor blink
 func TestSettingsReceivesNonKeyMessages(t *testing.T) {
 	m := welcomeModel{subMode: 6}
 	m, _ = m.setSettingsStatus("saved")
@@ -143,9 +138,8 @@ func TestExtractLoginURL(t *testing.T) {
 	}
 }
 
-// tailscale.ip is written only after ts.Up returns a valid address, so it is
-// the honest "already a member" marker. tsnet/tailscaled.state is not: it
-// exists from the first attempt whether or not authentication ever succeeded.
+// "joined" means tailscale.ip exists, written only after a join works
+// tsnet/tailscaled.state isn't enough: it's there even after a failed login
 func TestProfileHasJoinedUsesTailscaleIPNotTsnetState(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if err := node.UseProfile("p1"); err != nil {
@@ -198,8 +192,8 @@ func TestProfileHasTailscaleAPINeedsAllThree(t *testing.T) {
 	}
 }
 
-// An already-joined profile must skip the role screen: neither option
-// describes it, and tsnet ignores an auth key once its store holds a node.
+// a profile that already joined skips the role screen
+// neither option fits it, and tsnet ignores a join key once it has joined
 func TestStartNodeSkipsRoleScreenWhenAlreadyJoined(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if err := node.UseProfile("joined"); err != nil {
@@ -228,8 +222,7 @@ func TestStartNodeSkipsRoleScreenWhenAlreadyJoined(t *testing.T) {
 	}
 }
 
-// "New network" without credentials warns rather than blocking — a node can
-// come up first and be given credentials later.
+// "New network" without an API login warns but doesn't block; the login can be added later
 func TestNewNetworkWarnsWhenCredentialsMissing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if err := node.UseProfile("n1"); err != nil {
@@ -256,8 +249,7 @@ func TestNewNetworkWarnsWhenCredentialsMissing(t *testing.T) {
 	}
 }
 
-// The join screen must carry its key out of welcome, since tsnet needs it
-// before Up.
+// the join screen hands its key out of welcome, since tsnet needs it before it starts
 func TestJoinScreenReturnsAuthKey(t *testing.T) {
 	m := welcomeModel{selectedProfileName: "j1", subMode: 7, roleIdx: 1}
 	m.triggerRole()

@@ -11,19 +11,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// resultWireVersion versions both result messages. Same layout as an offer:
-// version byte, 4-byte big-endian length, JSON body.
+// the version byte at the start of each result message, ask and answer alike
 const resultWireVersion = 2
 
-// maxResultSize bounds a result frame. A 64KB output is about 87KB once
-// base64'd inside the JSON, so this leaves room for that plus the envelope.
+// the biggest result message, 128 KB
+// 64 KB of output grows to about 87 KB as base64 in the JSON, so this leaves room
 const maxResultSize = 128 * 1024
 
-// ResultRetention is how long the node that ran a task keeps its result for
-// the sender to collect. The sender stops asking after the same time.
+// how long the node that ran a task keeps its result for the sender, a week
+// the sender stops asking after the same time
 const ResultRetention = 7 * 24 * time.Hour
 
-// ResultStatus is what the executing node reports about a task.
+// how a task stands, as reported by the node running it
 type ResultStatus string
 
 const (
@@ -35,8 +34,7 @@ const (
 	StatusLost ResultStatus = "lost"
 )
 
-// NoRecord is the reason given for a task the executing node can't show you,
-// whether it never existed or belongs to someone else.
+// the reason given for a task the node can't show you, whether it never existed or is someone else's
 const NoRecord = "no record of this task"
 
 func (s ResultStatus) valid() bool {
@@ -47,23 +45,23 @@ func (s ResultStatus) valid() bool {
 	return false
 }
 
-// Finished reports whether polling can stop: the run ended, or never will.
+// whether the sender can stop asking: the run ended, or never will
 func (s ResultStatus) Finished() bool { return s != StatusRunning }
 
-// ResultRequest asks the executing node how a task went.
+// asks the node that ran a task how it went
 type ResultRequest struct {
 	TaskID string `json:"task_id"`
 }
 
-// ResultResponse is the executing node's answer. Output is set only for done,
-// Error only for failed and lost.
+// the answer from the node that ran the task
+// Output is set only for done, Error only for failed and lost
 type ResultResponse struct {
 	Status ResultStatus `json:"status"`
 	Output []byte       `json:"output,omitempty"`
 	Error  string       `json:"error,omitempty"`
 }
 
-// Err is nil for a successful run, otherwise why the task produced no output.
+// nil for a successful run, otherwise why the task gave no output
 func (r ResultResponse) Err() error {
 	switch r.Status {
 	case StatusDone:
@@ -99,12 +97,9 @@ func (r ResultResponse) Err() error {
 //	 "output":"<base64>",   only when done, at most 64KB before encoding
 //	 "error":"<text>"}      only when failed or lost
 //
-// As with an offer, the version sits outside the JSON so a mismatch is caught
-// before a body in an unknown shape is decoded. The executor answers lost with
-// NoRecord for a missing task and for someone else's, so the two can't be told
-// apart.
+// a missing task and someone else's both get lost with NoRecord, so a peer can't guess IDs
 
-// writeResultFrame sends v in the format above.
+// sends one result message in the format above
 func writeResultFrame(w io.Writer, v any) error {
 	body, err := json.Marshal(v)
 	if err != nil {
@@ -144,8 +139,8 @@ func readResultFrame(r io.Reader, v any) error {
 	return nil
 }
 
-// AskResult sends a request for taskID and reads the answer. An error means
-// the exchange failed; a task the peer doesn't know comes back as lost.
+// asks the peer how a task went and reads the answer
+// an error means the connection failed; a task the peer doesn't know comes back as lost
 func AskResult(rw io.ReadWriter, taskID string) (ResultResponse, error) {
 	if err := writeResultFrame(rw, ResultRequest{TaskID: taskID}); err != nil {
 		return ResultResponse{}, err
@@ -160,8 +155,8 @@ func AskResult(rw io.ReadWriter, taskID string) (ResultResponse, error) {
 	return resp, nil
 }
 
-// ServeResult reads one request and answers it with lookup's result. A
-// malformed task ID is answered as lost without calling lookup.
+// reads one ask and answers it from lookup
+// a task ID that isn't a valid ID is answered as lost without calling lookup
 func ServeResult(rw io.ReadWriter, lookup func(taskID string) ResultResponse) error {
 	var req ResultRequest
 	if err := readResultFrame(rw, &req); err != nil {

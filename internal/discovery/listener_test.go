@@ -17,13 +17,12 @@ import (
 	"tailscale.com/tailcfg"
 )
 
-// fakeWhoIsTransport intercepts local.Client's WhoIs HTTP call and records
-// the "addr" it was asked about, so tests can assert the real remote
-// address was used, not a value the peer sent.
+// a fake Tailscale WhoIs that records which address it was asked about
+// so tests can check the real remote address was used, not something the peer sent
 type fakeWhoIsTransport struct {
 	response  *apitype.WhoIsResponse
 	notFound  bool
-	gotAddrCh chan string // best-effort recording, buffered
+	gotAddrCh chan string // buffered; a full channel just skips the record
 }
 
 func (f *fakeWhoIsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -185,8 +184,7 @@ func TestServerClosesConnectionWhenPeerNotFound(t *testing.T) {
 		t.Error("expected a log line for the unidentifiable connection")
 	}
 
-	// WhoIs failure happens before the hello exchange even starts, so the
-	// server never reads anything the client sends here.
+	// WhoIs fails before the hello starts, so the server never reads what the client sends
 	client.SetReadDeadline(time.Now().Add(2 * time.Second))
 	buf := make([]byte, 1)
 	if _, err := client.Read(buf); err != io.EOF {
@@ -200,8 +198,7 @@ func TestServerClosesConnectionWhenHelloNeverArrives(t *testing.T) {
 	srv, ln := testServer(t, transport, Hello{NodeID: "node-b"})
 	srv.HelloTimeout = 200 * time.Millisecond // don't wait out the production default
 
-	// atomic, not a plain bool: handle() logs twice on this path, and the
-	// second write races a plain bool against this test's read.
+	// atomic, not a plain bool: handle() logs twice here, and the second write would race this test's read
 	var loggedTimeout atomic.Bool
 	logDone := make(chan struct{}, 1)
 	srv.Logf = func(format string, args ...any) {
@@ -222,7 +219,7 @@ func TestServerClosesConnectionWhenHelloNeverArrives(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	defer client.Close()
-	// Deliberately send nothing.
+	// send nothing on purpose
 
 	select {
 	case <-logDone:

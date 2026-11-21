@@ -10,10 +10,8 @@ import (
 	"github.com/edgegrid/edgegrid/internal/tailscaleapi"
 )
 
-// app.View centers the dashboard horizontally, so a tab whose content is
-// narrower than the terminal used to drag the tab bar into the middle of the
-// screen along with it — the nav visibly jumped when switching to Tokens.
-// Every tab must therefore render at the full width it was given.
+// every tab fills the width it's given, or the tab bar moves when switching tabs
+// app.View centres the dashboard, so a narrow tab pulls the bar to the middle
 func TestTabsRenderFullWidthSoNavDoesNotMove(t *testing.T) {
 	const w, h = 100, 24
 
@@ -67,8 +65,7 @@ func stripANSI(s string) string {
 	return b.String()
 }
 
-// Copying must take the secret off the screen, but must not strand the key:
-// "r" still has to be able to revoke what was just minted.
+// copying hides the key on screen, but "r" can still revoke it
 func TestCopyHidesSecretButKeepsRevokable(t *testing.T) {
 	const secret = "tskey-auth-kGnKjCGsLo11CNTRL-fNuqh2GjA13WAraAk6GXz25izc5ST4Upf"
 	m := tokensModel{
@@ -80,7 +77,7 @@ func TestCopyHidesSecretButKeepsRevokable(t *testing.T) {
 		t.Fatal("freshly minted key should be on screen")
 	}
 
-	// "c" schedules the copy; the hide lands when the copy actually completes.
+	// "c" starts the copy; the key hides once the copy is done
 	m2, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
 	if cmd == nil {
 		t.Fatal("c produced no copy command")

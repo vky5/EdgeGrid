@@ -9,28 +9,21 @@ import (
 
 type Config struct {
 	DataDir     string // directory for node identity and token files (default ./data)
-	ProfileName string // profile that produced DataDir, "" if a --data-dir/DATA_DIR override was used instead — see resolveDataDir
+	ProfileName string // profile that gave DataDir, "" if --data-dir or DATA_DIR was used instead
 
 	TailscaleAuthKey  string // tsnet auth key for joining the tailnet (optional; falls back to interactive login)
-	TailscaleHostname string // hostname this node presents on the tailnet (default: os.Hostname() + a random suffix, see defaultHostname)
+	TailscaleHostname string // name on the tailnet (default: OS hostname plus a random suffix)
 }
 
-// ResolveDataDir applies the flag → DATA_DIR env → active profile → ./data
-// fallback used everywhere a data dir is needed (node startup, the plain
-// `logs` CLI) — one implementation so all of them agree on where a node's
-// state lives. The flag and env var stay first so they remain an explicit
-// escape hatch even once a profile is active.
+// picks the data folder: --data-dir, then DATA_DIR, then the active profile, then ./data
+// the flag and env come first so they still win once a profile is active
 func ResolveDataDir(flagVal string) string {
 	dir, _ := resolveDataDir(flagVal)
 	return dir
 }
 
-// resolveDataDir is ResolveDataDir's logic, but also reports which profile
-// (if any) it used — from the same single read of the active-profile file
-// that decided DataDir, not a second, later one. A second read is a real
-// race: another EdgeGrid process switching profiles in the gap between the
-// two reads leaves DataDir resolved correctly but the reported name
-// pointing at whatever that other process just switched to.
+// same as ResolveDataDir, but also says which profile it used
+// from the same read of the active profile, since another edgegrid process may switch profiles in between
 func resolveDataDir(flagVal string) (dir, profileName string) {
 	if flagVal != "" {
 		return flagVal, ""
@@ -51,10 +44,8 @@ var (
 	loadedCfg *Config
 )
 
-// LoadConfig parses flags/env into a Config exactly once per process and
-// caches the result — registering the same flag name on the global
-// flag.CommandLine twice panics ("flag redefined"), so every call after the
-// first just returns the cached Config.
+// reads flags and env into a Config once, and returns that same Config after
+// registering a flag twice panics, so later calls can't parse again
 func LoadConfig() *Config {
 	loadOnce.Do(func() {
 		loadedCfg = loadConfigOnce()
@@ -67,9 +58,8 @@ func loadConfigOnce() *Config {
 	tsAuthKey := flag.String("ts-authkey", "", "tsnet auth key for joining the tailnet (default: interactive login, or TS_AUTHKEY env)")
 	tsHostname := flag.String("ts-hostname", "", "hostname to present on the tailnet (default: os.Hostname() plus a random suffix)")
 
-	// Subcommands arrive as os.Args[1] (e.g. `edgegrid up`); Parse stops at the
-	// first non-flag argument and returns cleanly, so env vars are the reliable
-	// way to configure a subcommand.
+	// parsing stops at a subcommand, e.g. `edgegrid up`
+	// so flags after it are not read; use env vars to set up a subcommand
 	flag.Parse()
 
 	resolvedDataDir, profileName := resolveDataDir(*dataDir)
@@ -87,13 +77,9 @@ func loadConfigOnce() *Config {
 	}
 }
 
-// defaultHostname is os.Hostname() plus a short random suffix, so two data
-// dirs that happen to share an OS hostname (two profiles on one machine,
-// or two machines with the same name) never collide on Tailscale's own
-// hostname. The suffix is generated once per data dir and persisted
-// alongside node.id (see LoadOrCreateIdentity) — regenerating it on every
-// restart would make Tailscale see a "new" hostname each time instead of
-// the same device reconnecting.
+// the OS hostname plus a saved random suffix, e.g. laptop-3f9a
+// so two profiles or two machines with the same name never share a Tailscale name
+// the suffix is made once per data folder, or Tailscale would see a new device on every restart
 func defaultHostname(dataDir string) string {
 	base, _ := os.Hostname()
 	if base == "" {

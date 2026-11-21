@@ -16,15 +16,11 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 )
 
-// blobReceiveTimeout is the outer ceiling no inbound transfer may run
-// past, even while idleTimeout keeps getting refreshed by steady progress.
+// the longest any incoming transfer may run, 30 minutes, even while chunks keep arriving
 const blobReceiveTimeout = 30 * time.Minute
 
-//	takes an inbound blob into the profile's inbox, if this node's
-//
-// policy allows it. Every decision — ACL, size cap, where the file goes — is
-// made inside the accept callback so that a refusal always reaches the sender
-// as a verdict instead of a hung-up connection.
+// saves a file a peer sends into the inbox, if this node allows it
+// every check happens before the verdict, so a refusal reaches the sender as a reason, not a dropped connection
 func (a *Node) receiveBlob(who *apitype.WhoIsResponse, hello discovery.Hello, conn net.Conn) {
 	began := time.Now()
 	if err := conn.SetDeadline(began.Add(verdictTimeout)); err != nil {
@@ -32,8 +28,7 @@ func (a *Node) receiveBlob(who *apitype.WhoIsResponse, hello discovery.Hello, co
 		return
 	}
 
-	// Identity for the ACL is what Tailscale attributes, never
-	// hello.NodeID that one is the peer's own claim.
+	// who the peer is comes from Tailscale, never from the ID in its hello
 	var stableID, label string
 	if who != nil && who.Node != nil {
 		stableID = string(who.Node.StableID)
@@ -61,8 +56,7 @@ func (a *Node) receiveBlob(who *apitype.WhoIsResponse, hello discovery.Hello, co
 			log.Printf("blob: inbox %s: %v", dir, err)
 			return "", errors.New("this node could not store the file")
 		}
-		// The filename is the peer's, so it only ever becomes a single
-		// sanitised path component — see blob.SafeName.
+		// the filename comes from the peer, so it only ever becomes one plain file name in the inbox
 		p, err := reserveInboxFile(dir, blob.SafeName(m.Name))
 		if err != nil {
 			log.Printf("blob: reserve in %s: %v", dir, err)
@@ -75,10 +69,7 @@ func (a *Node) receiveBlob(who *apitype.WhoIsResponse, hello discovery.Hello, co
 	log.Printf("blob: inbound connection from %s", label)
 	t := a.transfers.start(Inbound, label)
 
-	// Split the time into the part that moved bytes and the part spent
-	// flushing and re-hashing at the end, so a slow transfer can be told
-	// apart from a slow disk. Receive runs on this goroutine, so plain
-	// variables are safe here.
+	// time the transfer and the final check separately, so a slow network can be told from a slow disk
 	var verifyBegan time.Time
 	report := t.progressFunc()
 	progress := func(p blob.Progress) {
@@ -119,10 +110,8 @@ func (a *Node) receiveBlob(who *apitype.WhoIsResponse, hello discovery.Hello, co
 		moved.Round(time.Millisecond), rateMBps(m.Size, moved), verified.Round(time.Millisecond))
 }
 
-// reserveInboxFile creates an empty file in dir named after name, adding
-// " (1)", " (2)" and so on if it exists, and returns its path. O_EXCL makes
-// the create the reservation, so two transfers landing the same name at once
-// can't pick the same path.
+// makes an empty file in the inbox and returns its path, e.g. "a.txt" becomes "a (1).txt" if taken
+// creating the file is the reservation, so two transfers with the same name never share a path
 func reserveInboxFile(dir, name string) (string, error) {
 	if name == "" {
 		name = "blob"

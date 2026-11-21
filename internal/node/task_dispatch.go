@@ -15,9 +15,8 @@ import (
 	"github.com/edgegrid/edgegrid/internal/task"
 )
 
-// DispatchTask tries each peer in order and stops at the first one that
-// accepts, returning it so the caller knows whom to ask for the result. A peer
-// that's unreachable, refuses, or errors just gets skipped.
+// offers a task to each peer in turn and stops at the first that accepts
+// returns that peer, so the caller knows whom to ask for the result; a peer that is offline or refuses is skipped
 func (a *Node) DispatchTask(ctx context.Context, peers []discovery.Peer, t *task.Task) (discovery.Peer, error) {
 	var errs []error
 
@@ -52,8 +51,8 @@ func (a *Node) DispatchTask(ctx context.Context, peers []discovery.Peer, t *task
 	return discovery.Peer{}, errors.Join(errs...)
 }
 
-// recordSentTask notes the dispatch so the result can be tied back to it.
-// Best-effort: without a store the task still runs, it just isn't tracked here.
+// saves that the task was sent, so its result can be matched to it later
+// without a database the task still runs, it just isn't tracked here
 func (a *Node) recordSentTask(t *task.Task, peer discovery.Peer) {
 	if a.history == nil {
 		return

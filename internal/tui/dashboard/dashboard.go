@@ -1,7 +1,5 @@
-// Package dashboard is the node's live TUI view. There's no coordinator to
-// poll and no fleet to admin — this is strictly a single node looking at
-// itself: Overview always, and Tokens only when this node has Tailscale API
-// credentials configured (see tailscaleapi.LoadCredentials) to mint with.
+// Package dashboard is the node's live screen about itself.
+// Overview is always there; Tokens only when this profile has a Tailscale API login to make keys with
 package dashboard
 
 import (
@@ -16,13 +14,11 @@ import (
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
-// refreshInterval is how often Overview's local CPU/mem sample ticks.
+// how often Overview reads this machine's CPU and memory
 const refreshInterval = 3 * time.Second
 
-// RefreshMsg ticks the local machine-stats poll. Exported so app.go can let
-// it reach Dashboard.Update even while an overlay (logs/cmdbar) would
-// otherwise swallow it — a self-rescheduling tick that ever gets swallowed
-// without being rescheduled dies permanently.
+// the tick that reads this machine's stats again; app.go passes it through even under an overlay
+// a tick that is swallowed is never scheduled again, so the stats would stop for good
 type RefreshMsg struct{}
 
 func refreshCmd() tea.Cmd {
@@ -38,14 +34,13 @@ const (
 	tabTokens
 )
 
-// chromeLines leaves room for the tab bar inside the body region App already
-// sized (App subtracts its own header/footer).
+// lines kept for the tab bar inside the space App gives the dashboard
 const chromeLines = 3
 
-// Dashboard is the dashboard's content model.
+// the dashboard: its tabs and which one is showing
 type Dashboard struct {
 	dataDir   string
-	hasTokens bool // true when tailscaleapi credentials are configured
+	hasTokens bool // true when there's a Tailscale API login
 	tab       tab
 
 	overview overviewModel
@@ -56,11 +51,8 @@ type Dashboard struct {
 	width, height int
 }
 
-// New builds the dashboard. tsClient is nil when this node has no Tailscale
-// API credentials configured — Tokens tab is simply absent then, same as a
-// pure worker having no fleet tabs in the old dashboard. lc is nil only if
-// tsnet's local client couldn't be obtained — Peers then shows its error
-// state instead of crashing.
+// builds the dashboard; with tsClient nil there's no Tokens tab
+// lc is nil only if the Tailscale client couldn't be had, and Peers then shows an error instead of crashing
 func New(nodeID, tailscaleIP, dataDir string, tsClient *tailscaleapi.Client, lc *local.Client, send SendFunc, transfers TransfersFunc) Dashboard {
 	d := Dashboard{
 		dataDir:   dataDir,
@@ -76,22 +68,22 @@ func New(nodeID, tailscaleIP, dataDir string, tsClient *tailscaleapi.Client, lc 
 	return d
 }
 
-// WithTrust connects the Peers tab to this node's inbound ACL. Separate from
-// New so the constructor doesn't grow another argument for every capability.
+// connects the Peers tab to who may send this node files
+// kept out of New so New doesn't gain an argument per feature
 func (d Dashboard) WithTrust(t TrustFuncs) Dashboard {
 	d.peers.trust = t
 	d.peers = d.peers.refresh()
 	return d
 }
 
-// WithTasks connects the Peers tab to this node's task ACL and dispatcher.
+// connects the Peers tab to who may send this node tasks, and to sending tasks
 func (d Dashboard) WithTasks(t TaskFuncs) Dashboard {
 	d.peers.tasks = t
 	d.peers = d.peers.refresh()
 	return d
 }
 
-// WithHistory connects the History tab to this node's transfer database.
+// connects the History tab to this node's transfer database
 func (d Dashboard) WithHistory(h HistoryFuncs) Dashboard {
 	d.history.funcs = h
 	d.history = d.history.refresh()
@@ -107,14 +99,13 @@ func (d *Dashboard) resize() {
 	d.tokens = d.tokens.WithSize(d.width, h)
 }
 
-// CapturesTextInput reports whether the current view is holding focus in a
-// free-form text field, so App knows not to treat keystrokes as its own
-// shortcuts. Peers holds focus while a file path is being typed.
+// whether a text field has the keyboard, e.g. Peers while a file path is typed
+// so App doesn't treat the keys as its own shortcuts
 func (d Dashboard) CapturesTextInput() bool {
 	return d.tab == tabPeers && d.peers.capturesTextInput()
 }
 
-// HelpText reports the current footer hint, for app.App's chrome.
+// the help line App shows in the footer
 func (d Dashboard) HelpText() string {
 	switch d.tab {
 	case tabTokens:
@@ -145,8 +136,7 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 		return d, nil
 	}
 
-	// Tab would otherwise switch away mid-keystroke while a file path is
-	// being typed, dropping the half-entered flow.
+	// not while typing a path, or tab would switch away and lose what was typed
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "tab" && !d.CapturesTextInput() {
 		switch d.tab {
 		case tabOverview:
@@ -172,15 +162,9 @@ func (d Dashboard) Update(msg tea.Msg) (Dashboard, tea.Cmd) {
 		return d, refreshCmd()
 	}
 
-	// peersRefreshMsg is self-rescheduling like RefreshMsg above, so it has
-	// to be handled here regardless of which tab is active — routing it
-	// only through the tab-switch below would drop the reschedule whenever
-	// Peers isn't the visible tab, killing the ticker for good. historyRefreshMsg
-	// is the same story for the History tab.
-	//
-	// manifestBuiltMsg and blobSentMsg need the same treatment for a
-	// different reason: each arrives once, whenever the work finishes, and
-	// switching tabs mid-hash or mid-transfer would throw the result away.
+	// handled whatever tab is showing: the Peers and History ticks would otherwise stop for good on another tab,
+	// and manifestBuiltMsg and blobSentMsg arrive only once, so switching tabs mid-hash
+	// or mid-transfer would throw the result away
 	switch msg.(type) {
 	case peersRefreshMsg, manifestBuiltMsg, blobSentMsg, transferTickMsg:
 		var cmd tea.Cmd
@@ -226,8 +210,7 @@ func (d Dashboard) View() string {
 
 	names := d.getTabNames()
 	if len(names) <= 1 {
-		// Single tab: no bar, straight to content — same as the old
-		// pure-worker view.
+		// only one tab, so no tab bar
 		return lipgloss.NewStyle().Width(width).Render(content)
 	}
 
@@ -249,12 +232,8 @@ func (d Dashboard) View() string {
 	hint := style.Help.Render("   ( press Tab to switch )")
 	bar := lipgloss.JoinHorizontal(lipgloss.Center, tabRow, hint)
 
-	// Pad the bar out to the full width so the joined block is always
-	// full-width and left-aligned. app.View centers the body horizontally,
-	// which is invisible on Overview because it already fills the width — but
-	// a narrower tab used to drag the tab bar into the middle of the screen
-	// along with its content. Anchoring the bar here keeps the nav in the same
-	// place on every tab regardless of how wide that tab's content is.
+	// pad the tab bar to full width so it stays put when switching tabs
+	// app.View centres the body, so a narrow tab would pull the bar to the middle
 	bar = lipgloss.NewStyle().Width(width).Render(bar)
 
 	return lipgloss.JoinVertical(lipgloss.Left, bar, content)

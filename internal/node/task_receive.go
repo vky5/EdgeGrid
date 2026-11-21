@@ -13,16 +13,14 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 )
 
-// receiveTask handles an inbound task offer: ACL, kind, slot, then runs it in
-// the background. The outcome is stored for the dispatcher to ask for later
-// (see receiveResult).
+// takes a task from a peer if allowed, runs it in the background, and saves the result for the sender to ask for
+// e.g. checks the task ACL, that this node can run the kind, and that it isn't busy
 func (a *Node) receiveTask(
 	who *apitype.WhoIsResponse,
 	hello discovery.Hello,
 	conn net.Conn,
 ) error {
-	// Identity for the ACL is what Tailscale attributes, never
-	// hello.NodeID — that's the peer's own claim.
+	// who the peer is comes from Tailscale, never from the ID in its hello
 	var stableID, label string
 	if who != nil && who.Node != nil {
 		stableID = string(who.Node.StableID)
@@ -41,8 +39,7 @@ func (a *Node) receiveTask(
 			log.Printf("task: refused %s: kind %q not runnable here", label, t.Kind)
 			return fmt.Errorf("this node cannot run task kind %q", t.Kind)
 		}
-		// Without a store the result could never be reported, so a task
-		// accepted here would fail silently.
+		// with nowhere to save the result, the sender could never learn how it went, so refuse
 		if a.history == nil {
 			log.Printf("task: refused %s: no database to record the result", label)
 			return errors.New("this node can't record results")
@@ -51,8 +48,7 @@ func (a *Node) receiveTask(
 			log.Printf("task: refused %s: already running a task", label)
 			return errors.New("this node is already running a task")
 		}
-		// Recorded before the verdict goes out: the dispatcher can only ask
-		// for the result after it has the verdict, so the row always exists.
+		// saved before the verdict, so the row exists by the time the sender can ask
 		if err := a.history.RecordTaskStart(db.RoleReceived, t.ID, stableID, label, t.Kind); err != nil {
 			a.taskSlot.Release()
 			log.Printf("task: refused %s: %v", label, err)
@@ -65,8 +61,7 @@ func (a *Node) receiveTask(
 	log.Printf("task: inbound offer from %s", label)
 	t, err := task.ProcessTask(conn, accept)
 	if err != nil {
-		// accept can succeed and the verdict write still fail — the slot
-		// must not stay claimed for a task that will never run.
+		// the verdict can fail after accept, so free the slot or it stays taken by a task that never runs
 		if claimed != nil {
 			a.taskSlot.Release()
 			a.finishTask(claimed, db.TaskFailed, nil, "verdict not delivered")
@@ -95,8 +90,8 @@ func (a *Node) receiveTask(
 	return nil
 }
 
-// finishTask stores the outcome. If this write fails the row stays running
-// until the next restart marks it lost, so say so loudly.
+// saves how a task ended
+// if this fails the row shows running until the next restart marks it lost, so it is logged
 func (a *Node) finishTask(t *task.Task, status db.TaskStatus, out []byte, errMsg string) {
 	if err := a.history.RecordTaskFinish(db.RoleReceived, t.ID, status, out, errMsg); err != nil {
 		log.Printf("task: %q: could not store its result, dispatcher will see it running: %v", t.ID, err)

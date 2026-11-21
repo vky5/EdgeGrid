@@ -67,8 +67,7 @@ func TestHistoryViewShowsEmptyState(t *testing.T) {
 	}
 }
 
-// The History tab's own tick must keep rescheduling even while another tab
-// is active, the same gotcha peersRefreshMsg already has to work around.
+// the History tick keeps going while another tab is showing, or it would stop for good
 func TestHistoryRefreshSurvivesBeingOnAnotherTab(t *testing.T) {
 	calls := 0
 	d := New("node", "1.2.3.4", t.TempDir(), nil, nil, nil, nil).WithHistory(HistoryFuncs{

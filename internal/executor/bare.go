@@ -8,11 +8,11 @@ import (
 	"time"
 )
 
-// maxOutput caps what a run can return — output is a small result, not bulk
-// data, and an unbounded buffer lets one chatty process exhaust memory.
+// the most output a run may print, 1 MiB; more is an error
+// output is a small result, so one noisy process can't eat all the memory
 const maxOutput = 1 << 20
 
-// Bare runs the entrypoint as a plain process, with this node's own privileges.
+// runs the task as a plain process, with this node's own permissions
 type Bare struct{}
 
 func (Bare) Name() RuntimeName { return RuntimeBare }
@@ -26,8 +26,7 @@ func (Bare) Run(ctx context.Context, workDir string, entrypoint []string, input 
 	stdout.limit, stderr.limit = maxOutput, 4<<10
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 
-	// Without WaitDelay, a grandchild still holding the pipes open keeps Wait
-	// blocked even after ctx cancellation kills the direct child.
+	// or a child process that keeps the output open would hang the run after it is cancelled
 	cmd.WaitDelay = 5 * time.Second
 
 	if err := cmd.Run(); err != nil {
@@ -39,10 +38,8 @@ func (Bare) Run(ctx context.Context, workDir string, entrypoint []string, input 
 	return stdout.Bytes(), nil
 }
 
-// cappedBuffer keeps the first limit bytes and drops the rest, still reporting
-// success so the process isn't killed by a write error mid-run. buf is a named
-// field, not embedded: embedding would promote bytes.Buffer.ReadFrom, which
-// io.Copy prefers over Write — bypassing the cap entirely.
+// keeps the first limit bytes and quietly drops the rest, so the process isn't killed by a write error
+// buf isn't embedded, or io.Copy would use bytes.Buffer.ReadFrom and write past the limit
 type cappedBuffer struct {
 	buf      bytes.Buffer
 	limit    int

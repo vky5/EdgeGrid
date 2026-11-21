@@ -11,16 +11,14 @@ import (
 	"github.com/edgegrid/edgegrid/internal/db"
 )
 
-// verdictTimeout bounds the manifest+verdict phase, before any chunk has
-// moved — both sides' work there is local, not network-bound.
+// how long the manifest and the yes-or-no answer may take, before any chunk moves
 const verdictTimeout = 15 * time.Second
 
-// idleTimeout bounds how long a transfer may go with no chunk moving.
-// Refreshed every chunk, so slow-but-alive never trips it, only stalled.
+// how long a transfer may go with no chunk moving
+// it restarts on every chunk, so only a stalled transfer hits it, not a slow one
 const idleTimeout = 60 * time.Second
 
-// refreshDeadline pushes conn's deadline out by idle, but never past
-// began+ceiling — idle resets on progress, the ceiling doesn't.
+// moves the connection's deadline one idle period ahead, but never past the overall limit
 func refreshDeadline(conn net.Conn, began time.Time, idle, ceiling time.Duration) {
 	next := time.Now().Add(idle)
 	if ceilingAt := began.Add(ceiling); next.After(ceilingAt) {
@@ -29,7 +27,7 @@ func refreshDeadline(conn net.Conn, began time.Time, idle, ceiling time.Duration
 	conn.SetDeadline(next) //nolint:errcheck // best-effort: a failed refresh just leaves the current deadline standing
 }
 
-// Direction says which way a transfer is moving relative to this node.
+// which way a transfer is going, from this node's side
 type Direction string
 
 const (
@@ -37,8 +35,7 @@ const (
 	Inbound  Direction = "receiving"
 )
 
-// Transfer is a snapshot of one in-flight or just-finished transfer, safe to
-// hand to the TUI. It is a copy — the live state is guarded by the registry.
+// a copy of one running or just-finished transfer, for the TUI to show
 type Transfer struct {
 	ID        uint64
 	Direction Direction
@@ -49,10 +46,8 @@ type Transfer struct {
 	Err       error
 }
 
-// transfer is the live entry. Progress fields are updated from the transfer
-// goroutine on every chunk, which is why they're atomics rather than plain
-// ints under the registry's lock — the callback must never block on a lock
-// the UI might be holding.
+// one transfer as it runs; progress is updated after every chunk
+// atomics, not the lock, so a chunk never waits on a lock the UI is holding
 type transfer struct {
 	id        uint64
 	direction Direction
@@ -91,8 +86,8 @@ func (t *transfer) snapshot() Transfer {
 	}
 }
 
-// progressFunc returns the callback handed to blob.Send/Receive. Stores
-// only, no locks — it runs once per chunk on the transfer goroutine.
+// the progress callback given to blob.Send and blob.Receive
+// it takes no locks, since it runs after every chunk
 func (t *transfer) progressFunc() blob.ProgressFunc {
 	return func(p blob.Progress) {
 		t.chunksDone.Store(int64(p.ChunksDone))
@@ -103,8 +98,7 @@ func (t *transfer) progressFunc() blob.ProgressFunc {
 	}
 }
 
-// rateMBps is n bytes over d in MB/s, for log lines. Zero for a zero-length
-// interval rather than +Inf.
+// speed in MB/s for log lines, e.g. 10 MB in 2s gives 5; 0 if no time passed
 func rateMBps(n int64, d time.Duration) float64 {
 	if d <= 0 {
 		return 0
@@ -112,8 +106,7 @@ func rateMBps(n int64, d time.Duration) float64 {
 	return float64(n) / (1 << 20) / d.Seconds()
 }
 
-// recordTransferStart writes a starting row to the history database. h may
-// be nil (no database). ok is false when there is no row to finish later.
+// adds a row for a transfer that just began; ok is false if there is no database or the write failed
 func recordTransferStart(h *db.Store, dir db.Direction, peerID, peerHostname, name string, size int64) (id int64, ok bool) {
 	if h == nil {
 		return 0, false
@@ -126,8 +119,7 @@ func recordTransferStart(h *db.Store, dir db.Direction, peerID, peerHostname, na
 	return id, true
 }
 
-// recordTransferFinish writes the outcome for a row recordTransferStart
-// made. refused gets its own status, distinct from a generic failure.
+// saves how a transfer ended; a refusal gets its own status, apart from other failures
 func recordTransferFinish(h *db.Store, id int64, ok bool, err error, refused bool, sha256 string) {
 	if !ok {
 		return
@@ -145,13 +137,12 @@ func recordTransferFinish(h *db.Store, id int64, ok bool, err error, refused boo
 	}
 }
 
-// finishedLinger is how long a completed transfer stays listed, so a
-// transfer that succeeds in under a poll interval is still seen.
+// how long a finished transfer stays on screen, 8s
+// so a transfer quicker than one TUI refresh is still seen
 const finishedLinger = 8 * time.Second
 
-// registry holds every transfer this node is running in either direction.
-// Inbound ones have no other home: nothing else on this node knows a peer
-// decided to send us something.
+// every transfer running on this node, both ways
+// nothing else on this node knows about incoming ones
 type registry struct {
 	mu     sync.Mutex
 	nextID uint64
@@ -167,8 +158,7 @@ func (r *registry) start(dir Direction, peer string) *transfer {
 	return t
 }
 
-// finish marks t done and schedules its removal, so the list drains itself
-// without the TUI having to dismiss anything.
+// marks a transfer done and removes it a few seconds later, so the TUI never has to clear it
 func (r *registry) finish(t *transfer, err error) {
 	t.mu.Lock()
 	t.err = err
@@ -197,7 +187,6 @@ func (r *registry) snapshot() []Transfer {
 	return out
 }
 
-// Transfers lists what this node is sending and receiving right now, plus
-// anything that finished in the last few seconds. Safe to call from the UI
-// goroutine.
+// what this node is sending and receiving now, plus anything that just finished
+// safe to call from the TUI
 func (a *Node) Transfers() []Transfer { return a.transfers.snapshot() }

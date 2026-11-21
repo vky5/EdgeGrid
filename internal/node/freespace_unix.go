@@ -4,8 +4,8 @@ package node
 
 import "golang.org/x/sys/unix"
 
-// Bavail, not Bfree: Bfree includes blocks reserved for root.
-// Field types differ between Linux and macOS, hence the conversions.
+// free space this user can write to, not counting space kept for root
+// the conversions are there because Linux and macOS use different number types
 func freeBytes(path string) (uint64, error) {
 	var st unix.Statfs_t
 	if err := unix.Statfs(path, &st); err != nil {

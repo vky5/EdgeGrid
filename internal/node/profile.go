@@ -1,8 +1,3 @@
-// Package profile manages named data-dir profiles under ~/.edgegrid, so
-// nodes can be identified by a short name ("primary", "worker-test")
-// instead of an arbitrary --data-dir path. Exactly one profile is "active"
-// at a time (tracked in ~/.edgegrid/app.json) and is used as the default
-// data dir when no --data-dir flag or DATA_DIR env var is given.
 package node
 
 import (
@@ -17,7 +12,7 @@ type appConfig struct {
 	Active string `json:"active"`
 }
 
-// Root returns ~/.edgegrid, creating it if it doesn't exist yet.
+// the folder that holds every profile, ~/.edgegrid, made if missing
 func ProfileRoot() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -32,8 +27,7 @@ func ProfileRoot() (string, error) {
 
 func appJSONPath(root string) string { return filepath.Join(root, "app.json") }
 
-// Active returns the currently active profile name, or "" if none has been
-// set (e.g. fresh install, or the profile system is simply unused).
+// the active profile's name, e.g. "primary", or "" if none is set
 func ActiveProfile() string {
 	root, err := ProfileRoot()
 	if err != nil {
@@ -50,9 +44,8 @@ func ActiveProfile() string {
 	return cfg.Active
 }
 
-// Dir returns the data directory for the active profile, or "" if no
-// profile is active — callers fall back to their own default (./data) in
-// that case, same as if the profile system didn't exist.
+// the active profile's data folder, or "" if none is active
+// callers then use their own default, ./data
 func ProfileDir() string {
 	name := ActiveProfile()
 	if name == "" {
@@ -65,7 +58,7 @@ func ProfileDir() string {
 	return filepath.Join(root, name)
 }
 
-// Use makes name the active profile, creating its data dir if it's new.
+// makes a profile the active one, creating its folder if it's new
 func UseProfile(name string) error {
 	if name == "" {
 		return fmt.Errorf("profile name required")
@@ -84,8 +77,7 @@ func UseProfile(name string) error {
 	return os.WriteFile(appJSONPath(root), data, 0600)
 }
 
-// List returns all known profile names (subdirectories of the profile
-// root), sorted alphabetically.
+// every profile name, one per folder in ~/.edgegrid, sorted
 func ListProfiles() ([]string, error) {
 	root, err := ProfileRoot()
 	if err != nil {
@@ -105,7 +97,7 @@ func ListProfiles() ([]string, error) {
 	return names, nil
 }
 
-// Delete removes the profile's data directory and resets active if it was deleted.
+// removes a profile's folder, and clears the active profile if it was that one
 func DeleteProfile(name string) error {
 	if name == "" {
 		return fmt.Errorf("profile name required")
