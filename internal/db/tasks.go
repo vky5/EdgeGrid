@@ -40,15 +40,36 @@ const FirstCheckAfter = 10 * time.Minute
 var ErrTaskNotFound = errors.New("db: task not found")
 
 // one saved task, as this node sees it
+// the same task has a row on both ends: "sent" on the sender, "received" on the node that ran it
+//
+//	// on alpha5-297b, which sent hello to bravo
+//	db.TaskRecord{
+//		TaskID: "3f2b8c1e-9a4d-4c71-b2e5-7d1f0a6c9e38", Role: "sent",
+//		PeerID: "nPvV3wCNTRL", PeerHostname: "bravo",      // the node running it
+//		Kind: "hello", Status: "done", Output: []byte("hello world\n"),
+//		StartedAt: 21:30:00, FinishedAt: 21:30:02,
+//	}
+//	// on bravo, the same task
+//	db.TaskRecord{
+//		TaskID: "3f2b8c1e-9a4d-4c71-b2e5-7d1f0a6c9e38", Role: "received",
+//		PeerID: "nK7xQ2CNTRL", PeerHostname: "alpha5-297b", // the sender, as Tailscale named it
+//		Kind: "hello", Status: "done", Output: []byte("hello world\n"),
+//	}
+//	// other states of a row
+//	Status: "running", FinishedAt: zero                                // still going, or the sender hasn't asked yet
+//	Status: "failed",  Error: "bare: [sh -c echo boom >&2; exit 3]: exit status 3 (stderr: \"boom\\n\")"
+//	Status: "failed",  Error: "verdict not delivered"                  // accepted, but the sender hung up before hearing yes
+//	Status: "lost",    Error: "node restarted"                         // was running when this node restarted
+//	Status: "lost",    Error: "bare: [sleep 30]: signal: killed (stderr: \"\")"   // node shut down mid-run
 type TaskRecord struct {
 	TaskID       string
 	Role         Role
 	PeerID       string
-	PeerHostname string
-	Kind         string
+	PeerHostname string // e.g. bravo
+	Kind         string // e.g. hello
 	Status       TaskStatus
 	Output       []byte
-	Error        string
+	Error        string // e.g. "node restarted" for a run lost to a restart
 	StartedAt    time.Time
 	FinishedAt   time.Time // zero while running
 	Attempts     int       // how many times we've gone back to ask, e.g. 2
@@ -57,7 +78,7 @@ type TaskRecord struct {
 
 // adds a row for a task that just started
 // the peer is the node running it for a sent task, and the sender for a received one
-// a sent task gets its first check 10 minutes from now (FirstCheckAfter)
+// e.g. sending hello to bravo at 09:00 adds a "sent" row: peer bravo, running, first check 09:10
 func (s *Store) RecordTaskStart(role Role, taskID, peerID, peerHostname, kind string) error {
 	now := time.Now().UTC()
 	var next sql.NullInt64
@@ -77,6 +98,11 @@ func (s *Store) RecordTaskStart(role Role, taskID, peerID, peerHostname, kind st
 
 // saves how a task ended; output is kept only when it is done
 // done output over 64 KB is saved as a failure instead of being cut
+//
+//	done,   12 bytes of output         → done, output kept
+//	done,   70000 bytes of output      → failed, no output, error "output exceeded 65536 bytes"
+//	failed, some output, "exit 3…"     → failed, output dropped, error kept
+//	a task ID with no row in that role → ErrTaskNotFound
 func (s *Store) RecordTaskFinish(role Role, taskID string, status TaskStatus, output []byte, errMsg string) error {
 	if status == TaskDone && len(output) > MaxTaskOutput {
 		status, output = TaskFailed, nil
@@ -112,6 +138,11 @@ func (s *Store) Task(role Role, taskID string) (TaskRecord, error) {
 }
 
 // finds a task this node ran, only if the one asking is the node that sent it
+//
+//	// on bravo, task 3f2b8c1e-… was sent by alpha5-297b (nK7xQ2CNTRL)
+//	ReceivedTaskFor("3f2b8c1e-…", "nK7xQ2CNTRL")   → its row
+//	ReceivedTaskFor("3f2b8c1e-…", "nT9wL4CNTRL")   → ErrTaskNotFound, alpha5-a720 didn't send it
+//	ReceivedTaskFor("a7d40e19-…", "nK7xQ2CNTRL")   → ErrTaskNotFound, no such task here
 func (s *Store) ReceivedTaskFor(taskID, requesterID string) (TaskRecord, error) {
 	return s.taskRow(
 		`SELECT `+taskColumns+` FROM tasks WHERE task_id = ? AND role = ? AND peer_id = ?`,
@@ -209,8 +240,13 @@ func readTask(row interface{ Scan(...any) error }) (TaskRecord, error) {
 	return r, nil
 }
 
-// marks tasks this node was running itself as lost; call once at startup
+// marks tasks this node was running itself as lost with the error "node restarted"; call once at startup
 // those runs died with the old process; tasks sent elsewhere stay running, since a restart here doesn't stop them
+//
+//	before                         after
+//	received  running              received  lost, "node restarted"
+//	sent      running              sent      running        // still running on the peer
+//	received  done                 received  done           // finished rows are left alone
 func (s *Store) ReconcileStaleTasks() error {
 	_, err := s.db.Exec(
 		`UPDATE tasks SET status = ?, error = ?, finished_at = ? WHERE status = ? AND role = ?`,

@@ -11,10 +11,10 @@ import (
 	"github.com/edgegrid/edgegrid/internal/db"
 )
 
-// how long the manifest and the yes-or-no answer may take, before any chunk moves
+// how long the manifest and the yes-or-no answer may take, 15s, before any chunk moves
 const verdictTimeout = 15 * time.Second
 
-// how long a transfer may go with no chunk moving
+// how long a transfer may go with no chunk moving, 60s
 // it restarts on every chunk, so only a stalled transfer hits it, not a slow one
 const idleTimeout = 60 * time.Second
 
@@ -36,10 +36,17 @@ const (
 )
 
 // a copy of one running or just-finished transfer, for the TUI to show
+//
+//	// alpha5-297b sending report.pdf to bravo, two of three chunks gone
+//	Transfer{ID: 1, Direction: "sending", Peer: "bravo",
+//		Progress: {ChunksDone: 2, ChunksTotal: 3, BytesDone: 8388608, BytesTotal: 10485760}}
+//	// alpha5-297b receiving from alpha5-a720, refused; it stays on screen 8s, then goes
+//	Transfer{ID: 2, Direction: "receiving", Peer: "alpha5-a720", Done: true,
+//		Err: "blob: refused: this node is not accepting files from you"}
 type Transfer struct {
 	ID        uint64
 	Direction Direction
-	Peer      string // hostname for outbound, self-reported node ID for inbound
+	Peer      string // the peer's hostname; for inbound, its self-reported node ID only if Tailscale gave no name
 	Progress  blob.Progress
 	Started   time.Time
 	Done      bool
@@ -119,7 +126,8 @@ func recordTransferStart(h *db.Store, dir db.Direction, peerID, peerHostname, na
 	return id, true
 }
 
-// saves how a transfer ended; a refusal gets its own status, apart from other failures
+// saves how a transfer ended, e.g. done, failed or refused
+// a refusal gets its own status, apart from other failures
 func recordTransferFinish(h *db.Store, id int64, ok bool, err error, refused bool, sha256 string) {
 	if !ok {
 		return

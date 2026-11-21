@@ -11,7 +11,7 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 )
 
-// how long one ask for a result may take; both messages are tiny
+// how long one ask for a result may take, 10s; both messages are tiny
 const resultTimeout = 10 * time.Second
 
 // answers a peer asking how a task it sent us went
@@ -33,7 +33,15 @@ func (a *Node) receiveResult(who *apitype.WhoIsResponse, conn net.Conn) {
 }
 
 // turns a saved task row into the answer sent back
-// a missing task and someone else's task get the same answer, so a peer can't guess IDs
+// a missing task and someone else's task both get {"status":"lost","error":"no record of this task"}
+// so a peer can't guess IDs
+//
+//	// on bravo; task 3f2b8c1e-… was sent by alpha5-297b (nK7xQ2CNTRL)
+//	lookupResult("3f2b8c1e-…", "nK7xQ2CNTRL")   → {Status: "running"} while it runs
+//	lookupResult("3f2b8c1e-…", "nK7xQ2CNTRL")   → {Status: "done", Output: "hello world\n"} after
+//	lookupResult("3f2b8c1e-…", "nT9wL4CNTRL")   → {Status: "lost", Error: "no record of this task"}, not theirs
+//	lookupResult("3f2b8c1e-…", "")              → the same lost answer: Tailscale didn't say who is asking
+//	lookupResult(any ID, any peer), no database   → the same lost answer
 func (a *Node) lookupResult(taskID, requester string) task.ResultResponse {
 	unknown := task.ResultResponse{Status: task.StatusLost, Error: task.NoRecord}
 	if a.history == nil || requester == "" {

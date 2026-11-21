@@ -119,6 +119,7 @@ func (m bootingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // the Tailscale login link in a tsnet log line, or ""
+// e.g. "... or go to: https://login.tailscale.com/a/701180b014f14" gives the link
 // tsnet prints it again every five seconds until login, so the last one seen is current
 func extractLoginURL(line string) string {
 	const marker = "https://login.tailscale.com"

@@ -15,8 +15,16 @@ import (
 	"github.com/edgegrid/edgegrid/internal/task"
 )
 
-// offers a task to each peer in turn and stops at the first that accepts
-// returns that peer, so the caller knows whom to ask for the result; a peer that is offline or refuses is skipped
+// offers a task to each peer in turn and returns the first that accepts, so the caller knows whom to ask for the result
+// it tries every peer it is given, online or not; callers drop offline ones first
+//
+//	peers = []discovery.Peer{alpha5-a720, bravo}, task kind "hello"
+//	alpha5-a720 says busy, bravo says yes   → bravo, nil; a "sent" row is saved for bravo
+//
+//	both say no → discovery.Peer{}, and an error of one line per peer:
+//		alpha5-a720: peer refused the transfer: this node is already running a task
+//		bravo: peer refused the transfer: this node cannot run task kind "hello"
+//		no peer accepted the task
 func (a *Node) DispatchTask(ctx context.Context, peers []discovery.Peer, t *task.Task) (discovery.Peer, error) {
 	var errs []error
 

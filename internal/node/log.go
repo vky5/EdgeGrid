@@ -10,7 +10,7 @@ import (
 
 const filename = "edgegrid.log"
 
-// where a node's log file is, inside its data folder
+// where a node's log file is, inside its data folder, e.g. ~/.edgegrid/<profile>/edgegrid.log
 func LogPath(dataDir string) string {
 	return filepath.Join(dataDir, filename)
 }
@@ -36,6 +36,7 @@ func SetupLog(dataDir string, tuiMode bool) (closeFn func() error, err error) {
 }
 
 // the last lines of a node's log file, for `edgegrid logs` and the TUI's /logs
+// e.g. `edgegrid logs -n 50` asks for the last 50
 func TailLog(dataDir string, maxLines int) (string, error) {
 	data, err := os.ReadFile(LogPath(dataDir))
 	if err != nil {

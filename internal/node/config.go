@@ -8,6 +8,20 @@ import (
 	"sync"
 )
 
+// where this node keeps its files and what it calls itself on the tailnet
+//
+//	// edgegrid dashboard, profile primary active, on a machine named alpha5
+//	node.Config{
+//		DataDir:           "~/.edgegrid/primary",   // full path in practice, from the home folder
+//		ProfileName:       "primary",
+//		TailscaleHostname: "alpha5-297b",           // machine name plus the suffix saved in hostname.suffix
+//	}
+//	// DATA_DIR=./data2 TS_HOSTNAME=bravo edgegrid dashboard
+//	node.Config{DataDir: "./data2", ProfileName: "", TailscaleHostname: "bravo"}
+//
+//	what can end up in ~/.edgegrid/primary/ (inbox, runs and the acl files only once used or hand-made)
+//	node.id  hostname.suffix  tailscale.ip  tsnet/  edgegrid.db  edgegrid.log  tasks.json
+//	runs/  inbox/  acl/  acl.default  acl-tasks/  acl-tasks.default  max_blob_bytes
 type Config struct {
 	DataDir     string // directory for node identity and token files (default ./data)
 	ProfileName string // profile that gave DataDir, "" if --data-dir or DATA_DIR was used instead
@@ -33,6 +47,11 @@ func taskCheckWorkers() int {
 
 // picks the data folder: --data-dir, then DATA_DIR, then the active profile, then ./data
 // the flag and env come first so they still win once a profile is active
+//
+//	--data-dir ./data2, DATA_DIR=/tmp/eg, profile primary   → "./data2"
+//	no flag, DATA_DIR=/tmp/eg, profile primary              → "/tmp/eg"
+//	no flag, no DATA_DIR, profile primary                   → "~/.edgegrid/primary" (made absolute)
+//	no flag, no DATA_DIR, no active profile                 → "./data"
 func ResolveDataDir(flagVal string) string {
 	dir, _ := resolveDataDir(flagVal)
 	return dir

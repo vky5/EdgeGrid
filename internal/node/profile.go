@@ -44,7 +44,7 @@ func ActiveProfile() string {
 	return cfg.Active
 }
 
-// the active profile's data folder, or "" if none is active
+// the active profile's data folder, e.g. ~/.edgegrid/primary, or "" if none is active
 // callers then use their own default, ./data
 func ProfileDir() string {
 	name := ActiveProfile()

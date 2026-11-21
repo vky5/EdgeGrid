@@ -16,6 +16,11 @@ const maxChunkSize = 64 << 20 // 64 MiB
 
 // how far a transfer has got
 // the totals come from the manifest, so they're known before the first chunk moves
+//
+//	// report.pdf, 10 MiB in 3 chunks
+//	{ChunksDone: 0, ChunksTotal: 3, BytesDone: 0,        BytesTotal: 10485760}                   // Frac() 0
+//	{ChunksDone: 2, ChunksTotal: 3, BytesDone: 8388608,  BytesTotal: 10485760}                   // Frac() 0.8
+//	{ChunksDone: 3, ChunksTotal: 3, BytesDone: 10485760, BytesTotal: 10485760, Verifying: true}  // 100%, checking the whole file
 type Progress struct {
 	ChunksDone  int
 	ChunksTotal int
@@ -27,7 +32,7 @@ type Progress struct {
 	Verifying bool
 }
 
-// how much is done, from 0 to 1; 0 for an empty file
+// how much is done, from 0 to 1, e.g. 512 MiB of a 1 GiB file gives 0.5; 0 for an empty file
 func (p Progress) Frac() float64 {
 	if p.BytesTotal <= 0 {
 		return 0
@@ -67,6 +72,7 @@ func ReadChunk(r io.Reader) (index int, data []byte, err error) {
 }
 
 // writes one chunk: [4-byte index][4-byte length][bytes]
+// e.g. chunk 3, 4 MiB long, starts with the bytes 00 00 00 03 00 40 00 00
 func WriteChunk(w io.Writer, index int, data []byte) error {
 	var hdr [8]byte
 	binary.BigEndian.PutUint32(hdr[0:4], uint32(index))
@@ -129,6 +135,7 @@ func Send(rw io.ReadWriter, path string, m *Manifest, onProgress ProgressFunc) e
 
 // decides whether to take an offered file, and where to save it
 // the error text is sent to the peer as the reason, so it must be safe for them to see
+// e.g. "this node is not accepting files from you"
 type AcceptFunc func(m *Manifest) (destPath string, err error)
 
 // reads the manifest, checks it, asks accept, answers yes or no, then reads every chunk

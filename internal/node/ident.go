@@ -17,7 +17,12 @@ type Identity struct {
 }
 
 // reads this node's ID from node.id, or makes and saves one the first time
-// the same ID is reused across restarts
+// the ID is reused across restarts, and is what this node sends as node_id in its hello
+//
+//	// ~/.edgegrid/primary/node.id
+//	{"node_id":"4be0c3a1d9f27e6b8a5c0d1e2f3a4b5c"}
+//
+//	node.id missing, empty or not JSON   → a new ID is made and saved over it
 func LoadOrCreateIdentity(dataDir string) (*Identity, error) {
 	if raw := LoadToken(dataDir, identFile); raw != "" {
 		var id Identity
@@ -72,6 +77,7 @@ func EnsurePollNonce(dataDir string) (string, error) {
 }
 
 // reads a saved value from a file in the data folder, or "" if there is none
+// e.g. hostname.suffix gives the 4-character suffix like 3f9a
 func LoadToken(dataDir, filename string) string {
 	data, err := os.ReadFile(filepath.Join(dataDir, filename))
 	if err != nil {

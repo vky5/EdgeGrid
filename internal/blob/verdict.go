@@ -21,6 +21,14 @@ const (
 const maxReasonLen = 1024
 
 // what the sender gets back when the receiver says no
+// tasks use it too, so a task refusal also starts "peer refused the transfer"
+//
+//	RefusedError{Reason: "this node is not accepting files from you"}
+//	    .Error() → "peer refused the transfer: this node is not accepting files from you"
+//	RefusedError{Reason: "this node is already running a task"}
+//	    .Error() → "peer refused the transfer: this node is already running a task"
+//	RefusedError{Reason: ""}
+//	    .Error() → "peer refused the transfer"
 type RefusedError struct {
 	Reason string
 }

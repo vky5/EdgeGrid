@@ -79,7 +79,7 @@ func renderMetricBar(width int, val float64) string {
 	if filled > width {
 		filled = width
 	}
-	// Color by load: cool → warm → hot
+	// colour by load: green, then blue from 30%, orange from 55%, red from 85%
 	col := lipgloss.Color("42") // green
 	if val >= 0.85 {
 		col = style.Danger

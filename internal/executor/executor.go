@@ -13,7 +13,13 @@ type RuntimeName string
 
 const RuntimeBare RuntimeName = "bare"
 
-// one kind of task: what to fetch and what to run
+// one kind of task: what to fetch and what to run, one entry in tasks.json
+//
+//	{"kind":"hello","runtime":"bare","entrypoint":["echo","hello world"]}   // prints "hello world\n"
+//	{"kind":"echo","runtime":"bare","entrypoint":["cat"]}                   // prints back the task's input
+//	{"kind":"needs-model","runtime":"bare","entrypoint":["true"],
+//	 "artifacts":[{"url":"https://…","sha256":"…","dest":"model.bin"}]}     // loads, but Supports says false
+//	{"kind":"x","entrypoint":["true"]}                                      // New fails: "executor: \"x\" has no runtime"
 type Definition struct {
 	Kind       string      `json:"kind"`
 	Runtime    RuntimeName `json:"runtime"`
@@ -38,10 +44,10 @@ type Runtime interface {
 type Executor struct {
 	defs     map[string]Definition
 	runtimes map[RuntimeName]Runtime
-	workRoot string // each run gets a fresh dir under here, removed afterwards
+	workRoot string // each run gets a fresh dir under here, removed afterwards, e.g. ~/.edgegrid/<profile>/runs
 }
 
-// reads the list of task kinds from a JSON file
+// reads the list of task kinds from a JSON file, e.g. ~/.edgegrid/<profile>/tasks.json
 func LoadDefinitions(path string) ([]Definition, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -89,6 +95,11 @@ func (d Definition) validate() error {
 
 // whether this node can run the kind right now
 // fetching artifacts isn't built yet, so a kind that needs them is refused
+//
+//	"hello"          → true
+//	"resnet"         → false, not in tasks.json
+//	"needs-model"    → false, it lists artifacts
+//	"in-container"   → false, its runtime "container" isn't one this node has
 func (e *Executor) Supports(kind string) bool {
 	d, ok := e.defs[kind]
 	if !ok || len(d.Artifacts) > 0 {
@@ -99,6 +110,14 @@ func (e *Executor) Supports(kind string) bool {
 }
 
 // runs the kind once; a panic in the runtime becomes an error, not a crashed node
+// each run gets its own empty folder, e.g. ~/.edgegrid/primary/runs/run-1234567, removed afterwards
+//
+//	Run(ctx, "hello", nil)          → "hello world\n", nil
+//	Run(ctx, "echo", {"x":1})       → {"x":1}, nil
+//	Run(ctx, "fail", nil)           → nil, "bare: [sh -c echo boom >&2; exit 3]: exit status 3 (stderr: \"boom\\n\")"
+//	Run(ctx, "resnet", nil)         → nil, "executor: kind \"resnet\" not supported on this node"
+//	prints more than 1 MiB          → nil, "bare: [...]: output exceeded 1048576 bytes"
+//	ctx cancelled mid-run           → nil, "bare: [sleep 30]: signal: killed (stderr: \"\")"
 func (e *Executor) Run(ctx context.Context, kind string, input []byte) (out []byte, err error) {
 	if !e.Supports(kind) {
 		return nil, fmt.Errorf("executor: kind %q not supported on this node", kind)

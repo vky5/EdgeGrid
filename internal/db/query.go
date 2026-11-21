@@ -7,9 +7,19 @@ import (
 )
 
 // one saved transfer, for the TUI to show
+//
+//	// alpha5-297b sent bravo a 10 MiB file in 2s
+//	{Direction: "outbound", PeerHostname: "bravo", FileName: "report.pdf", FileSize: 10485760,
+//		Status: "done", StartedAt: 21:30:00, FinishedAt: 21:30:02}            // Throughput() 5242880
+//	// old-laptop tried to send us a file without being allowed
+//	{Direction: "inbound", PeerHostname: "old-laptop", FileName: "movie.mkv", FileSize: 2147483648,
+//		Status: "refused", Error: "blob: refused: this node is not accepting files from you"} // Throughput() 0
+//	// alpha5-297b was receiving when it crashed; found at the next start
+//	{Direction: "inbound", PeerHostname: "alpha5-a720", FileName: "a.txt", FileSize: 4096,
+//		Status: "interrupted"}
 type TransferSummary struct {
 	Direction    Direction
-	PeerHostname string
+	PeerHostname string // e.g. alpha5-297b
 	FileName     string
 	FileSize     int64
 	Status       Status
@@ -34,6 +44,12 @@ func (t TransferSummary) Throughput() float64 {
 // bytes and speed for finished transfers, split by direction
 // only successful ones count, since others never confirmed how many bytes landed
 // speed is all bytes over all time, not an average of each transfer's speed
+//
+//	// done outbound rows: 10 MiB in 2s and 2 MiB in 2s; done inbound: none; one refused inbound row
+//	db.Totals{
+//		SentBytes: 12582912, SentCount: 2, SentThroughput: 3145728,   // 12 MiB over 4s, not the average of 5 and 1 MiB/s
+//		ReceivedBytes: 0, ReceivedCount: 0, ReceivedThroughput: 0,  // the refused row doesn't count
+//	}
 type Totals struct {
 	SentBytes, ReceivedBytes           int64
 	SentCount, ReceivedCount           int

@@ -14,7 +14,20 @@ import (
 )
 
 // takes a task from a peer if allowed, runs it in the background, and saves the result for the sender to ask for
-// e.g. checks the task ACL, that this node can run the kind, and that it isn't busy
+// the checks run in this order, and the first "no" is what the sender hears
+//
+//	alpha5-297b offers bravo...                     bravo answers
+//	not allowed in acl-tasks                        "this node is not accepting tasks from you"
+//	kind "resnet", not in tasks.json                "this node cannot run task kind \"resnet\""
+//	no database open                                "this node can't record results"
+//	another task still running                      "this node is already running a task"
+//	kind "hello", all fine                          yes; a "received" row is saved as running, then the run starts
+//
+//	how the run then ends up in the row
+//	hello prints "hello world\n"                   done, output "hello world\n"
+//	fail exits 3                                   failed, "bare: [sh -c echo boom >&2; exit 3]: exit status 3 (stderr: \"boom\\n\")"
+//	sleep is running when the node shuts down      lost, "bare: [sleep 30]: signal: killed (stderr: \"\")"
+//	sender hangs up before hearing yes             failed, "verdict not delivered", and nothing runs
 func (a *Node) receiveTask(
 	who *apitype.WhoIsResponse,
 	hello discovery.Hello,

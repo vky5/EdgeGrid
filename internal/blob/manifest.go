@@ -24,15 +24,28 @@ type ChunkInfo struct {
 }
 
 // a file described as a list of chunks, in order
+// sent as JSON before any chunk, so the receiver can say yes or no up front
+//
+//	// report.pdf, 10 MiB, with the default 4 MiB chunks
+//	{"name":"report.pdf","media_type":"application/octet-stream","size":10485760,"sha256":"9c1e…",
+//	 "chunks":[
+//	   {"index":0,"offset":0,"length":4194304,"sha256":"4f0a…"},
+//	   {"index":1,"offset":4194304,"length":4194304,"sha256":"b27d…"},
+//	   {"index":2,"offset":8388608,"length":2097152,"sha256":"e83c…"}]}   // the last chunk is shorter
+//
+//	// an empty file has no chunks at all
+//	{"name":"empty.txt","media_type":"application/octet-stream","size":0,
+//	 "sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","chunks":null}
 type Manifest struct {
 	Name      string      `json:"name,omitempty"` // the sender's filename, e.g. report.pdf
-	MediaType string      `json:"media_type"`
-	Size      int64       `json:"size"`   // total blob size, sum of chunk lengths
-	SHA256    string      `json:"sha256"` // hash of the whole file, catches a chunk written in the wrong place
+	MediaType string      `json:"media_type"`     // e.g. application/octet-stream
+	Size      int64       `json:"size"`           // total blob size, sum of chunk lengths
+	SHA256    string      `json:"sha256"`         // hash of the whole file, catches a chunk written in the wrong place
 	Chunks    []ChunkInfo `json:"chunks"`
 }
 
 // reads the file once and hashes every chunk and the whole file
+// e.g. a 10 MiB file with 4 MiB chunks gives 3 chunks: 4, 4 and 2 MiB
 func BuildManifest(path, mediaType string, chunkSize int) (*Manifest, error) {
 	if chunkSize <= 0 {
 		chunkSize = DefaultChunkSize
@@ -87,8 +100,15 @@ func BuildManifest(path, mediaType string, chunkSize int) (*Manifest, error) {
 const maxNameLen = 120
 
 // turns a filename from a peer into one safe file name, or "" if nothing usable is left
-// e.g. "../../.ssh/authorized_keys" gives "authorized_keys"
 // the peer can send anything, so a path in the name must never leave the inbox
+//
+//	"report.pdf"                    → "report.pdf"
+//	"../../.ssh/authorized_keys"    → "authorized_keys"
+//	`C:\Users\me\notes.txt`        → "notes.txt"     // Windows path, cut on Linux too
+//	".bashrc"                       → "bashrc"        // no hidden files
+//	"what?.txt"                     → "what.txt"      // ? is reserved on Windows
+//	"nul.txt"                       → "_nul.txt"      // NUL is a device on Windows
+//	".."                            → ""              // the inbox then calls it "blob"
 func SafeName(name string) string {
 	// split on both / and \ on every OS, since a Windows sender can send a backslash path to Linux
 	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
@@ -129,6 +149,13 @@ const maxChunks = 1 << 20 // 1048576 chunks
 
 // checks the chunks cover the file exactly once, in order, with no gaps
 // or a peer could say 1 KB and send a chunk at 1 TB, making a 1 TB file
+//
+//	the report.pdf manifest above                        → nil
+//	size -1                                              → "blob: manifest size -1 is negative"
+//	chunks listed 0, 2, 1                                → "blob: chunk at position 1 has index 2"
+//	chunk 1 at offset 5000000 instead of 4194304         → "blob: chunk 1 starts at 5000000, want 4194304"
+//	chunk 0 of 100 MiB                                   → "blob: chunk 0 length 104857600 exceeds max 67108864"
+//	size 1024 but one chunk of 4194304                   → "blob: chunks total 4194304 bytes, manifest size is 1024"
 func (m *Manifest) Validate() error {
 	if m.Size < 0 {
 		return fmt.Errorf("blob: manifest size %d is negative", m.Size)

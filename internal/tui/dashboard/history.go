@@ -12,10 +12,10 @@ import (
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
-// how often the History tab reads the transfer database again
+// how often the History tab reads the transfer database again, every 5s
 const historyRefreshInterval = 5 * time.Second
 
-// how many recent transfers are shown; there's no scrolling yet
+// how many recent transfers are shown, the last 20; there's no scrolling yet
 const historyLimit = 20
 
 // gives total bytes sent and received and the average speed, e.g. node.Node.HistoryTotals
@@ -36,6 +36,16 @@ func historyRefreshCmd() tea.Cmd {
 	return tea.Tick(historyRefreshInterval, func(time.Time) tea.Msg { return historyRefreshMsg{} })
 }
 
+// the History tab: totals on top, then the last 20 transfers, newest first
+//
+//	Transfer history
+//	sent 10.0 MiB (1, avg 5.0 MiB/s)    received 0 B (0, avg 0 B/s)
+//
+//	  → bravo            report.pdf           10.0 MiB  done  5.0 MiB/s
+//	  ← old-laptop       movie.mkv             2.0 GiB  refused
+//	  ← alpha5-a720      a.txt                 4.0 KiB  interrupted
+//
+//	refused and interrupted rows are red and left out of the totals
 type historyModel struct {
 	funcs  HistoryFuncs
 	totals db.Totals

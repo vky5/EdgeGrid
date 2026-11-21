@@ -10,11 +10,18 @@ import (
 	"time"
 )
 
-// what a Tailscale peer ID looks like
+// what a Tailscale peer ID looks like, e.g. nPvV3wCNTRL
 // it becomes a filename, so anything else is refused
 var stableIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 
 // one peer's saved decision, from either the file or the task ACL
+//
+//	// ~/.edgegrid/primary/acl/nPvV3wCNTRL holds allow=true, hostname=bravo, decided=2026-11-20T09:15:00Z
+//	ACLEntry{StableID: "nPvV3wCNTRL", Allow: true, Hostname: "bravo", Decided: 2026-11-20 09:15 UTC}
+//	// ~/.edgegrid/primary/acl/nP3mR8CNTRL holds allow=false, blocked with 'a' on the Peers tab
+//	ACLEntry{StableID: "nP3mR8CNTRL", Allow: false, Hostname: "old-laptop", Decided: 2026-11-19 22:10 UTC}
+//	// a file saying allow=yes counts as deny: only the exact text "true" allows
+//	ACLEntry{StableID: "nT9wL4CNTRL", Allow: false}
 type ACLEntry struct {
 	StableID string
 	Allow    bool

@@ -14,7 +14,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
-// how often Overview reads this machine's CPU and memory
+// how often Overview reads this machine's CPU and memory, every 3s
 const refreshInterval = 3 * time.Second
 
 // the tick that reads this machine's stats again; app.go passes it through even under an overlay
