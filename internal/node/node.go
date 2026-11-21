@@ -48,6 +48,7 @@ type Node struct {
 	nodeID      string
 
 	closeOnce sync.Once
+	lock      *profileLock // this profile's lock, held until Close
 	transfers registry
 	taskSlot  TaskSlot
 
@@ -93,6 +94,19 @@ const dialTimeout = 15 * time.Second
 
 // joins the tailnet and builds the Node
 func New(ctx context.Context, cfg *Config, onProgress func(string)) (*Node, error) {
+	// one EdgeGrid per profile, taken before anything touches the profile's folder
+	// so a second one can't share its Tailscale identity or mark its running tasks lost
+	lock, err := lockProfile(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	started := false
+	defer func() {
+		if !started {
+			lock.release()
+		}
+	}()
+
 	ts := &tsnet.Server{
 		Dir:      filepath.Join(cfg.DataDir, "tsnet"),
 		Hostname: cfg.TailscaleHostname,
@@ -148,7 +162,9 @@ func New(ctx context.Context, cfg *Config, onProgress func(string)) (*Node, erro
 	}
 
 	runCtx, stopRuns := context.WithCancel(context.Background())
+	started = true
 	return &Node{
+		lock:        lock,
 		cfg:         cfg,
 		tsnetServer: ts,
 		tailscaleIP: ip4.String(),
@@ -221,5 +237,6 @@ func (a *Node) Close() {
 				log.Printf("closing history database: %v", err)
 			}
 		}
+		a.lock.release() // last, once nothing uses the profile's folder any more
 	})
 }
