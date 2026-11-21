@@ -173,3 +173,35 @@ func TestCheckDuringShutdownNeverGivesUp(t *testing.T) {
 		t.Errorf("row = %+v, want still running: this node stopping says nothing about bravo", got)
 	}
 }
+
+// bravo shown offline but actually back, e.g. Tailscale a minute late to notice
+func TestCheckDialsAnOfflinePeerBeforeGivingUp(t *testing.T) {
+	offline := bravo
+	offline.Online = false
+	peers := map[string]discovery.Peer{bravo.ID: offline}
+
+	n := nodeWithStore(t)
+	rec := sentRow(t, n, 8*day)
+	ask, calls := answers(task.ResultResponse{Status: task.StatusDone, Output: []byte("42")}, nil)
+	n.checkSentTask(context.Background(), ask, rec, peers, time.Now())
+
+	if got := rowAfter(t, n, rec); *calls != 1 || got.Status != db.TaskDone || string(got.Output) != "42" {
+		t.Errorf("asked %d times, row = %+v, want one dial and the result saved", *calls, got)
+	}
+}
+
+// bravo offline and really gone: dialled once, then given up
+func TestCheckGivesUpOnAnOfflinePeerThatDoesntAnswer(t *testing.T) {
+	offline := bravo
+	offline.Online = false
+	peers := map[string]discovery.Peer{bravo.ID: offline}
+
+	n := nodeWithStore(t)
+	rec := sentRow(t, n, 8*day)
+	ask, calls := answers(task.ResultResponse{}, errors.New("connection refused"))
+	n.checkSentTask(context.Background(), ask, rec, peers, time.Now())
+
+	if got := rowAfter(t, n, rec); *calls != 1 || got.Status != db.TaskLost {
+		t.Errorf("asked %d times, row = %+v, want one dial then lost", *calls, got)
+	}
+}

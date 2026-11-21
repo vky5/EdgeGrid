@@ -59,7 +59,11 @@ peers := map[string]discovery.Peer{
 */
 func (a *Node) checkSentTask(ctx context.Context, ask askFunc, rec db.TaskRecord, peers map[string]discovery.Peer, now time.Time) {
 	peer, found := peers[rec.PeerID]
-	if found && peer.Online {
+	tooOld := shouldGiveUp(rec.StartedAt, now)
+
+	// an offline peer is still dialled once before giving up on its task
+	// so Tailscale being a minute late to say it's back can't lose a finished result
+	if found && (peer.Online || tooOld) {
 		resp, err := ask(ctx, peer, rec.TaskID)
 		switch {
 		case err == nil && resp.Status == task.StatusRunning:
@@ -74,7 +78,7 @@ func (a *Node) checkSentTask(ctx context.Context, ask askFunc, rec db.TaskRecord
 		log.Printf("task: %q: could not reach %s on check %d: %v", rec.TaskID, rec.PeerHostname, rec.Attempts, err)
 	}
 
-	if !shouldGiveUp(rec.StartedAt, now) {
+	if !tooOld {
 		return
 	}
 	log.Printf("task: %q: giving up, no answer from %s since %s", rec.TaskID, rec.PeerHostname, rec.StartedAt.Format(time.DateTime))
