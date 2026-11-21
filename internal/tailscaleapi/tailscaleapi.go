@@ -1,9 +1,5 @@
-// Package tailscaleapi is a minimal client for the one thing EdgeGrid needs
-// from Tailscale's management API: minting and revoking auth keys, so a
-// coordinator operator can hand a new device tailnet access without
-// inviting anyone as a tailnet member and without the joining person ever
-// seeing a Tailscale login screen (tsnet authenticates directly against the
-// key — see agent.NewAgent's tsnet.Server.AuthKey).
+// Package tailscaleapi makes and revokes Tailscale join keys through Tailscale's API.
+// so a coordinator operator can let a new device join without inviting anyone or showing a Tailscale login
 package tailscaleapi
 
 import (
@@ -21,9 +17,8 @@ import (
 
 const apiBase = "https://api.tailscale.com/api/v2"
 
-// Client mints/revokes Tailscale auth keys using OAuth client credentials
-// scoped to auth_keys. Only ever loaded for a primary coordinator — see
-// LoadCredentials.
+// makes and revokes join keys with this profile's Tailscale API login
+// only ever loaded for a primary coordinator
 type Client struct {
 	tailnet      string
 	clientID     string
@@ -35,16 +30,8 @@ type Client struct {
 	tokenExpiry time.Time
 }
 
-// LoadCredentials reads the OAuth client id/secret + tailnet name from
-// dataDir, written once by the operator into ts_api_client_id,
-// ts_api_client_secret, and ts_api_tailnet — same 0600-file convention as
-// every other credential in this directory (see node.SaveToken).
-// Returns nil if not configured; minting is opt-in, not required to run a
-// coordinator.
-//
-// ts_api_tag is loaded too, but not required to construct a Client — a
-// missing tag only blocks CreateKey (Tailscale requires a tag-scoped OAuth
-// client's keys to carry that tag), not RevokeKey, which needs no tag.
+// reads the Tailscale API login from dataDir, e.g. ts_api_client_id, or returns nil if it isn't set up
+// ts_api_tag is optional here: only making keys needs it, since Tailscale wants the tag on every key; revoking doesn't
 func LoadCredentials(dataDir string) *Client {
 	id := node.LoadToken(dataDir, "ts_api_client_id")
 	secret := node.LoadToken(dataDir, "ts_api_client_secret")
@@ -61,15 +48,12 @@ func LoadCredentials(dataDir string) *Client {
 	}
 }
 
-// accessToken exchanges the OAuth client credentials for a short-lived
-// bearer token, reusing it until shortly before it expires.
+// swaps the API login for a short-lived token, reusing it until just before it expires
 func (c *Client) accessToken() (string, error) {
 	if c.token != "" && time.Now().Before(c.tokenExpiry) {
 		return c.token, nil
 	}
-	// Standard OAuth2 client_credentials grant (RFC 6749) — verified against
-	// tailscale/tailscale-client-go's own WithOAuthClientCredentials, which
-	// hits this same relative path via golang.org/x/oauth2/clientcredentials.
+	// same request as tailscale-client-go's WithOAuthClientCredentials (verified)
 	form := url.Values{
 		"grant_type":    {"client_credentials"},
 		"client_id":     {c.clientID},
@@ -101,16 +85,13 @@ func (c *Client) accessToken() (string, error) {
 	return c.token, nil
 }
 
-// MintedKey is returned once, right after minting — Key is never available
-// again after this; nothing in EdgeGrid persists it.
+// a new join key, shown once; EdgeGrid never saves Key, so it can't be shown again
 type MintedKey struct {
 	ID  string
 	Key string
 }
 
-// CreateKey mints a single-use, pre-authorized auth key: a joining node
-// consumes it once (tsnet.Server.AuthKey), and it can't be reused
-// afterward, so one mint always maps to at most one device.
+// makes a one-use join key that needs no approval, so one key lets in at most one device
 func (c *Client) CreateKey() (*MintedKey, error) {
 	if c.tag == "" {
 		return nil, fmt.Errorf("no tag configured (set Tailscale API Tag in Settings) — " +
@@ -120,9 +101,7 @@ func (c *Client) CreateKey() (*MintedKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Field names/nesting verified against tailscale/tailscale-client-go's
-	// KeyCapabilities struct (devices.create.{reusable,ephemeral,tags,preauthorized}),
-	// the official Go client Tailscale itself maintains for this API.
+	// field names verified against tailscale-client-go's KeyCapabilities
 	reqBody, _ := json.Marshal(map[string]any{
 		"capabilities": map[string]any{
 			"devices": map[string]any{
@@ -162,8 +141,7 @@ func (c *Client) CreateKey() (*MintedKey, error) {
 	return &MintedKey{ID: body.ID, Key: body.Key}, nil
 }
 
-// RevokeKey deletes a key from the tailnet so it can no longer be used to
-// join. Revoking doesn't remove a device that already joined with it.
+// deletes a join key so it can't be used again; a device that already joined stays
 func (c *Client) RevokeKey(id string) error {
 	token, err := c.accessToken()
 	if err != nil {

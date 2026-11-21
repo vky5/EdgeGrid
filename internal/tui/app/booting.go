@@ -12,8 +12,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
-// bootEvent is one update from the background bring-up goroutine: a progress
-// line, or the terminal result.
+// one update from the background start-up: a progress line, or the final result
 type bootEvent struct {
 	line     string
 	nodeUp   *node.Node
@@ -22,28 +21,18 @@ type bootEvent struct {
 	done     bool
 }
 
-// RunBoot brings the node up while showing a progress screen, and returns once
-// tsnet is either up or has failed.
-//
-// The screen exists because of what tsnet does when a data dir is not yet
-// authenticated: ts.Up blocks, possibly forever, while emitting a login URL
-// through UserLogf every five seconds. With logs routed to a file for the
-// dashboard's sake, that URL was invisible and the terminal simply sat blank —
-// the node looked hung when it was only waiting to be told who it was.
+// starts the node behind a progress screen and returns once it is up or has failed
+// tsnet can wait forever for a browser login, and with logs going to a file
+// the login link was hidden, so without this screen the terminal looked hung
 func RunBoot(ctx context.Context, cfg *node.Config) (*node.Node, func() error, error) {
 	events := make(chan bootEvent, 64)
 
 	go func() {
-		// events is deliberately never closed. onProgress is handed to
-		// tsnet as UserLogf and outlives this function: when the node comes
-		// up, tsnet's printAuthURLLoop logs one last "AuthLoop: state is
-		// Running; done" from its own goroutine. A send on a closed channel
-		// panics even inside a select with a default, so closing here raced
-		// that line and crashed the process. The final bootEvent{done: true}
-		// below is what ends the boot screen, not a close.
+		// never closed: tsnet logs one more line ("AuthLoop: state is Running; done") after we're done,
+		// and a send on a closed channel crashes even inside a select with a default
+		// so the bootEvent{done: true} below ends the screen, not a close
 		onProgress := func(line string) {
-			// Non-blocking: tsnet calls this from its own goroutines and must
-			// never be stalled by a slow or finished UI.
+			// never wait here, or a slow or finished screen would stall tsnet
 			select {
 			case events <- bootEvent{line: line}:
 			default:
@@ -104,7 +93,7 @@ func (m bootingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" || msg.String() == "q" {
-			// Leaves the goroutine to unwind on the cancelled context.
+			// the start-up goroutine stops on its own once the context is cancelled
 			return m, tea.Quit
 		}
 		return m, nil
@@ -129,9 +118,8 @@ func (m bootingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// extractLoginURL pulls the interactive-login URL out of a tsnet log line.
-// tsnet reprints it every five seconds until authentication completes, so the
-// last one seen is always current.
+// the Tailscale login link in a tsnet log line, or ""
+// tsnet prints it again every five seconds until login, so the last one seen is current
 func extractLoginURL(line string) string {
 	const marker = "https://login.tailscale.com"
 	i := strings.Index(line, marker)

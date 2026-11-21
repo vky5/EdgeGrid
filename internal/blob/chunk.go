@@ -1,4 +1,5 @@
-// Responsible for sending and receiving blob packets over network
+// sends and receives files over a connection, one chunk at a time
+
 package blob
 
 import (
@@ -10,25 +11,23 @@ import (
 	"os"
 )
 
-// Max size one frame can commit in the memory at once (so that no one can claim 100GB at once or something like that)
+// the biggest chunk we'll hold in memory, 64 MiB, so a peer can't make us allocate 100 GB
 const maxChunkSize = 64 << 20 // 64 MiB
 
-// Progress reports how far a transfer has got. BytesTotal and ChunksTotal
-// come from the manifest, so both are known before the first chunk moves.
+// how far a transfer has got
+// the totals come from the manifest, so they're known before the first chunk moves
 type Progress struct {
 	ChunksDone  int
 	ChunksTotal int
 	BytesDone   int64
 	BytesTotal  int64
 
-	// Verifying is set once every chunk has arrived and the receiver is
-	// flushing to disk and re-reading the file to check its whole-blob hash.
-	// That takes real time on a large file, during which a progress bar at
-	// 100% looks like a hang.
+	// all chunks are in and the whole file is being checked
+	// that takes a while on a big file, so without this the bar sits at 100% and looks stuck
 	Verifying bool
 }
 
-// Frac returns completion in 0..1, or 0 for an empty blob.
+// how much is done, from 0 to 1; 0 for an empty file
 func (p Progress) Frac() float64 {
 	if p.BytesTotal <= 0 {
 		return 0
@@ -36,9 +35,7 @@ func (p Progress) Frac() float64 {
 	return float64(p.BytesDone) / float64(p.BytesTotal)
 }
 
-// ProgressFunc is called once per chunk. It runs on the transfer goroutine,
-// so it must not block — push to a counter or a channel, don't render.
-// A nil ProgressFunc is fine and costs nothing.
+// called after each chunk; it must return fast, or it slows the transfer
 type ProgressFunc func(Progress)
 
 func (f ProgressFunc) report(p Progress) {
@@ -47,7 +44,7 @@ func (f ProgressFunc) report(p Progress) {
 	}
 }
 
-// Reads one chunk at a time
+// reads one chunk: index, length, then the bytes
 func ReadChunk(r io.Reader) (index int, data []byte, err error) {
 	var header [8]byte // [index][length]
 	if _, err := io.ReadFull(r, header[:]); err != nil {
@@ -69,7 +66,7 @@ func ReadChunk(r io.Reader) (index int, data []byte, err error) {
 	return int(idx), buf, nil
 }
 
-// WriteChunk writes one framed chunk: [4-byte index][4-byte length][bytes]
+// writes one chunk: [4-byte index][4-byte length][bytes]
 func WriteChunk(w io.Writer, index int, data []byte) error {
 	var hdr [8]byte
 	binary.BigEndian.PutUint32(hdr[0:4], uint32(index))
@@ -83,18 +80,17 @@ func WriteChunk(w io.Writer, index int, data []byte) error {
 	return nil
 }
 
-// Send writes the manifest, waits for the receiver's verdict, then writes
-// every chunk of path in order. A receiver that declines yields a
-// *RefusedError before any chunk moves. onProgress may be nil.
+// sends the manifest, waits for yes or no, then sends every chunk in order
+// a no comes back as *RefusedError before any chunk moves
 //
-// rw is one handle onto two one-way pipes, and the two sides take turns:
+// the two sides take turns on one connection:
 //
 //	sender                                      receiver
 //	WriteManifest ──── outgoing pipe ────────>  ReadManifest
 //	ReadVerdict   <─── incoming pipe ─────────  WriteVerdict   (parks here)
 //	WriteChunk x N ─── outgoing pipe ────────>  ReadChunk x N
 //
-// Read more: docs/reading/two-pipes.md, and the notes at the bottom of this file.
+// more: docs/reading/two-pipes.md
 func Send(rw io.ReadWriter, path string, m *Manifest, onProgress ProgressFunc) error {
 	if err := WriteManifest(rw, m); err != nil { // manifest is sent first
 		return err
@@ -131,23 +127,19 @@ func Send(rw io.ReadWriter, path string, m *Manifest, onProgress ProgressFunc) e
 	return nil
 }
 
-// AcceptFunc is a receiver's policy. It sees the manifest a peer is offering
-// and returns where to write the blob, or an error to refuse. The error's text
-// is sent to the peer as the reason, so it must be safe for them to see.
+// decides whether to take an offered file, and where to save it
+// the error text is sent to the peer as the reason, so it must be safe for them to see
 type AcceptFunc func(m *Manifest) (destPath string, err error)
 
-// Receive reads the manifest, checks it is self-consistent, asks accept
-// whether to take it, answers the sender with a verdict, then reads every
-// chunk — verifying each one before it touches disk. onProgress may be nil.
-// It is the mirror image of Send: see the diagram there.
+// reads the manifest, checks it, asks accept, answers yes or no, then reads every chunk
+// each chunk is checked against its hash before it's written (the other half of Send)
 func Receive(rw io.ReadWriter, accept AcceptFunc, onProgress ProgressFunc) (*Manifest, error) {
 	m, err := ReadManifest(rw)
 	if err != nil {
 		return nil, err
 	}
 
-	// Refuse before allocating anything: Size and Offset drive Truncate and
-	// WriteAt below, so a manifest that lies about them is rejected here.
+	// check the manifest before making the file, since its sizes decide how big the file gets
 	if err := m.Validate(); err != nil {
 		_ = WriteVerdict(rw, err)
 		return nil, err
@@ -181,11 +173,10 @@ func Receive(rw io.ReadWriter, accept AcceptFunc, onProgress ProgressFunc) (*Man
 	seen := make(map[int]bool, len(m.Chunks))
 	var got int64
 
-	// Tell the caller the size up front, so a receiver can show a full-width
-	// bar at 0% instead of nothing until the first chunk lands.
+	// report the size up front, so the bar shows at 0% before the first chunk lands
 	onProgress.report(Progress{ChunksTotal: len(m.Chunks), BytesTotal: m.Size})
 
-	// Read exactly as many frames as the manifest promised, no more.
+	// read exactly as many chunks as the manifest promised, no more
 	for i := 0; i < len(m.Chunks); i++ {
 		idx, data, err := ReadChunk(rw)
 		if err != nil {
@@ -237,9 +228,8 @@ func Receive(rw io.ReadWriter, accept AcceptFunc, onProgress ProgressFunc) (*Man
 
 }
 
-// verifyWhole re-reads the finished file and check it against the manifest's
-// whole blob hash. Per chunk hashes prove each piece is intact; only this catches if a piece
-// is landing at wrong place
+// re-reads the finished file and checks it against the whole-file hash
+// chunk hashes prove each piece is right; only this catches a piece written in the wrong place
 func verifyWhole(f *os.File, want string) error {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return err
@@ -257,38 +247,4 @@ func verifyWhole(f *os.File, want string) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Notes: how the bytes move
-//
-// A 4 TB file never sits in memory, and never "sits in the TCP stream". Four
-// ideas make that true. Each has a full write-up, with diagrams, under
-// docs/reading/ — start at docs/reading/README.md.
-//
-// 1. Two pipes — docs/reading/two-pipes.md
-//    A connection is two independent one-way byte streams. net.Conn is one
-//    handle onto both, and io.ReadWriter is just the interface saying "has
-//    Read and Write" — which is why Send and Receive run unchanged over a
-//    real tailnet connection and over net.Pipe() in tests. The sender's wait
-//    for the verdict is nothing special: ReadVerdict is an io.ReadFull on a
-//    pipe with nothing in it yet, and the goroutine parks until bytes
-//    arrive, the connection closes, or the deadline passes.
-//
-// 2. Framing — docs/reading/framing.md
-//    TCP has no message boundaries, so every frame carries its own length,
-//    and io.ReadFull reads exactly that many bytes and never more. That is
-//    what keeps the cursor aligned across ReadManifest, ReadVerdict and
-//    every ReadChunk.
-//
-// 3. Flow control — docs/reading/flow-control.md
-//    Send reads one chunk from disk at a time, and Write blocks when the
-//    receiver has no room, so a slow receiver slows the sender with nothing
-//    written to make it so. Live memory is about one chunk buffer per end.
-//
-// 4. The receive window — docs/reading/receive-window.md
-//    The number the receiver's stack advertises, which is what actually makes
-//    Write block. Owned by the receiver, never the sender.
-//
-// The one rule to carry into any new message: two pipes rule out byte-level
-// collisions, not deadlock. A message both sides could send at once needs an
-// explicit order or its own reader goroutine — see two-pipes.md.
-// ---------------------------------------------------------------------------
+// how the bytes move (two pipes, framing, flow control): docs/reading/README.md

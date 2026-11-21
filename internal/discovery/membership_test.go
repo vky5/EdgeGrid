@@ -17,9 +17,7 @@ import (
 	"tailscale.com/types/views"
 )
 
-// fakeStatusTransport intercepts local.Client's HTTP call and returns a
-// canned status, so Snapshot can be tested against the real client type
-// with no live tsnet.Server or tailscaled socket involved.
+// a fake Tailscale status reply, so Snapshot runs against the real client with no tailnet
 type fakeStatusTransport struct{ status *ipnstate.Status }
 
 func (f fakeStatusTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -54,8 +52,7 @@ func peerStatus(id, hostname string, ip string, online bool, lastSeen time.Time,
 	return ps
 }
 
-// nodeKey returns a fresh random public key, distinct on every call — good
-// enough as a map key for tests, which only need uniqueness, not identity.
+// a new random key on every call; tests only need it to be different each time
 func nodeKey() key.NodePublic { return key.NewNode().Public() }
 
 func TestSnapshotFiltersByTagAndSortsByID(t *testing.T) {
@@ -81,7 +78,7 @@ func TestSnapshotFiltersByTagAndSortsByID(t *testing.T) {
 		t.Errorf("not sorted by ID: got %q, %q", got[0].ID, got[1].ID)
 	}
 
-	// Online peer.
+	// online peer
 	z := got[1]
 	if !z.Online {
 		t.Error("z-edge should be online")
@@ -93,7 +90,7 @@ func TestSnapshotFiltersByTagAndSortsByID(t *testing.T) {
 		t.Errorf("IP = %q", z.IP)
 	}
 
-	// Offline peer carries LastSeen.
+	// offline peer keeps its last-seen time
 	a := got[0]
 	if a.Online {
 		t.Error("a-edge should be offline")
@@ -138,11 +135,10 @@ func TestPeerRoute(t *testing.T) {
 		{"direct path", Peer{Online: true, CurAddr: "192.168.1.5:41641"}, "direct"},
 		{"derp relay", Peer{Online: true, Relay: "mum"}, "relay"},
 		{"peer relay", Peer{Online: true, PeerRelay: "10.0.0.2:3478:1"}, "peer relay"},
-		// A direct address wins over a relay: both can be reported while
-		// Tailscale is upgrading, and the direct one is what carries traffic.
+		// direct wins over relay: both can show while Tailscale is switching, and direct carries the traffic
 		{"direct beats relay", Peer{Online: true, CurAddr: "1.2.3.4:5", Relay: "mum"}, "direct"},
 		{"no path yet", Peer{Online: true}, ""},
-		// Stale path data on an offline peer must not be shown as live.
+		// old path data on an offline peer must not show as live
 		{"offline", Peer{Online: false, CurAddr: "1.2.3.4:5"}, ""},
 	}
 	for _, c := range cases {

@@ -1,3 +1,2 @@
-// Package executor runs tasks. Each Run call is one execution; the Definition
-// for a kind says what to fetch and what to run, a Runtime does the running.
+// Package executor runs tasks: a Definition says what to run for each kind, and a Runtime runs it.
 package executor

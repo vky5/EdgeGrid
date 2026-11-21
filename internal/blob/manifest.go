@@ -11,12 +11,11 @@ import (
 	"unicode/utf8"
 )
 
-// DefaultChunkSize is used when BuildManifest isn't given an explicit one.
-// 4 MiB sits in the same range BitTorrent and OCI registries typically use.
+// the chunk size when none is given, 4 MiB, e.g. a 1 GiB file is 256 chunks
+// about the same as BitTorrent and OCI registries use
 const DefaultChunkSize = 4 << 20 // 4 MiB
 
-// ChunkInfo is one entry in a Manifest: what a chunk should hash to and how
-// big it is, decided before any transfer happens.
+// one chunk in a manifest: where it sits, how big it is and what it should hash to
 type ChunkInfo struct {
 	Index  int    `json:"index"`
 	Offset int64  `json:"offset"` // byte offset into the original blob (0 + n * DefaultChunkSize)
@@ -24,17 +23,16 @@ type ChunkInfo struct {
 	SHA256 string `json:"sha256"` // hex-encoded
 }
 
-// Manifest describes one blob as an ordered list of chunks.
+// a file described as a list of chunks, in order
 type Manifest struct {
-	Name      string      `json:"name,omitempty"` // Name is the sender's own filename for this blob
+	Name      string      `json:"name,omitempty"` // the sender's filename, e.g. report.pdf
 	MediaType string      `json:"media_type"`
 	Size      int64       `json:"size"`   // total blob size, sum of chunk lengths
-	SHA256    string      `json:"sha256"` // hash of the whole blob — belt-and-suspenders on top of per-chunk hashes
+	SHA256    string      `json:"sha256"` // hash of the whole file, catches a chunk written in the wrong place
 	Chunks    []ChunkInfo `json:"chunks"`
 }
 
-// BuildManifest reads path once, start to finish, and produces a Manifest
-// every chunk hashed, plus a hash of the whole blob
+// reads the file once and hashes every chunk and the whole file
 func BuildManifest(path, mediaType string, chunkSize int) (*Manifest, error) {
 	if chunkSize <= 0 {
 		chunkSize = DefaultChunkSize
@@ -53,11 +51,7 @@ func BuildManifest(path, mediaType string, chunkSize int) (*Manifest, error) {
 	index := 0
 
 	for {
-		// io.ReadFull tries to fill buf completely. It returns
-		// ErrUnexpectedEOF for a short final read (the last, smaller
-		// chunk) and EOF only once there's truly nothing left — both are
-		// expected end-of-file conditions here, not errors, which is why
-		// they're handled below instead of returned.
+		// a short last chunk and the end of the file both mean we're done, not an error
 		n, err := io.ReadFull(f, buf)
 		if n > 0 {
 			chunkHash := sha256.Sum256(buf[:n])
@@ -88,19 +82,15 @@ func BuildManifest(path, mediaType string, chunkSize int) (*Manifest, error) {
 	}, nil
 }
 
-// maxNameLen bounds a received filename well under the 255-byte limit most
-// filesystems impose, leaving room for a prefix and extension.
+// the longest filename we keep from a peer, 120 bytes
+// well under most filesystems' 255, leaving room for a prefix and extension
 const maxNameLen = 120
 
-// SafeName turns a peer-supplied filename into one that is safe to use as a
-// single path component. Name comes off the wire, so it can be anything:
-// "../../.ssh/authorized_keys", "C:\Windows\x", a NUL byte, an empty string.
-// It returns "" when nothing usable is left, in which case the caller falls
-// back to a name of its own.
+// turns a filename from a peer into one safe file name, or "" if nothing usable is left
+// e.g. "../../.ssh/authorized_keys" gives "authorized_keys"
+// the peer can send anything, so a path in the name must never leave the inbox
 func SafeName(name string) string {
-	// Treat both separators as separators no matter which OS this is:
-	// a sender on Windows can hand a Linux receiver a backslash path, and
-	// filepath.Base on Linux would leave the backslashes in place.
+	// split on both / and \ on every OS, since a Windows sender can send a backslash path to Linux
 	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
 		name = name[i+1:]
 	}
@@ -117,8 +107,7 @@ func SafeName(name string) string {
 	out := strings.TrimSpace(b.String())
 	out = strings.Trim(out, ".") // no "..", no hidden-file trick, no trailing dot on Windows
 
-	// CON, NUL, COM1 and friends are device names on Windows, with or
-	// without an extension: opening "nul.txt" there does not create a file.
+	// CON, NUL, COM1 and so on are devices on Windows, even as "nul.txt", so prefix them
 	stem, _, _ := strings.Cut(out, ".")
 	if windowsReserved[strings.ToUpper(stem)] {
 		out = "_" + out
@@ -126,7 +115,7 @@ func SafeName(name string) string {
 
 	if len(out) > maxNameLen {
 		out = out[:maxNameLen]
-		// Don't leave a split multi-byte rune at the cut.
+		// don't cut a multi-byte character in half
 		for len(out) > 0 && !utf8.ValidString(out) {
 			out = out[:len(out)-1]
 		}
@@ -134,16 +123,12 @@ func SafeName(name string) string {
 	return out
 }
 
-// maxChunks bounds how many chunks a manifest may declare. maxManifestSize
-// already caps the JSON, but a compact manifest could still list millions of
-// tiny chunks and make the receiver build a map that large.
+// the most chunks a manifest may list, about a million
+// a small manifest could still list millions of tiny chunks and make us build a huge map
 const maxChunks = 1 << 20 // 1048576 chunks
 
-// Validate checks that a manifest describes one contiguous, self-consistent
-// blob. A manifest arrives from a peer, and Receive trusts it for two things
-// that would otherwise be attack surface: how big to make the file, and
-// where each chunk gets written. Without this, a small Size plus a chunk at
-// offset 1 TB makes WriteAt extend the file to a terabyte.
+// checks the chunks cover the file exactly once, in order, with no gaps
+// or a peer could say 1 KB and send a chunk at 1 TB, making a 1 TB file
 func (m *Manifest) Validate() error {
 	if m.Size < 0 {
 		return fmt.Errorf("blob: manifest size %d is negative", m.Size)

@@ -27,8 +27,7 @@ func TestTaskSlotReleaseOnAFreeSlotDoesNotPanic(t *testing.T) {
 	}
 }
 
-// The real point of TaskSlot: under concurrent claims, exactly one wins.
-// This is what originally caught the check-before-lock race.
+// when many tasks claim the slot at once, exactly one wins
 func TestTaskSlotExactlyOneConcurrentClaimWins(t *testing.T) {
 	var ts TaskSlot
 	var wg sync.WaitGroup

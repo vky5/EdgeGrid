@@ -2,15 +2,14 @@ package node
 
 import "sync"
 
-// TaskSlot is whether this node is currently running a task — in-memory
-// only, since nothing survives a restart to be busy with anyway.
+// whether this node is running a task right now
+// kept only in memory, since no task survives a restart
 type TaskSlot struct {
 	mu   sync.Mutex
 	busy bool
 }
 
-// TryClaim atomically marks the slot busy if it was free. false means
-// something else already claimed it first.
+// marks the slot busy if it's free; false means another task got it first
 func (ts *TaskSlot) TryClaim() bool {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
@@ -22,7 +21,7 @@ func (ts *TaskSlot) TryClaim() bool {
 	return true
 }
 
-// Release frees the slot for the next task.
+// frees the slot for the next task
 func (ts *TaskSlot) Release() {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()

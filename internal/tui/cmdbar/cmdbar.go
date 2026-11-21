@@ -1,7 +1,4 @@
-// Package cmdbar is the "/"-triggered command line shown at the bottom of
-// every TUI screen — one component shared by onboarding and the dashboard,
-// so "/logs" (and whatever commands follow it) behaves identically no
-// matter which screen it's opened from.
+// Package cmdbar is the command line that "/" opens at the bottom of the TUI, e.g. /logs.
 package cmdbar
 
 import (
@@ -16,12 +13,12 @@ import (
 
 var (
 	boxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(style.Accent).
-			Padding(0, 1)
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(style.Accent).
+		Padding(0, 1)
 )
 
-// SubmitMsg is emitted when the user presses enter with a non-empty command.
+// sent when the user presses enter on a command that isn't empty
 type SubmitMsg struct {
 	Command string
 }
@@ -35,8 +32,8 @@ type Model struct {
 	width         int
 }
 
-// New builds a command bar that autocompletes against the given command
-// names (without the leading "/") — e.g. New("onboard", "logs").
+// a command bar that suggests from these command names, given without the "/"
+// e.g. New("logs", "profile")
 func New(commands ...string) Model {
 	ti := textinput.New()
 	ti.Prompt = "/"
@@ -53,8 +50,7 @@ func New(commands ...string) Model {
 
 func (m Model) Active() bool { return m.active }
 
-// Activate focuses the bar. Call when the owning screen sees a "/" key
-// press and the bar isn't already active.
+// opens the bar; the screen calls it when "/" is pressed and the bar is closed
 func (m Model) Activate() (Model, tea.Cmd) {
 	m.active = true
 	m.input.SetValue("")
@@ -81,9 +77,8 @@ func (m Model) updateSuggestions() Model {
 	return m
 }
 
-// Update should only be called while Active() is true — the owning screen
-// is responsible for routing "/" itself (see Activate) and for not
-// forwarding other keys to its own screen logic while this is active.
+// handles keys only while the bar is open; the screen handles "/" itself
+// and must not also act on the keys the bar is using
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	if wm, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width = wm.Width
@@ -148,8 +143,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
-// View renders the active input line plus matching command suggestions, or
-// a dim hint when inactive.
+// the input line and matching commands when open, or a dim hint when closed
 func (m Model) View() string {
 	if !m.active {
 		return style.Help.Render("/ command")

@@ -10,8 +10,7 @@ import (
 	"github.com/edgegrid/edgegrid/internal/blob"
 )
 
-// The ACL decides which peers may send this node a blob. It lives in the
-// profile, one small file per peer:
+// the folder that says which peers may send this node files, one small file per peer:
 //
 //	<DataDir>/acl/<StableID>
 //
@@ -20,32 +19,21 @@ import (
 //	hostname=alpha5-297b
 //	decided=2026-09-20T01:12:00Z
 //
-// One file per peer, not one file holding a list, so adding or removing a
-// peer is a single create or delete with nothing to parse and rewrite — the
-// read-modify-write shape that already produced a real race on the global
-// app.json. Plain key=value with # comments rather than JSON or YAML: it
-// allows a note on why a peer is trusted, and needs no third-party parser.
-//
-// Entries are keyed by Tailscale's StableID, which the control plane
-// attributes via WhoIs. Never by Hello.NodeID: that is the peer's own
-// claim, and an allowlist keyed on a value the peer chooses is no allowlist.
+// why one file per peer, and why key=value: docs/blob-transfer.md
+// keyed by Tailscale's ID for the peer, never the ID the peer sends, or a peer could pick its own key
 const aclDir = "acl"
 
-// aclDefaultFile holds the policy for peers with no entry: "allow" or
-// "deny". Absent or unrecognised means deny.
+// the rule for peers with no file: "allow" or "deny"; missing or anything else means deny
 const aclDefaultFile = "acl.default"
 
-// maxBlobBytesFile optionally overrides defaultMaxBlobBytes.
+// a file holding a byte count that replaces the default size limit
 const maxBlobBytesFile = "max_blob_bytes"
 
-// defaultMaxBlobBytes caps how large a blob a peer may push. It is a guess,
-// not derived from anything — big enough for a movie, small enough that one
-// peer can't fill a disk with a single declared size. Override per profile
-// by writing a byte count to max_blob_bytes.
+// the biggest file a peer may send, 10 GB, a guess; max_blob_bytes overrides it
+// big enough for a movie, small enough that one peer can't fill a disk
 const defaultMaxBlobBytes int64 = 10 << 30
 
-// fileACL is the file-transfer ACL's storage. See aclstore.go for the
-// shared mechanics, and task_acl.go for the separate task ACL.
+// who may send this node files; who may send tasks is kept apart in task_acl.go
 var fileACL = aclKind{dir: aclDir, defaultFile: aclDefaultFile}
 
 func aclLookup(dataDir, stableID string) (ACLEntry, bool, error) {
@@ -68,8 +56,8 @@ func maxBlobBytes(dataDir string) int64 {
 	return defaultMaxBlobBytes
 }
 
-// TrustedPeers reports every recorded decision as StableID -> allowed, for
-// the TUI. Peers with no entry are absent, not false.
+// every saved file decision, peer ID to allowed, for the TUI
+// a peer with no file is missing from the map, not false
 func (a *Node) TrustedPeers() map[string]bool {
 	out := map[string]bool{}
 	for id, e := range aclList(a.cfg.DataDir) {
@@ -78,15 +66,13 @@ func (a *Node) TrustedPeers() map[string]bool {
 	return out
 }
 
-// SetTrust records whether stableID may send this node blobs. hostname is
-// only for display — the entry is keyed on stableID.
+// saves whether a peer may send this node files; the hostname is only for display
 func (a *Node) SetTrust(stableID, hostname string, allow bool) error {
 	return aclSet(a.cfg.DataDir, stableID, hostname, allow)
 }
 
-// checkAccept applies this node's inbound policy to a manifest a peer is
-// offering. The error text goes back to the sender, so it says what was
-// decided without leaking local paths or config.
+// decides whether to take a file a peer is offering: ACL, size limit, free space
+// the error text goes to the sender, so it never shows local paths or settings
 func (a *Node) checkAccept(stableID, label string, m *blob.Manifest) error {
 	dataDir := a.cfg.DataDir
 
@@ -94,8 +80,7 @@ func (a *Node) checkAccept(stableID, label string, m *blob.Manifest) error {
 	entry, found, err := aclLookup(dataDir, stableID)
 	switch {
 	case err != nil:
-		// Fail closed: an unreadable entry is not "no entry", and falling
-		// back to the default there could turn a deny into an allow.
+		// a file we can't read counts as deny, so a broken entry never becomes allow
 		log.Printf("blob: refusing %s: acl lookup for %q: %v", label, stableID, err)
 		allowed = false
 	case found:

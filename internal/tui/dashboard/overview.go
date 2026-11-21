@@ -11,14 +11,10 @@ import (
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
-// greenColor is the "healthy/ok" accent — was internal/tui/dashboard/workers.go's
-// package var; that file is gone with the worker fleet concept, but Overview
-// and Tokens still want it for their status pills.
+// the "ok" colour for status pills on Overview and Tokens
 var greenColor = lipgloss.Color("42")
 
-// overviewModel is the node home screen — facts only from this profile,
-// this process, and this machine. There is no fleet to poll: node-only,
-// no coordinator, no workers.
+// the home tab: facts about this node, this profile and this machine
 type overviewModel struct {
 	nodeID      string
 	tailscaleIP string
@@ -59,7 +55,7 @@ func truncateMiddle(s string, max int) string {
 	return s[:max-3] + "..."
 }
 
-// pill is a compact status chip: " ● label ".
+// a small coloured status chip, e.g. ONLINE on green
 func pill(label string, fg, bg lipgloss.Color) string {
 	return lipgloss.NewStyle().
 		Foreground(fg).

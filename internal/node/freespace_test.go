@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// withFreeSpace fakes the free-space lookup, restoring the real one afterwards.
+// fakes the free-space lookup, and puts the real one back after the test
 func withFreeSpace(t *testing.T, free uint64) {
 	t.Helper()
 	old := freeBytesFunc

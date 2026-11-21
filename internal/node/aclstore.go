@@ -10,11 +10,11 @@ import (
 	"time"
 )
 
-// stableIDPattern is what a StableID looks like — checked, not trusted,
-// since it comes from Tailscale but is about to become a filename.
+// what a Tailscale peer ID looks like
+// it becomes a filename, so anything else is refused
 var stableIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 
-// ACLEntry is one peer's recorded decision, in whichever ACL it came from.
+// one peer's saved decision, from either the file or the task ACL
 type ACLEntry struct {
 	StableID string
 	Allow    bool
@@ -22,8 +22,8 @@ type ACLEntry struct {
 	Decided  time.Time
 }
 
-// aclKind is one independently-stored ACL: a directory of per-peer files
-// under DataDir, keyed by StableID, fail-closed by default.
+// one ACL folder with one file per peer, e.g. <DataDir>/acl/<id>
+// a peer counts as denied unless a file clearly says allow
 type aclKind struct {
 	dir         string
 	defaultFile string
@@ -36,8 +36,7 @@ func (k aclKind) path(dataDir, stableID string) (string, error) {
 	return filepath.Join(dataDir, k.dir, stableID), nil
 }
 
-// lookup returns the recorded decision for a peer, or ok=false when there
-// is none and the default applies.
+// the saved decision for a peer, or ok=false if there is none and the default applies
 func (k aclKind) lookup(dataDir, stableID string) (entry ACLEntry, ok bool, err error) {
 	path, err := k.path(dataDir, stableID)
 	if err != nil {
@@ -73,16 +72,15 @@ func (k aclKind) lookup(dataDir, stableID string) (entry ACLEntry, ok bool, err 
 			entry.Decided, _ = time.Parse(time.RFC3339, v)
 		}
 	}
-	// An unreadable file is not "no entry" — falling back to the default
-	// there could turn a deny into an allow.
+	// a file we can't read is an error, not "no entry", so a broken entry never becomes allow
 	if err := sc.Err(); err != nil {
 		return ACLEntry{}, false, err
 	}
 	return entry, true, nil
 }
 
-// set records a decision, replacing any earlier one. Written to a temp name
-// and renamed so a concurrent reader never sees half of it.
+// saves a decision, replacing any old one
+// written to a temp file first, so a reader never sees half of it
 func (k aclKind) set(dataDir, stableID, hostname string, allow bool) error {
 	path, err := k.path(dataDir, stableID)
 	if err != nil {
@@ -92,8 +90,7 @@ func (k aclKind) set(dataDir, stableID, hostname string, allow bool) error {
 		return err
 	}
 
-	// A hostname is peer-influenced text going into a line-oriented file:
-	// keep a newline in it from injecting a second key.
+	// a newline in the hostname could add a second key, e.g. allow=true
 	hostname = strings.NewReplacer("\n", " ", "\r", " ").Replace(hostname)
 
 	body := fmt.Sprintf("allow=%t\nhostname=%s\ndecided=%s\n",
@@ -106,7 +103,7 @@ func (k aclKind) set(dataDir, stableID, hostname string, allow bool) error {
 	return os.Rename(tmp, path)
 }
 
-// list returns every recorded decision, keyed by StableID.
+// every saved decision, by peer ID
 func (k aclKind) list(dataDir string) map[string]ACLEntry {
 	out := map[string]ACLEntry{}
 	entries, err := os.ReadDir(filepath.Join(dataDir, k.dir))
@@ -124,8 +121,8 @@ func (k aclKind) list(dataDir string) map[string]ACLEntry {
 	return out
 }
 
-// defaultAllows reports the policy for peers with no entry. Anything but an
-// explicit "allow" is deny: a misspelt or empty file must fail closed.
+// the rule for peers with no file: only an exact "allow" allows
+// so a misspelt or empty default file means deny
 func (k aclKind) defaultAllows(dataDir string) bool {
 	return strings.TrimSpace(LoadToken(dataDir, k.defaultFile)) == "allow"
 }

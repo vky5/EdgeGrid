@@ -1,8 +1,7 @@
-// Package discovery is how EdgeGrid nodes find each other and exchange
-// state over the tailnet — no coordinator, no gossip. See
-// docs/peer-discovery.md for the design.
+// Package discovery is how EdgeGrid nodes find each other and say hello over the tailnet, with no central server.
+// design: docs/peer-discovery.md
 //
-// A connection's intent decides what follows the hello:
+// the intent in the hello decides what follows it:
 //
 //	Node A (dialer)                        Node B (listener)
 //	  │                                      │
@@ -31,11 +30,9 @@
 //	  │── chunk 2 ──────────────────────────>│
 //	  │           ...                        │
 //
-// See internal/blob and docs/blob-transfer.md.
+// file transfer: internal/blob and docs/blob-transfer.md
 package discovery
 
-// Tag is the Tailscale ACL tag marking a device as an EdgeGrid node, so a
-// laptop or phone sharing the tailnet isn't treated as a peer. Fixed rather
-// than configurable: every node needs to agree on it, and a joining node
-// only ever gets a join key, never the issuer's settings.
+// the Tailscale tag that marks a device as an EdgeGrid node, so a phone on the same tailnet isn't a peer
+// fixed, not a setting, since every node must agree and a joining node only gets a join key
 const Tag = "tag:edgegrid"

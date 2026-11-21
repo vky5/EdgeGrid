@@ -23,9 +23,8 @@ func sha256Hex(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// A file that's an exact multiple of chunkSize must still split into
-// exactly that many chunks, each independently hashed — the io.ReadFull
-// loop's EOF handling is the part most likely to get an off-by-one wrong.
+// a file that's an exact multiple of the chunk size splits into exactly that many chunks
+// e.g. 16 bytes at size 4 gives 4 chunks, not 5
 func TestBuildManifestExactMultipleOfChunkSize(t *testing.T) {
 	content := "AAAABBBBCCCCDDDD" // 16 bytes
 	path := writeTempFile(t, content)
@@ -63,9 +62,8 @@ func TestBuildManifestExactMultipleOfChunkSize(t *testing.T) {
 	}
 }
 
-// A file that does NOT divide evenly must produce one shorter final chunk,
-// not an error and not a dropped partial chunk — this is the
-// ErrUnexpectedEOF path specifically.
+// a file that doesn't divide evenly ends with one shorter chunk, not an error or a lost piece
+// e.g. 10 bytes at size 4 gives 4, 4, 2
 func TestBuildManifestShorterFinalChunk(t *testing.T) {
 	content := "AAAABBBBCC" // 10 bytes, chunkSize 4 -> 4,4,2
 	path := writeTempFile(t, content)
@@ -104,8 +102,7 @@ func TestBuildManifestEmptyFile(t *testing.T) {
 	}
 }
 
-// chunkSize <= 0 must fall back to DefaultChunkSize rather than erroring or
-// looping forever — a small file just becomes a single chunk under it.
+// a chunk size of 0 or less uses the default, so a small file becomes one chunk
 func TestBuildManifestDefaultsChunkSize(t *testing.T) {
 	content := strings.Repeat("x", 100)
 	path := writeTempFile(t, content)

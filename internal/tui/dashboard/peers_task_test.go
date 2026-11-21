@@ -43,8 +43,8 @@ func (f *fakeTasks) funcs() TaskFuncs {
 	return tf
 }
 
-// dispatchTo runs the x → kind → enter flow and delivers the verdict, leaving
-// the model waiting for the result. It returns that wait's command.
+// presses x, types the kind, presses enter and delivers the yes
+// leaves the tab waiting for the result and returns that wait's command
 func dispatchTo(t *testing.T, m peersModel, kind string) (peersModel, tea.Cmd) {
 	t.Helper()
 	m, _ = m.updateBrowsing(key("x"))
@@ -70,7 +70,7 @@ func typeText(m peersModel, s string) peersModel {
 	return m
 }
 
-// t toggles the task ACL only — file trust is a separate decision.
+// "t" changes only who may send tasks; who may send files is separate
 func TestTaskTrustToggleIsSeparateFromFileTrust(t *testing.T) {
 	f := &fakeTasks{trust: map[string]bool{}}
 	m := modelWithTasks(f, onlinePeer("stable-1", "alpha"))
@@ -140,8 +140,7 @@ func TestSendTaskRefusesOfflinePeer(t *testing.T) {
 	}
 }
 
-// Dispatch can hang on a peer that never answers; esc must free the UI, and
-// the answer that eventually arrives must not yank it back.
+// esc frees the screen while a peer doesn't answer, and the late answer doesn't pull it back
 func TestEscWhileDispatchingDropsTheLateAnswer(t *testing.T) {
 	f := &fakeTasks{trust: map[string]bool{}}
 	m := modelWithTasks(f, onlinePeer("b", "bravo"))
@@ -180,8 +179,7 @@ func TestFailedTaskShowsItsError(t *testing.T) {
 	}
 }
 
-// esc stops waiting for the result: the wait's context is cancelled and the
-// result that arrives anyway is dropped.
+// esc stops the result wait: its context is cancelled and a late result is dropped
 func TestEscWhileAwaitingCancelsTheWait(t *testing.T) {
 	f := &fakeTasks{trust: map[string]bool{}, result: &task.ResultResponse{Status: task.StatusDone, Output: []byte("late")}}
 	m, cmd := dispatchTo(t, modelWithTasks(f, onlinePeer("b", "bravo")), "hello")

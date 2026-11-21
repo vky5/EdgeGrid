@@ -1,10 +1,5 @@
-// Package app is the TUI root bubbletea Model: the "/" command bar, the
-// logs overlay, and the global quit key, wrapped around dashboard.Dashboard
-// — the only content this program ever shows, since there's no onboarding
-// wizard or role picker anymore. A node's identity and tailnet membership
-// are resolved once at process start (node.New, driven by flags/env), not
-// interactively, so the TUI has nothing left to onboard: it opens straight
-// into the dashboard.
+// Package app is the top of the TUI: the "/" command bar, the logs overlay and quit, around the dashboard.
+// the node has already joined the tailnet before the TUI starts, so it opens straight into the dashboard
 package app
 
 import (
@@ -27,41 +22,30 @@ import (
 	"github.com/edgegrid/edgegrid/internal/tui/style"
 )
 
-// commands is the fixed list the "/" bar autocompletes against.
+// the commands the "/" bar suggests
 var commands = []string{"logs", "profile"}
 
-// App is the root bubbletea Model — the only thing cmd/edgegrid ever hands
-// to tea.NewProgram.
+// the whole TUI, what cmd/edgegrid runs
 type App struct {
 	dataDir     string
-	profileName string // fixed at boot — see New; never re-read live in the footer
-	hostname    string // this node's Tailscale hostname — see New
+	profileName string // fixed at start-up, never read again for the footer
+	hostname    string // this node's Tailscale name, shown in the footer
 
 	dashboard dashboard.Dashboard
 	cmdbar    cmdbar.Model
 	logs      logsview.Model
 	showLogs  bool
 
-	// restartProfile is set once "/profile <name>" switches the active
-	// profile — data dir is fixed at process startup, so main.go restarts
-	// the whole process rather than trying to hot-swap it in place.
+	// the profile "/profile <name>" switched to, empty if none
+	// the data folder is fixed at start-up, so main.go restarts the whole process
 	restartProfile string
 
 	width, height int
 }
 
-// New builds the App around a node already up on the tailnet. tsClient is
-// nil when this node has no Tailscale API credentials configured — see
-// tailscaleapi.LoadCredentials — in which case the dashboard simply has no
-// Tokens tab. lc is the node's tsnet local client, for the Peers tab.
-// profileName is resolved once by the caller (see main.go) — it must not be
-// re-read from node.ActiveProfile() here or in the footer: that file is
-// global to the machine, not scoped to this process, and switching profiles
-// always restarts the whole process (see runCommand's "profile" case), so
-// there is never a legitimate reason for this to change mid-run. hostname
-// is this node's Tailscale hostname (node.Node.TailscaleHostname) — shown
-// in the footer so it's visible without leaving whatever tab you're on;
-// it's what this node shows up as in a peer's own Peers tab.
+// builds the TUI for a node already on the tailnet; tsClient is nil without a Tailscale API login, so no Tokens tab
+// profileName comes from the caller and is never read again from node.ActiveProfile():
+// that file is shared by every edgegrid on the machine, so another process may switch it mid-run
 func New(nodeID, tailscaleIP, dataDir, profileName, hostname string, tsClient *tailscaleapi.Client, lc *local.Client, send dashboard.SendFunc, transfers dashboard.TransfersFunc) App {
 	return App{
 		dataDir:     dataDir,
@@ -72,26 +56,25 @@ func New(nodeID, tailscaleIP, dataDir, profileName, hostname string, tsClient *t
 	}
 }
 
-// WithTrust connects the Peers tab to this node's inbound ACL.
+// connects the Peers tab to who may send this node files
 func (a App) WithTrust(t dashboard.TrustFuncs) App {
 	a.dashboard = a.dashboard.WithTrust(t)
 	return a
 }
 
-// WithTasks connects the Peers tab to this node's task ACL and dispatcher.
+// connects the Peers tab to who may send this node tasks, and to sending tasks
 func (a App) WithTasks(t dashboard.TaskFuncs) App {
 	a.dashboard = a.dashboard.WithTasks(t)
 	return a
 }
 
-// WithHistory connects the History tab to this node's transfer database.
+// connects the History tab to this node's transfer database
 func (a App) WithHistory(h dashboard.HistoryFuncs) App {
 	a.dashboard = a.dashboard.WithHistory(h)
 	return a
 }
 
-// WantsRestart reports whether "/profile <name>" switched the active
-// profile.
+// whether "/profile <name>" switched profile, and to which one
 func (a App) WantsRestart() (profileName string, ok bool) {
 	return a.restartProfile, a.restartProfile != ""
 }
@@ -109,9 +92,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 	}
 
-	// Self-rescheduling tick — must always reach the dashboard, even while
-	// an overlay is open, or the reschedule never happens and the local
-	// stats poll dies for good instead of just pausing.
+	// must always reach the dashboard, even under an overlay,
+	// or the tick isn't scheduled again and the stats stop updating for good
 	if _, ok := msg.(dashboard.RefreshMsg); ok {
 		var cmd tea.Cmd
 		a.dashboard, cmd = a.dashboard.Update(msg)
@@ -156,8 +138,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if key, ok := msg.(tea.KeyMsg); ok {
-		// Same rule everywhere a free-form field could have focus: "/" and
-		// "q" are literal keystrokes there, not global shortcuts.
+		// while typing in a field, "/" and "q" are just letters, not shortcuts
 		typing := a.dashboard.CapturesTextInput()
 		switch key.String() {
 		case "q":

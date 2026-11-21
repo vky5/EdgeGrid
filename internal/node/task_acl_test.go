@@ -72,7 +72,7 @@ func TestTaskACLListSkipsTempFiles(t *testing.T) {
 	}
 }
 
-// A garbled default file must fail closed, not open.
+// a garbled default file must mean deny, not allow
 func TestTaskACLDefaultFailsClosed(t *testing.T) {
 	n := nodeWithDir(t)
 	for _, v := range []string{"", "ALLOW!", "yes", "true", "  "} {
@@ -105,8 +105,7 @@ func TestTrustedTaskPeersAndSetTaskTrust(t *testing.T) {
 		t.Errorf("TrustedTaskPeers = %+v", got)
 	}
 
-	// This ACL is independent of the file ACL — granting task trust must
-	// not also grant, or read from, file-transfer trust.
+	// the task ACL is separate: trusting a peer with tasks must not grant, or read, file trust
 	if got := n.TrustedPeers(); len(got) != 0 {
 		t.Errorf("SetTaskTrust leaked into the file ACL: %+v", got)
 	}

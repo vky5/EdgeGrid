@@ -66,7 +66,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  task       send <kind> [input-json] — dispatch a task to the first online peer that accepts it")
 }
 
-// runNode brings the node up on the tailnet and blocks until interrupted.
+// joins the tailnet and runs the node until it's stopped, e.g. with Ctrl-C
 func runNode() {
 	cfg := node.LoadConfig()
 
@@ -83,8 +83,7 @@ func runNode() {
 	runForeground(ctx, nodeAgent)
 }
 
-// runForeground starts the agent and blocks until the context is done
-// (signal or the agent stopping itself).
+// starts the node and waits until a signal or the node itself stops it
 func runForeground(ctx context.Context, nodeAgent *node.Node) {
 	defer nodeAgent.Close()
 
@@ -101,15 +100,11 @@ func runForeground(ctx context.Context, nodeAgent *node.Node) {
 	}
 }
 
-// runDashboard brings the node up on the tailnet (same as runNode) and
-// hands the terminal to the TUI instead of blocking headlessly. Logs go
-// file-only while the TUI owns the screen (node.NewWithLogging's tuiMode)
-// — see internal/node/log.go.
+// joins the tailnet like runNode, then shows the TUI
+// logs go only to the file while the TUI is on screen
 func runDashboard() {
-	// Welcome runs first, before LoadConfig, so picking a profile still gets
-	// to decide which data dir tsnet binds to. Once the node is up that
-	// choice costs a full process restart (see execRestart), which is what
-	// the old in-dashboard welcome screen had to do on every switch.
+	// the welcome screen runs before LoadConfig, so picking a profile still picks the data folder
+	// once the node is up, switching profile needs a full restart (execRestart)
 	choice, err := app.RunWelcome()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "welcome screen: %v\n", err)
@@ -125,26 +120,15 @@ func runDashboard() {
 
 	cfg := node.LoadConfig()
 
-	// An auth key typed on the join screen has to be in place before bring-up:
-	// tsnet reads AuthKey inside lb.Start, partway through Up, so there is no
-	// way to supply one once boot is under way. An explicit --ts-authkey or
-	// TS_AUTHKEY still wins — the screen only fills a gap, it doesn't override
-	// what the operator asked for on the command line.
+	// a join key typed on the join screen, used only if --ts-authkey and TS_AUTHKEY are empty
+	// it must be set before boot, since tsnet reads the key partway through starting
 	if choice.AuthKey != "" && cfg.TailscaleAuthKey == "" {
 		cfg.TailscaleAuthKey = choice.AuthKey
 	}
 
-	// A node starting a brand-new network has no one to hand it a join key —
-	// it's the first one. Without one, tsnet falls back to interactive
-	// browser login, which registers the device under the operator's
-	// personal Tailscale identity with no ACL tag, invisible to every other
-	// node's Snapshot() (Tag lives on the device being looked at, not the
-	// viewer — see docs/peer-discovery.md). If this profile already has
-	// Tailscale API credentials configured (the same ones the Tokens tab
-	// uses), mint this node a key from its own credentials and use that
-	// instead, so it comes up tagged like every node it will later admit.
-	// Best-effort: any failure here just falls back to interactive login,
-	// same as if credentials weren't configured at all — never a hard error.
+	// the first node has nobody to give it a join key, so make one with this profile's Tailscale API login
+	// or browser login would join it untagged under a person's account, and other nodes wouldn't see it
+	// if making the key fails, fall back to browser login, never stop
 	if cfg.TailscaleAuthKey == "" && !node.HasJoined(cfg.DataDir) {
 		if selfClient := tailscaleapi.LoadCredentials(cfg.DataDir); selfClient != nil {
 			minted, err := selfClient.CreateKey()
@@ -171,9 +155,7 @@ func runDashboard() {
 	}
 	defer nodeAgent.Close()
 
-	// Peer discovery (listen + dial known peers) has to actually run for the
-	// dashboard too, not just headless mode — runForeground does this for
-	// runNode, but the dashboard never went through that path.
+	// the dashboard needs peer discovery running too, like runForeground does for runNode
 	go func() {
 		if err := nodeAgent.Start(ctx); err != nil {
 			log.Printf("discovery: %v", err)
@@ -185,11 +167,8 @@ func runDashboard() {
 	if err != nil {
 		log.Printf("warning: tsnet local client unavailable, Peers tab will show an error: %v", err)
 	}
-	// cfg.ProfileName was resolved atomically with cfg.DataDir inside
-	// LoadConfig — re-reading node.ActiveProfile() here separately would be
-	// a real race: another EdgeGrid process switching profiles in the gap
-	// between that boot-time read and this one would leave DataDir correct
-	// but this label wrong (see node.resolveDataDir's doc comment).
+	// use the profile name read together with DataDir, not node.ActiveProfile() again
+	// another edgegrid process may switch profiles in between, and the label would be wrong
 	a := app.New(nodeAgent.NodeID(), nodeAgent.TailscaleIP(), cfg.DataDir, cfg.ProfileName, nodeAgent.TailscaleHostname(), tsClient, lc, nodeAgent.SendBlob, func() []dashboard.Transfer {
 		live := nodeAgent.Transfers()
 		out := make([]dashboard.Transfer, 0, len(live))
@@ -238,13 +217,9 @@ func runDashboard() {
 	}
 }
 
-// execRestart re-execs the process into `edgegrid dashboard` after
-// "/profile <name>" switches the active profile — the node identity,
-// tsnet session, and log file are all already bound to the old data dir,
-// so an in-place switch isn't possible, only a real restart is. args is
-// stripped of --data-dir so the new process re-resolves via the profile
-// just set instead of the explicit flag winning again and silently
-// undoing the switch (see node.ResolveDataDir's precedence).
+// restarts as `edgegrid dashboard` after "/profile <name>" switches profile
+// the node ID, tailnet session and log file are tied to the old data folder, so only a restart works
+// --data-dir is dropped, or it would win again and quietly undo the switch
 func execRestart(profileName string) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -267,7 +242,7 @@ func execRestart(profileName string) {
 	}
 }
 
-// stripFlag removes a "--flag value" or "--flag=value" pair from args.
+// removes a flag and its value from args, e.g. "--data-dir x" or "--data-dir=x"
 func stripFlag(args []string, flag string) []string {
 	var out []string
 	for i := 0; i < len(args); i++ {
@@ -284,7 +259,7 @@ func stripFlag(args []string, flag string) []string {
 	return out
 }
 
-// runTask implements `edgegrid task <send>`.
+// runs `edgegrid task send <kind> [input-json]`
 func runTask(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: edgegrid task <send>")
@@ -311,11 +286,8 @@ func runTask(args []string) {
 	}
 }
 
-// runTaskSend is a dev-only trigger for dispatching a task to every online
-// peer and waiting for its result, to exercise DispatchTask and AwaitResult
-// outside of a test. It only needs
-// tsnet up, not the discovery listener — Snapshot reads Tailscale's own
-// membership state directly, and this command never receives anything.
+// sends a task to every online peer and waits for each result, for trying it by hand
+// it only needs the tailnet, not the listener, since it never receives anything
 func runTaskSend(kind string, input json.RawMessage) {
 	cfg := node.LoadConfig()
 
@@ -379,7 +351,7 @@ func runTaskSend(kind string, input json.RawMessage) {
 	os.Stdout.Write(resp.Output)
 }
 
-// runProfile implements `edgegrid profile list|use <name>|current`.
+// runs `edgegrid profile list|use <name>|current`
 func runProfile(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: edgegrid profile <list|use|current> [name]")
@@ -422,8 +394,8 @@ func runProfile(args []string) {
 	}
 }
 
-// runLogs reads through node.Tail so every log reader agrees about where
-// logs live and what they show.
+// prints the end of the log file, e.g. the last 200 lines
+// it goes through node.Tail so every log reader agrees on where logs are
 func runLogs(args []string) {
 	fs := flag.NewFlagSet("logs", flag.ExitOnError)
 	dataDir := fs.String("data-dir", "", "directory for node identity and log files (default ./data)")

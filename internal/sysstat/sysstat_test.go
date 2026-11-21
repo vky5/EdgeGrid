@@ -19,12 +19,10 @@ func TestClampKeepsValuesInRange(t *testing.T) {
 	}
 }
 
-// Whatever the OS, both readings must land in 0..1 and never panic — the
-// dashboard renders them straight into a bar with no further validation.
-// A machine that can't report stats returns 0 rather than failing.
+// on any OS both readings land in 0..1 and never panic
+// the dashboard draws them straight into a bar with no more checks
 func TestUsageReadingsAreInRange(t *testing.T) {
-	// CPU is sampled as a delta, so the first call only establishes a
-	// baseline. Call twice, the way a polling caller does.
+	// the first CPU call only sets a starting point, so call twice like the dashboard does
 	CPUUsage()
 
 	for _, tc := range []struct {

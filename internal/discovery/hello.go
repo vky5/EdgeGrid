@@ -9,45 +9,36 @@ import (
 	"time"
 )
 
-// defines intent based on which, the function after receiving the hello struct will run 
+// what the peer wants after the hello, e.g. send a file or ask for a result
 type IntentType string
 
 const (
 	IntentHello IntentType = "hello"
 
-	// IntentBlob means a manifest follows on this same connection
+	// a file manifest follows on the same connection
 	IntentBlob IntentType = "blob"
 
 	IntentTask IntentType = "task"
 
-	// IntentResult means a result request for a task follows on this same
-	// connection.
+	// a request for a task's result follows on the same connection
 	IntentResult IntentType = "result"
 )
 
-// maxHelloSize bounds how much a peer can make us allocate for one hello,
-// so a garbled or hostile length prefix can't make ReadHello try to read
-// gigabytes.
+// the biggest hello we'll read, 64 KB, so a bad length can't make us read gigabytes
 const maxHelloSize = 64 * 1024
 
-// helloTimeout bounds one hello exchange, so a slow or wedged peer can't
-// hang a goroutine forever. See Server.HelloTimeout to override it in tests.
+// how long one hello exchange may take, 5s, so a stuck peer can't hang us forever
+// tests can change it with Server.HelloTimeout
 const helloTimeout = 5 * time.Second
 
-// Hello is what a node says about itself on connect — minimal by design,
-// just enough to prove the exchange works. It's a different kind of fact
-// than WhoIs: WhoIs is Tailscale's control plane, unspoofable; Hello is the
-// peer's own self-report, so NodeID is EdgeGrid's identity
-// (node.Node.NodeID), not a claim about anyone else. Intent is self-reported
-// for the same reason: it decides which handler runs, never whether the peer
-// is allowed to.
+// what a node says about itself when it connects: its EdgeGrid ID and what it wants
+// it's the peer's own word, unlike Tailscale's WhoIs, so it picks the handler but never decides what the peer is allowed to do
 type Hello struct {
 	NodeID string     `json:"node_id"`
 	Intent IntentType `json:"intent"`
 }
 
-// WriteHello encodes h as length-prefixed JSON: a 4-byte big-endian length
-// followed by that many bytes of JSON.
+// sends a hello as a 4-byte length and then JSON
 func WriteHello(w io.Writer, h Hello) error {
 	body, err := json.Marshal(h)
 	if err != nil {
@@ -64,8 +55,7 @@ func WriteHello(w io.Writer, h Hello) error {
 	return nil
 }
 
-// ReadHello decodes one length-prefixed hello from r, rejecting an
-// oversized length before allocating a body for it.
+// reads one hello, refusing one that's too big before reading it
 func ReadHello(r io.Reader) (Hello, error) {
 	var prefix [4]byte
 	if _, err := io.ReadFull(r, prefix[:]); err != nil {
@@ -86,9 +76,8 @@ func ReadHello(r io.Reader) (Hello, error) {
 	return h, nil
 }
 
-// ExchangeAsDialer sends self, then waits for the peer's hello — the
-// dialer speaks first, so both sides never write into a full buffer at
-// once. timeout of 0 uses helloTimeout.
+// sends our hello, then waits for the peer's; a timeout of 0 means 5s
+// the dialer speaks first, so the two sides never both wait to write
 func ExchangeAsDialer(conn net.Conn, self Hello, timeout time.Duration) (Hello, error) {
 	if err := setHelloDeadline(conn, timeout); err != nil {
 		return Hello{}, err
@@ -102,7 +91,7 @@ func ExchangeAsDialer(conn net.Conn, self Hello, timeout time.Duration) (Hello, 
 	return ReadHello(conn)
 }
 
-// ExchangeAsListener waits for the peer's hello, then responds with self.
+// waits for the peer's hello, then answers with ours
 func ExchangeAsListener(conn net.Conn, self Hello, timeout time.Duration) (Hello, error) {
 	if err := setHelloDeadline(conn, timeout); err != nil {
 		return Hello{}, err
