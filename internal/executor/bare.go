@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -17,9 +18,10 @@ type Bare struct{}
 
 func (Bare) Name() RuntimeName { return RuntimeBare }
 
-func (Bare) Run(ctx context.Context, workDir string, entrypoint []string, input []byte) ([]byte, error) {
+func (Bare) Run(ctx context.Context, workDir string, entrypoint []string, input []byte, env []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, entrypoint[0], entrypoint[1:]...)
 	cmd.Dir = workDir
+	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin = bytes.NewReader(input)
 
 	var stdout, stderr cappedBuffer

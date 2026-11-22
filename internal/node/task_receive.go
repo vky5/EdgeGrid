@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"time"
 
 	"github.com/edgegrid/edgegrid/internal/db"
@@ -77,7 +78,7 @@ func (a *Node) receiveTask(
 		// the verdict can fail after accept, so free the slot or it stays taken by a task that never runs
 		if claimed != nil {
 			a.taskSlot.Release()
-			a.finishTask(claimed, db.TaskFailed, nil, "verdict not delivered")
+			a.finishTask(claimed, db.TaskFailed, nil, "verdict not delivered", nil)
 		}
 		return err
 	}
@@ -87,26 +88,60 @@ func (a *Node) receiveTask(
 
 	a.runs.Go(func() {
 		defer a.taskSlot.Release()
-		out, err := a.executor.Run(a.runCtx, t.Kind, t.Input)
-		if err != nil {
-			log.Printf("task: %q (kind=%s) from %s failed: %v", t.ID, t.Kind, label, err)
-			status := db.TaskFailed
-			if a.runCtx.Err() != nil {
-				status = db.TaskLost
-			}
-			a.finishTask(t, status, nil, err.Error())
-			return
-		}
-		log.Printf("task: %q (kind=%s) from %s finished: %q", t.ID, t.Kind, label, out)
-		a.finishTask(t, db.TaskDone, out, "")
+		a.runTask(t, label)
 	})
 	return nil
 }
 
+// runs an accepted task and saves how it ended, with any files it left for the sender
+// the results folder is kept only for a done run that left files in it
+//
+//	train-mnist writes model.pt, prints "epoch 5 loss 0.03"   → done, output and [model.pt] saved, folder kept
+//	hello prints "hello world", writes nothing                → done, no files, folder removed
+//	fail exits 3 after writing half a model.pt                → failed, folder removed
+//	node shuts down mid-run                                   → lost, folder removed
+func (a *Node) runTask(t *task.Task, label string) {
+	outDir, err := resultsDirFor(a.cfg.DataDir, t.ID)
+	if err == nil {
+		err = os.MkdirAll(outDir, 0o700)
+	}
+	if err != nil {
+		log.Printf("task: %q (kind=%s) from %s: results folder: %v", t.ID, t.Kind, label, err)
+		a.finishTask(t, db.TaskFailed, nil, "this node could not make a results folder", nil)
+		return
+	}
+
+	out, err := a.executor.Run(a.runCtx, t.Kind, t.Input, outDir)
+	if err != nil {
+		os.RemoveAll(outDir)
+		log.Printf("task: %q (kind=%s) from %s failed: %v", t.ID, t.Kind, label, err)
+		status := db.TaskFailed
+		if a.runCtx.Err() != nil {
+			status = db.TaskLost
+		}
+		a.finishTask(t, status, nil, err.Error(), nil)
+		return
+	}
+
+	files, err := listResultFiles(t.ID, outDir)
+	if err != nil {
+		os.RemoveAll(outDir)
+		log.Printf("task: %q (kind=%s) from %s: %v", t.ID, t.Kind, label, err)
+		a.finishTask(t, db.TaskFailed, nil, "could not read the result files: "+err.Error(), nil)
+		return
+	}
+	// the database turns done output over 64 KB into a failure and drops the files, so drop them here too
+	if len(files) == 0 || len(out) > db.MaxTaskOutput {
+		os.RemoveAll(outDir)
+	}
+	log.Printf("task: %q (kind=%s) from %s finished: %q, %d file(s)", t.ID, t.Kind, label, out, len(files))
+	a.finishTask(t, db.TaskDone, out, "", files)
+}
+
 // saves how a task ended
 // if this fails the row shows running until the next restart marks it lost, so it is logged
-func (a *Node) finishTask(t *task.Task, status db.TaskStatus, out []byte, errMsg string) {
-	if err := a.history.RecordTaskFinish(db.RoleReceived, t.ID, status, out, errMsg, nil); err != nil {
+func (a *Node) finishTask(t *task.Task, status db.TaskStatus, out []byte, errMsg string, files []db.TaskFile) {
+	if err := a.history.RecordTaskFinish(db.RoleReceived, t.ID, status, out, errMsg, files); err != nil {
 		log.Printf("task: %q: could not store its result, dispatcher will see it running: %v", t.ID, err)
 	}
 }

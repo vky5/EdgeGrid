@@ -13,6 +13,13 @@ type RuntimeName string
 
 const RuntimeBare RuntimeName = "bare"
 
+// the variable a run reads to know where to save files for the sender, e.g. model.pt
+//
+//	# train.py
+//	out = os.environ["EDGEGRID_OUTPUT_DIR"]          # ~/.edgegrid/bravo/results/a7d40e19-…
+//	torch.save(model.state_dict(), os.path.join(out, "model.pt"))
+const OutputDirEnv = "EDGEGRID_OUTPUT_DIR"
+
 // one kind of task: what to fetch and what to run, one entry in tasks.json
 //
 //	{"kind":"hello","runtime":"bare","entrypoint":["echo","hello world"]}   // prints "hello world\n"
@@ -35,9 +42,10 @@ type Artifact struct {
 }
 
 // a way to run a task's program, e.g. as a plain process (Bare)
+// env holds extra variables on top of the node's own, e.g. ["EDGEGRID_OUTPUT_DIR=/home/bravo/.edgegrid/bravo/results/a7d40e19-…"]
 type Runtime interface {
 	Name() RuntimeName
-	Run(ctx context.Context, workDir string, entrypoint []string, input []byte) ([]byte, error)
+	Run(ctx context.Context, workDir string, entrypoint []string, input []byte, env []string) ([]byte, error)
 }
 
 // finds the definition for a task kind and runs it with the matching runtime
@@ -110,15 +118,17 @@ func (e *Executor) Supports(kind string) bool {
 }
 
 // runs the kind once; a panic in the runtime becomes an error, not a crashed node
-// each run gets its own empty folder, e.g. ~/.edgegrid/primary/runs/run-1234567, removed afterwards
+// each run works in its own empty folder, e.g. ~/.edgegrid/primary/runs/run-1234567, removed afterwards
+// files meant for the sender go in outDir instead, which the run is told about and which is kept
 //
-//	Run(ctx, "hello", nil)          → "hello world\n", nil
-//	Run(ctx, "echo", {"x":1})       → {"x":1}, nil
-//	Run(ctx, "fail", nil)           → nil, "bare: [sh -c echo boom >&2; exit 3]: exit status 3 (stderr: \"boom\\n\")"
-//	Run(ctx, "resnet", nil)         → nil, "executor: kind \"resnet\" not supported on this node"
-//	prints more than 1 MiB          → nil, "bare: [...]: output exceeded 1048576 bytes"
-//	ctx cancelled mid-run           → nil, "bare: [sleep 30]: signal: killed (stderr: \"\")"
-func (e *Executor) Run(ctx context.Context, kind string, input []byte) (out []byte, err error) {
+//	Run(ctx, "hello", nil, "")                    → "hello world\n", nil
+//	Run(ctx, "echo", {"x":1}, "")                 → {"x":1}, nil
+//	Run(ctx, "train", nil, ".../results/a7d40e19-…") → "epoch 5 loss 0.03\n", nil; model.pt is left in outDir
+//	Run(ctx, "fail", nil, "")                     → nil, "bare: [sh -c echo boom >&2; exit 3]: exit status 3 (stderr: \"boom\\n\")"
+//	Run(ctx, "resnet", nil, "")                   → nil, "executor: kind \"resnet\" not supported on this node"
+//	prints more than 1 MiB                        → nil, "bare: [...]: output exceeded 1048576 bytes"
+//	ctx cancelled mid-run                         → nil, "bare: [sleep 30]: signal: killed (stderr: \"\")"
+func (e *Executor) Run(ctx context.Context, kind string, input []byte, outDir string) (out []byte, err error) {
 	if !e.Supports(kind) {
 		return nil, fmt.Errorf("executor: kind %q not supported on this node", kind)
 	}
@@ -142,5 +152,9 @@ func (e *Executor) Run(ctx context.Context, kind string, input []byte) (out []by
 			err = fmt.Errorf("executor: %s panicked: %v", kind, r)
 		}
 	}()
-	return rt.Run(ctx, workDir, d.Entrypoint, input)
+	var env []string
+	if outDir != "" {
+		env = append(env, OutputDirEnv+"="+outDir)
+	}
+	return rt.Run(ctx, workDir, d.Entrypoint, input, env)
 }

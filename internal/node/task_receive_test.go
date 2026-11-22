@@ -33,6 +33,12 @@ func nodeForTasks(t *testing.T) (n *Node, marker string) {
 		{Kind: "echo", Runtime: executor.RuntimeBare, Entrypoint: []string{"cat"}},
 		{Kind: "fail", Runtime: executor.RuntimeBare, Entrypoint: []string{"sh", "-c", "echo boom >&2; exit 3"}},
 		{Kind: "sleep", Runtime: executor.RuntimeBare, Entrypoint: []string{"sleep", "30"}},
+		// leaves a model, a folder and a link in its results folder, like a training run might
+		{Kind: "train", Runtime: executor.RuntimeBare, Entrypoint: []string{"sh", "-c",
+			`cd "$EDGEGRID_OUTPUT_DIR" && printf trained > model.pt && mkdir checkpoints && ln -s /etc/passwd passwd && echo loss 0.03`}},
+		// writes half a model, then crashes
+		{Kind: "crash", Runtime: executor.RuntimeBare, Entrypoint: []string{"sh", "-c",
+			`printf half > "$EDGEGRID_OUTPUT_DIR/model.pt"; exit 1`}},
 	}, []executor.Runtime{executor.Bare{}}, filepath.Join(n.cfg.DataDir, taskRunsDir))
 	if err != nil {
 		t.Fatal(err)
