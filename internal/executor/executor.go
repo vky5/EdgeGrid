@@ -126,7 +126,7 @@ func (e *Executor) Supports(kind string) bool {
 //	Run(ctx, "train", nil, ".../results/a7d40e19-…") → "epoch 5 loss 0.03\n", nil; model.pt is left in outDir
 //	Run(ctx, "fail", nil, "")                     → nil, "bare: [sh -c echo boom >&2; exit 3]: exit status 3 (stderr: \"boom\\n\")"
 //	Run(ctx, "resnet", nil, "")                   → nil, "executor: kind \"resnet\" not supported on this node"
-//	prints more than 1 MiB                        → nil, "bare: [...]: output exceeded 1048576 bytes"
+//	prints 3 MiB                                  → the last 1 MiB, nil; the start is dropped
 //	ctx cancelled mid-run                         → nil, "bare: [sleep 30]: signal: killed (stderr: \"\")"
 func (e *Executor) Run(ctx context.Context, kind string, input []byte, outDir string) (out []byte, err error) {
 	if !e.Supports(kind) {

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -28,9 +29,30 @@ const (
 	TaskLost    TaskStatus = "lost"
 )
 
-// the biggest output saved with a task, 64 KB
-// bigger output should go as a file; here it fails instead of being cut short
+// the most output saved with a task, 64 KB; for longer output only the end is kept
+// the end of a log is where the result is, and files carry anything bigger
 const MaxTaskOutput = 64 << 10
+
+// the first line of output that was cut to fit
+const outputCutNote = "[earlier output cut, only the last 64 KB is kept]\n"
+
+// cuts output to its last 64 KB, starting at a line break, with a note saying it was cut
+//
+//	"hello world\n"                     → unchanged
+//	165 KB of "epoch 1 batch 1/938 …" lines ending "test accuracy 0.9871\n"
+//	    → "[earlier output cut, only the last 64 KB is kept]\nepoch 4 batch 117/938 …\n…test accuracy 0.9871\n"
+//	70 KB with no line break at all     → the note, then the last bytes as they are
+func lastPartOf(output []byte) []byte {
+	if len(output) <= MaxTaskOutput {
+		return output
+	}
+	keep := output[len(output)-(MaxTaskOutput-len(outputCutNote)):]
+	// start on a whole line rather than half of one
+	if i := bytes.IndexByte(keep, '\n'); i >= 0 && i < len(keep)-1 {
+		keep = keep[i+1:]
+	}
+	return append([]byte(outputCutNote), keep...)
+}
 
 // one file a finished task produced, kept with its row
 // on the node that ran it: a file in results/<task-id>/ waiting for the sender to fetch it
@@ -111,22 +133,19 @@ func (s *Store) RecordTaskStart(role Role, taskID, peerID, peerHostname, kind st
 }
 
 // saves how a task ended, in one write so nobody asking sees it done before its files are listed
-// output and files are kept only when it is done; done output over 64 KB is saved as a failure instead of being cut
+// output and files are kept only when it is done; output over 64 KB keeps only its last 64 KB
 //
 //	done,   12 bytes of output, no files            → done, output kept
 //	done,   "epoch 5 loss 0.03\n",
 //	        [{model.pt 4200000 9f2c…}]              → done, output and the file list kept
-//	done,   70000 bytes of output, one file         → failed, error "output exceeded 65536 bytes", output and files dropped
+//	done,   165 KB of output, one file              → done, the last 64 KB with a note at the top, the file kept
 //	failed, some output, "exit 3…"                  → failed, output dropped, error kept
 //	a task ID with no row in that role              → ErrTaskNotFound
 func (s *Store) RecordTaskFinish(role Role, taskID string, status TaskStatus, output []byte, errMsg string, files []TaskFile) error {
-	if status == TaskDone && len(output) > MaxTaskOutput {
-		status, output = TaskFailed, nil
-		errMsg = fmt.Sprintf("output exceeded %d bytes", MaxTaskOutput)
-	}
 	if status != TaskDone {
 		output, files = nil, nil
 	}
+	output = lastPartOf(output)
 	var errVal sql.NullString
 	if errMsg != "" {
 		errVal = sql.NullString{String: errMsg, Valid: true}

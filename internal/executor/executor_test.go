@@ -71,12 +71,48 @@ func TestRunIsKilledWhenTheContextIsCancelled(t *testing.T) {
 	}
 }
 
-func TestRunRejectsOutputOverTheCap(t *testing.T) {
-	e, _ := newTestExecutor(t, bare("chatty", "head", "-c", "2000000", "/dev/zero"))
+func TestRunKeepsTheEndOfLongOutput(t *testing.T) {
+	// 2 MB of zeros, then a last line: the zeros at the start are dropped, the last line survives
+	e, _ := newTestExecutor(t, bare("chatty", "sh", "-c", "head -c 2000000 /dev/zero; echo test accuracy 0.9871"))
 
-	_, err := e.Run(context.Background(), "chatty", nil, "")
-	if err == nil || !strings.Contains(err.Error(), "exceeded") {
-		t.Fatalf("err = %v, want an output-cap error", err)
+	out, err := e.Run(context.Background(), "chatty", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != maxOutput || !strings.HasSuffix(string(out), "test accuracy 0.9871\n") {
+		t.Errorf("got %d bytes ending %q, want the last %d bytes", len(out), out[max(0, len(out)-30):], maxOutput)
+	}
+}
+
+func TestFailedRunShowsTheEndOfItsErrors(t *testing.T) {
+	// 10 KB of noise on stderr, then the line that says what broke
+	e, _ := newTestExecutor(t, bare("crash", "sh", "-c", "head -c 10000 /dev/zero | tr '\\0' x >&2; echo 'ValueError: bad shape' >&2; exit 1"))
+
+	_, err := e.Run(context.Background(), "crash", nil, "")
+	if err == nil || !strings.Contains(err.Error(), "ValueError: bad shape") {
+		t.Errorf("err = %.200v…, want the last line of stderr in it", err)
+	}
+}
+
+func TestTailBuffer(t *testing.T) {
+	b := &tailBuffer{limit: 10}
+	b.Write([]byte("hello "))
+	b.Write([]byte("world, bye\n"))
+	if got := b.String(); got != "orld, bye\n" {
+		t.Errorf("got %q", got)
+	}
+	small := &tailBuffer{limit: 10}
+	small.Write([]byte("hi\n"))
+	if got := small.String(); got != "hi\n" {
+		t.Errorf("got %q", got)
+	}
+	// many small writes past twice the limit still end with the last 10 bytes
+	many := &tailBuffer{limit: 10}
+	for i := 0; i < 100; i++ {
+		many.Write([]byte{byte('a' + i%26)})
+	}
+	if got := many.String(); got != "mnopqrstuv" {
+		t.Errorf("got %q", got)
 	}
 }
 

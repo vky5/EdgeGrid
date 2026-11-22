@@ -127,8 +127,7 @@ func (a *Node) runTask(t *task.Task, label string) {
 		a.finishTask(t, db.TaskFailed, nil, "could not read the result files: "+err.Error(), nil)
 		return
 	}
-	// the database turns done output over 64 KB into a failure and drops the files, so drop them here too
-	if len(files) == 0 || len(out) > db.MaxTaskOutput {
+	if len(files) == 0 {
 		os.RemoveAll(outDir)
 	}
 	log.Printf("task: %q (kind=%s) from %s finished: %q, %d file(s)", t.ID, t.Kind, label, out, len(files))

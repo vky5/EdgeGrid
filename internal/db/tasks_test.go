@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -50,13 +52,29 @@ func TestFailedTaskDropsOutputAndKeepsError(t *testing.T) {
 	}
 }
 
-func TestOversizedOutputBecomesAFailure(t *testing.T) {
+func TestLongOutputKeepsItsLastPart(t *testing.T) {
 	s := openTest(t)
 	s.RecordTaskStart(RoleReceived, "t1", "p", "h", "k")
-	s.RecordTaskFinish(RoleReceived, "t1", TaskDone, bytes.Repeat([]byte("x"), MaxTaskOutput+1), "", nil)
+	// about 165 KB of per-batch lines, like 5 epochs of MNIST, then the line that matters
+	var log bytes.Buffer
+	for e := 1; e <= 5; e++ {
+		for b := 1; b <= 938; b++ {
+			fmt.Fprintf(&log, "epoch %d batch %d/938 loss 0.1234\n", e, b)
+		}
+	}
+	log.WriteString("test accuracy 0.9871\n")
+	s.RecordTaskFinish(RoleReceived, "t1", TaskDone, log.Bytes(), "", nil)
+
 	r, _ := s.Task(RoleReceived, "t1")
-	if r.Status != TaskFailed || r.Output != nil || r.Error == "" {
-		t.Errorf("got %+v, want failed with no output", r)
+	out := string(r.Output)
+	if r.Status != TaskDone || len(r.Output) > MaxTaskOutput {
+		t.Fatalf("status %s, %d bytes; want done within %d", r.Status, len(r.Output), MaxTaskOutput)
+	}
+	if !strings.HasPrefix(out, outputCutNote+"epoch ") {
+		t.Errorf("starts %q, want the note then a whole line", out[:min(len(out), 80)])
+	}
+	if !strings.HasSuffix(out, "epoch 5 batch 938/938 loss 0.1234\ntest accuracy 0.9871\n") {
+		t.Errorf("ends %q, want the last lines kept", out[len(out)-60:])
 	}
 
 	s.RecordTaskStart(RoleReceived, "t2", "p", "h", "k")
@@ -307,14 +325,14 @@ func TestTaskWithoutFilesHasNilFiles(t *testing.T) {
 	}
 }
 
-func TestOversizedOutputDropsTheFiles(t *testing.T) {
+func TestLongOutputKeepsTheFiles(t *testing.T) {
 	s := openTest(t)
 	s.RecordTaskStart(RoleReceived, "t1", "peer-a", "alpha", "train")
 	s.RecordTaskFinish(RoleReceived, "t1", TaskDone, bytes.Repeat([]byte("x"), MaxTaskOutput+1), "",
 		[]TaskFile{{Name: "model.pt", Size: 1, SHA256: "aa"}})
 	r, _ := s.Task(RoleReceived, "t1")
-	if r.Status != TaskFailed || r.Files != nil {
-		t.Errorf("got status %s files %+v, want failed and no files", r.Status, r.Files)
+	if r.Status != TaskDone || len(r.Files) != 1 {
+		t.Errorf("got status %s files %+v, want done with model.pt", r.Status, r.Files)
 	}
 }
 
