@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/edgegrid/edgegrid/internal/blob"
 	"github.com/edgegrid/edgegrid/internal/db"
 	"github.com/edgegrid/edgegrid/internal/task"
 )
@@ -38,6 +39,7 @@ func resultsDirFor(dataDir, taskID string) (string, error) {
 //	results/a7d40e19-…/metrics.json     812 bytes       → listed
 //	results/a7d40e19-…/checkpoints/     folder          → skipped, "task: a7d40e19-…: skipping checkpoints, not a plain file"
 //	results/a7d40e19-…/passwd → /etc/passwd   link      → skipped the same way
+//	results/a7d40e19-…/.env                             → skipped, the sender would refuse that name
 //	empty folder                                        → nil, nil
 func listResultFiles(taskID, dir string) ([]db.TaskFile, error) {
 	entries, err := os.ReadDir(dir)
@@ -48,6 +50,11 @@ func listResultFiles(taskID, dir string) ([]db.TaskFile, error) {
 	for _, e := range entries {
 		if !e.Type().IsRegular() {
 			log.Printf("task: %s: skipping %s, not a plain file", taskID, e.Name())
+			continue
+		}
+		// the sender only saves names that are already safe file names, e.g. not ".env" or a 200-letter name
+		if blob.SafeName(e.Name()) != e.Name() {
+			log.Printf("task: %s: skipping %q, the sender couldn't save that name", taskID, e.Name())
 			continue
 		}
 		f, err := hashFile(filepath.Join(dir, e.Name()))

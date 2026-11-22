@@ -9,14 +9,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/edgegrid/edgegrid/internal/blob"
 )
 
-// the version byte at the start of each result message, ask and answer alike
-const resultWireVersion = 2
+// the version byte at the start of each result message: ask, answer and want alike
+// 3 added the files list and the want message
+const resultWireVersion = 3
 
-// the biggest result message, 128 KB
-// 64 KB of output grows to about 87 KB as base64 in the JSON, so this leaves room
-const maxResultSize = 128 * 1024
+// the biggest result message, 256 KB
+// 64 KB of output grows to about 87 KB as base64 in the JSON; the rest is room for the files list,
+// about 1,500 files at roughly 110 bytes each
+const maxResultSize = 256 * 1024
 
 // how long the node that ran a task keeps its result for the sender, a week
 // the sender stops asking after the same time
@@ -54,18 +58,22 @@ type ResultRequest struct {
 }
 
 // the answer from the node that ran the task
-// Output is set only for done, Error only for failed and lost
+// Output and Files are set only for done, Error only for failed and lost
 //
 //	{"status":"running"}                                      // still going, ask again later
 //	{"status":"done","output":"aGVsbG8gd29ybGQK"}             // kind hello printed "hello world\n" (base64 on the wire)
+//	{"status":"done","output":"ZXBvY2ggMTAgbG9zcyAwLjAyMQo=", // train printed "epoch 10 loss 0.021\n" and left two files
+//	 "files":[{"name":"model.pt","size":10485760,"sha256":"9f2c41…"},
+//	          {"name":"metrics.json","size":812,"sha256":"a1b05d…"}]}
 //	{"status":"failed","error":"bare: [sh -c echo boom \u003e\u00262; exit 3]: exit status 3 (stderr: \"boom\\n\")"}
-//	                                                          // kind fail exited 3; Go's JSON escapes > and & as \u003e \u0026
+//	                                                          kind fail exited 3; Go's JSON escapes > and & as \u003e \u0026
 //	{"status":"lost","error":"node restarted"}                // bravo restarted mid-run
 //	{"status":"lost","error":"no record of this task"}        // pruned after a week, never existed, or someone else's
 type ResultResponse struct {
 	Status ResultStatus `json:"status"`
 	Output []byte       `json:"output,omitempty"`
 	Error  string       `json:"error,omitempty"`
+	Files  []ResultFile `json:"files,omitempty"`
 }
 
 // nil for a successful run, otherwise why the task gave no output
@@ -95,6 +103,8 @@ func (r ResultResponse) Err() error {
 //	dispatcher -> executor   request
 //	executor   -> dispatcher response
 //
+// a done response that lists files can go on with a want frame and the files themselves, see result_files.go
+//
 // Each frame is laid out the same way:
 //
 //	byte 0      version        (resultWireVersion)
@@ -109,7 +119,8 @@ func (r ResultResponse) Err() error {
 //
 //	{"status":"running|done|failed|lost",
 //	 "output":"<base64>",   only when done, at most 64KB before encoding
-//	 "error":"<text>"}      only when failed or lost
+//	 "error":"<text>",      only when failed or lost
+//	 "files":[{"name","size","sha256"}, …]}   only when done and the run left files
 //
 // a missing task and someone else's both get lost with NoRecord, so a peer can't guess IDs
 
@@ -174,19 +185,28 @@ func AskResult(rw io.ReadWriter, taskID string) (ResultResponse, error) {
 	return resp, nil
 }
 
-// reads one ask and answers it from lookup
+// reads one ask, answers it from lookup, then sends any files the asker wants
+// lookup also gives the folder holding that task's files
 // a task ID that isn't a valid ID is answered as lost without calling lookup
 //
 //	{"task_id":"3f2b8c1e-9a4d-4c71-b2e5-7d1f0a6c9e38"}   → whatever lookup returns, e.g. {"status":"running"}
+//	{"task_id":"a7d40e19-…"}, done with [model.pt]     → the answer, then model.pt if the asker wants it
 //	{"task_id":"../../etc/passwd"}                     → {"status":"lost","error":"no record of this task"}, lookup not called
-func ServeResult(rw io.ReadWriter, lookup func(taskID string) ResultResponse) error {
+func ServeResult(rw io.ReadWriter, lookup func(taskID string) (ResultResponse, string), onProgress blob.ProgressFunc) error {
 	var req ResultRequest
 	if err := readResultFrame(rw, &req); err != nil {
 		return err
 	}
 	resp := ResultResponse{Status: StatusLost, Error: NoRecord}
+	var dir string
 	if _, err := uuid.Parse(req.TaskID); err == nil {
-		resp = lookup(req.TaskID)
+		resp, dir = lookup(req.TaskID)
 	}
-	return writeResultFrame(rw, resp)
+	if err := writeResultFrame(rw, resp); err != nil {
+		return err
+	}
+	if resp.Status != StatusDone || len(resp.Files) == 0 {
+		return nil
+	}
+	return serveFiles(rw, resp.Files, dir, onProgress)
 }

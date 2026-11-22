@@ -28,12 +28,12 @@ func TestResultRoundTrip(t *testing.T) {
 
 	errc := make(chan error, 1)
 	go func() {
-		errc <- ServeResult(server, func(got string) ResultResponse {
+		errc <- ServeResult(server, func(got string) (ResultResponse, string) {
 			if got != id {
 				t.Errorf("lookup got %q, want %q", got, id)
 			}
-			return want
-		})
+			return want, ""
+		}, nil)
 	}()
 
 	resp, err := AskResult(client, id)
@@ -51,9 +51,9 @@ func TestResultRoundTrip(t *testing.T) {
 func TestMaxOutputFitsInAFrame(t *testing.T) {
 	client, server := pipe(t)
 	out := bytes.Repeat([]byte{0xff}, 64<<10) // worst case for base64 size
-	go ServeResult(server, func(string) ResultResponse {
-		return ResultResponse{Status: StatusDone, Output: out}
-	})
+	go ServeResult(server, func(string) (ResultResponse, string) {
+		return ResultResponse{Status: StatusDone, Output: out}, ""
+	}, nil)
 	resp, err := AskResult(client, uuid.NewString())
 	if err != nil || len(resp.Output) != len(out) {
 		t.Fatalf("len=%d err=%v, want a full 64KB output through", len(resp.Output), err)
@@ -62,10 +62,10 @@ func TestMaxOutputFitsInAFrame(t *testing.T) {
 
 func TestServeResultAnswersLostForABadIDWithoutLookup(t *testing.T) {
 	client, server := pipe(t)
-	go ServeResult(server, func(string) ResultResponse {
+	go ServeResult(server, func(string) (ResultResponse, string) {
 		t.Error("lookup called for a malformed id")
-		return ResultResponse{}
-	})
+		return ResultResponse{}, ""
+	}, nil)
 	resp, err := AskResult(client, "not-a-uuid")
 	if err != nil || resp.Status != StatusLost || resp.Error != NoRecord {
 		t.Errorf("resp = %+v, err = %v, want lost with no record", resp, err)

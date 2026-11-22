@@ -1,11 +1,14 @@
 package node
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/edgegrid/edgegrid/internal/db"
+	"github.com/edgegrid/edgegrid/internal/discovery"
+	"github.com/edgegrid/edgegrid/internal/task"
 )
 
 func TestDoneRunKeepsItsFilesAndListsThem(t *testing.T) {
@@ -87,5 +90,40 @@ func TestListResultFilesHashesEachFile(t *testing.T) {
 	want := db.TaskFile{Name: "a.txt", Size: 12, SHA256: "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"}
 	if len(files) != 1 || files[0] != want {
 		t.Errorf("files = %+v, want [%+v]", files, want)
+	}
+}
+
+func TestSenderFetchesTheFilesThroughHandlePeer(t *testing.T) {
+	n, _ := nodeForTasks(t)
+	trust(t, n, "friend")
+	id, err := sendTaskID(t, n, "friend", "train", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.runs.Wait()
+
+	asker, receiver := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n.handlePeer(peerWho("friend"), discovery.Hello{NodeID: "x", Intent: discovery.IntentResult}, receiver)
+	}()
+	resp, err := task.AskResult(asker, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != task.StatusDone || len(resp.Files) != 1 || resp.Files[0].Name != "model.pt" {
+		t.Fatalf("resp = %+v, want done listing model.pt", resp)
+	}
+	dest := t.TempDir()
+	if err := task.FetchResultFiles(asker, resp.Files, []string{"model.pt"}, dest, nil); err != nil {
+		t.Fatal(err)
+	}
+	asker.Close()
+	<-done
+
+	b, err := os.ReadFile(filepath.Join(dest, "model.pt"))
+	if err != nil || string(b) != "trained" {
+		t.Errorf("fetched model.pt = %q, %v", b, err)
 	}
 }
