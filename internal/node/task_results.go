@@ -8,8 +8,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/edgegrid/edgegrid/internal/db"
+	"github.com/edgegrid/edgegrid/internal/task"
 )
 
 // the folder holding the files each task produced, one folder per task, inside the data folder
@@ -71,4 +73,28 @@ func hashFile(path string) (db.TaskFile, error) {
 		return db.TaskFile{}, fmt.Errorf("hash %s: %w", filepath.Base(path), err)
 	}
 	return db.TaskFile{Size: n, SHA256: hex.EncodeToString(h.Sum(nil))}, nil
+}
+
+// deletes task rows older than a week, and the results folders of tasks this node ran for others
+// runs each time a task is accepted, so a node that never gets tasks never cleans up
+// if this node crashes between the two, the folder stays behind; it holds no secrets, only disk space
+//
+//	results/a7d40e19-…/model.pt   received, done 8 days ago   → row and folder deleted
+//	results/3f2b8c1e-…/model.pt   received, done 2 days ago   → kept, the sender may still fetch it
+//	results/c91e…/model.pt        sent, fetched 8 days ago    → row deleted, folder kept for its owner
+func (a *Node) pruneOldResults() {
+	ids, err := a.history.PruneTasks(time.Now().Add(-task.ResultRetention))
+	if err != nil {
+		log.Printf("task: prune old results: %v", err)
+		return
+	}
+	for _, id := range ids {
+		dir, err := resultsDirFor(a.cfg.DataDir, id)
+		if err == nil {
+			err = os.RemoveAll(dir)
+		}
+		if err != nil {
+			log.Printf("task: %s: could not delete old results folder: %v", id, err)
+		}
+	}
 }

@@ -139,7 +139,7 @@ func TestPruneTasksKeepsRunningAndRecent(t *testing.T) {
 	old := time.Now().Add(-10 * 24 * time.Hour).Unix()
 	s.db.Exec(`UPDATE tasks SET started_at = ? WHERE task_id IN ('old-done', 'old-running')`, old)
 
-	if err := s.PruneTasks(time.Now().Add(-7 * 24 * time.Hour)); err != nil {
+	if _, err := s.PruneTasks(time.Now().Add(-7 * 24 * time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Task(RoleReceived, "old-done"); !errors.Is(err, ErrTaskNotFound) {
@@ -322,5 +322,34 @@ func TestFinishWithFilesOnMissingRow(t *testing.T) {
 	s := openTest(t)
 	if err := s.RecordTaskFinish(RoleReceived, "ghost", TaskDone, nil, "", []TaskFile{{Name: "a"}}); !errors.Is(err, ErrTaskNotFound) {
 		t.Errorf("err = %v, want ErrTaskNotFound", err)
+	}
+}
+
+func TestPruneTasksReturnsReceivedTasksWithFiles(t *testing.T) {
+	s := openTest(t)
+	model := []TaskFile{{Name: "model.pt", Size: 1, SHA256: "aa"}}
+	s.RecordTaskStart(RoleReceived, "old-model", "p", "h", "train")
+	s.RecordTaskFinish(RoleReceived, "old-model", TaskDone, nil, "", model)
+	s.RecordTaskStart(RoleReceived, "old-nofiles", "p", "h", "hello")
+	s.RecordTaskFinish(RoleReceived, "old-nofiles", TaskDone, nil, "", nil)
+	s.RecordTaskStart(RoleSent, "old-sent", "p", "h", "train")
+	s.RecordTaskFinish(RoleSent, "old-sent", TaskDone, nil, "", model)
+	s.RecordTaskStart(RoleReceived, "new-model", "p", "h", "train")
+	s.RecordTaskFinish(RoleReceived, "new-model", TaskDone, nil, "", model)
+	old := time.Now().Add(-8 * 24 * time.Hour).Unix()
+	s.db.Exec(`UPDATE tasks SET started_at = ? WHERE task_id LIKE 'old-%'`, old)
+
+	got, err := s.PruneTasks(time.Now().Add(-7 * 24 * time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "old-model" {
+		t.Errorf("got %v, want [old-model]", got)
+	}
+	if _, err := s.Task(RoleSent, "old-sent"); !errors.Is(err, ErrTaskNotFound) {
+		t.Error("old sent row survived")
+	}
+	if _, err := s.Task(RoleReceived, "new-model"); err != nil {
+		t.Errorf("new-model was pruned: %v", err)
 	}
 }

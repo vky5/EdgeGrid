@@ -288,12 +288,40 @@ func (s *Store) ReconcileStaleTasks() error {
 	return nil
 }
 
-// deletes finished tasks that started before the cutoff, e.g. over a week ago
-// running tasks are never deleted
-func (s *Store) PruneTasks(cutoff time.Time) error {
-	_, err := s.db.Exec(`DELETE FROM tasks WHERE started_at < ? AND status != ?`, cutoff.UTC().Unix(), TaskRunning)
+// deletes finished tasks that started before the cutoff, e.g. over a week ago, and running tasks never
+// returns the received tasks among them that had files, so the caller can delete their results folders
+// sent tasks are never returned: files the sender fetched are its owner's to keep
+//
+//	cutoff: a week ago
+//	received  done     8 days old   [model.pt]   deleted, ID returned
+//	received  done     8 days old   no files     deleted
+//	sent      done     8 days old   [model.pt]   deleted, its fetched model.pt stays
+//	received  running  8 days old                kept
+//	received  done     2 days old   [model.pt]   kept
+func (s *Store) PruneTasks(cutoff time.Time) (withFiles []string, err error) {
+	rows, err := s.db.Query(
+		`DELETE FROM tasks WHERE started_at < ? AND status != ?
+		 RETURNING task_id, role, files IS NOT NULL`,
+		cutoff.UTC().Unix(), TaskRunning)
 	if err != nil {
-		return fmt.Errorf("db: prune tasks: %w", err)
+		return nil, fmt.Errorf("db: prune tasks: %w", err)
 	}
-	return nil
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id       string
+			role     Role
+			hasFiles bool
+		)
+		if err := rows.Scan(&id, &role, &hasFiles); err != nil {
+			return nil, fmt.Errorf("db: prune tasks: %w", err)
+		}
+		if role == RoleReceived && hasFiles {
+			withFiles = append(withFiles, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: prune tasks: %w", err)
+	}
+	return withFiles, nil
 }

@@ -6,7 +6,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"time"
 
 	"github.com/edgegrid/edgegrid/internal/db"
 	"github.com/edgegrid/edgegrid/internal/discovery"
@@ -82,9 +81,7 @@ func (a *Node) receiveTask(
 		}
 		return err
 	}
-	if err := a.history.PruneTasks(time.Now().Add(-task.ResultRetention)); err != nil {
-		log.Printf("task: prune old results: %v", err)
-	}
+	a.pruneOldResults()
 
 	a.runs.Go(func() {
 		defer a.taskSlot.Release()
