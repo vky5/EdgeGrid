@@ -1,7 +1,9 @@
 package db
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -27,9 +29,42 @@ const (
 	TaskLost    TaskStatus = "lost"
 )
 
-// the biggest output saved with a task, 64 KB
-// bigger output should go as a file; here it fails instead of being cut short
+// the most output saved with a task, 64 KB; for longer output only the end is kept
+// the end of a log is where the result is, and files carry anything bigger
 const MaxTaskOutput = 64 << 10
+
+// the first line of output that was cut to fit
+const outputCutNote = "[earlier output cut, only the last 64 KB is kept]\n"
+
+// cuts output to its last 64 KB, starting at a line break, with a note saying it was cut
+//
+//	"hello world\n"                     → unchanged
+//	165 KB of "epoch 1 batch 1/938 …" lines ending "test accuracy 0.9871\n"
+//	    → "[earlier output cut, only the last 64 KB is kept]\nepoch 4 batch 117/938 …\n…test accuracy 0.9871\n"
+//	70 KB with no line break at all     → the note, then the last bytes as they are
+func lastPartOf(output []byte) []byte {
+	if len(output) <= MaxTaskOutput {
+		return output
+	}
+	keep := output[len(output)-(MaxTaskOutput-len(outputCutNote)):]
+	// start on a whole line rather than half of one
+	if i := bytes.IndexByte(keep, '\n'); i >= 0 && i < len(keep)-1 {
+		keep = keep[i+1:]
+	}
+	return append([]byte(outputCutNote), keep...)
+}
+
+// one file a finished task produced, kept with its row
+// on the node that ran it: a file in results/<task-id>/ waiting for the sender to fetch it
+// on the sender: a file it has already fetched into its own results/<task-id>/
+//
+//	TaskFile{Name: "model.pt",     Size: 4200000, SHA256: "9f2c…"}   // the trained model
+//	TaskFile{Name: "metrics.json", Size: 812,     SHA256: "a1b0…"}   // loss per epoch
+type TaskFile struct {
+	Name   string `json:"name"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
 
 // how long after sending a task we first go back and ask about it
 // e.g. sent at 09:00, first check at 09:10; the live wait covers those 10 minutes
@@ -71,9 +106,10 @@ type TaskRecord struct {
 	Output       []byte
 	Error        string // e.g. "node restarted" for a run lost to a restart
 	StartedAt    time.Time
-	FinishedAt   time.Time // zero while running
-	Attempts     int       // how many times we've gone back to ask, e.g. 2
-	NextCheckAt  time.Time // when to ask next, e.g. 09:30; zero for tasks this node received
+	FinishedAt   time.Time  // zero while running
+	Attempts     int        // how many times we've gone back to ask, e.g. 2
+	NextCheckAt  time.Time  // when to ask next, e.g. 09:30; zero for tasks this node received
+	Files        []TaskFile // files the run produced, only for done; nil when it made none
 }
 
 // adds a row for a task that just started
@@ -96,28 +132,35 @@ func (s *Store) RecordTaskStart(role Role, taskID, peerID, peerHostname, kind st
 	return nil
 }
 
-// saves how a task ended; output is kept only when it is done
-// done output over 64 KB is saved as a failure instead of being cut
+// saves how a task ended, in one write so nobody asking sees it done before its files are listed
+// output and files are kept only when it is done; output over 64 KB keeps only its last 64 KB
 //
-//	done,   12 bytes of output         → done, output kept
-//	done,   70000 bytes of output      → failed, no output, error "output exceeded 65536 bytes"
-//	failed, some output, "exit 3…"     → failed, output dropped, error kept
-//	a task ID with no row in that role → ErrTaskNotFound
-func (s *Store) RecordTaskFinish(role Role, taskID string, status TaskStatus, output []byte, errMsg string) error {
-	if status == TaskDone && len(output) > MaxTaskOutput {
-		status, output = TaskFailed, nil
-		errMsg = fmt.Sprintf("output exceeded %d bytes", MaxTaskOutput)
-	}
+//	done,   12 bytes of output, no files            → done, output kept
+//	done,   "epoch 5 loss 0.03\n",
+//	        [{model.pt 4200000 9f2c…}]              → done, output and the file list kept
+//	done,   165 KB of output, one file              → done, the last 64 KB with a note at the top, the file kept
+//	failed, some output, "exit 3…"                  → failed, output dropped, error kept
+//	a task ID with no row in that role              → ErrTaskNotFound
+func (s *Store) RecordTaskFinish(role Role, taskID string, status TaskStatus, output []byte, errMsg string, files []TaskFile) error {
 	if status != TaskDone {
-		output = nil
+		output, files = nil, nil
 	}
+	output = lastPartOf(output)
 	var errVal sql.NullString
 	if errMsg != "" {
 		errVal = sql.NullString{String: errMsg, Valid: true}
 	}
+	var filesVal sql.NullString
+	if len(files) > 0 {
+		b, err := json.Marshal(files)
+		if err != nil {
+			return fmt.Errorf("db: encode task files: %w", err)
+		}
+		filesVal = sql.NullString{String: string(b), Valid: true}
+	}
 	res, err := s.db.Exec(
-		`UPDATE tasks SET status = ?, output = ?, error = ?, finished_at = ? WHERE task_id = ? AND role = ?`,
-		status, output, errVal, time.Now().UTC().Unix(), taskID, role,
+		`UPDATE tasks SET status = ?, output = ?, error = ?, files = ?, finished_at = ? WHERE task_id = ? AND role = ?`,
+		status, output, errVal, filesVal, time.Now().UTC().Unix(), taskID, role,
 	)
 	if err != nil {
 		return fmt.Errorf("db: record task finish: %w", err)
@@ -130,7 +173,7 @@ func (s *Store) RecordTaskFinish(role Role, taskID string, status TaskStatus, ou
 
 // every column readTask expects, in its order
 const taskColumns = `task_id, role, peer_id, peer_hostname, kind, status, output, error,
-	started_at, finished_at, attempts, next_check_at`
+	started_at, finished_at, attempts, next_check_at, files`
 
 // this node's row for one task, as sender or as the one running it
 func (s *Store) Task(role Role, taskID string) (TaskRecord, error) {
@@ -220,9 +263,10 @@ func readTask(row interface{ Scan(...any) error }) (TaskRecord, error) {
 		started  int64
 		finished sql.NullInt64
 		next     sql.NullInt64
+		files    sql.NullString
 	)
 	err := row.Scan(&r.TaskID, &r.Role, &r.PeerID, &r.PeerHostname, &r.Kind, &r.Status,
-		&output, &errMsg, &started, &finished, &r.Attempts, &next)
+		&output, &errMsg, &started, &finished, &r.Attempts, &next, &files)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TaskRecord{}, err
 	}
@@ -236,6 +280,11 @@ func readTask(row interface{ Scan(...any) error }) (TaskRecord, error) {
 	}
 	if next.Valid {
 		r.NextCheckAt = time.Unix(next.Int64, 0)
+	}
+	if files.Valid {
+		if err := json.Unmarshal([]byte(files.String), &r.Files); err != nil {
+			return TaskRecord{}, fmt.Errorf("db: read task %s files: %w", r.TaskID, err)
+		}
 	}
 	return r, nil
 }
@@ -258,12 +307,40 @@ func (s *Store) ReconcileStaleTasks() error {
 	return nil
 }
 
-// deletes finished tasks that started before the cutoff, e.g. over a week ago
-// running tasks are never deleted
-func (s *Store) PruneTasks(cutoff time.Time) error {
-	_, err := s.db.Exec(`DELETE FROM tasks WHERE started_at < ? AND status != ?`, cutoff.UTC().Unix(), TaskRunning)
+// deletes finished tasks that started before the cutoff, e.g. over a week ago, and running tasks never
+// returns the received tasks among them that had files, so the caller can delete their results folders
+// sent tasks are never returned: files the sender fetched are its owner's to keep
+//
+//	cutoff: a week ago
+//	received  done     8 days old   [model.pt]   deleted, ID returned
+//	received  done     8 days old   no files     deleted
+//	sent      done     8 days old   [model.pt]   deleted, its fetched model.pt stays
+//	received  running  8 days old                kept
+//	received  done     2 days old   [model.pt]   kept
+func (s *Store) PruneTasks(cutoff time.Time) (withFiles []string, err error) {
+	rows, err := s.db.Query(
+		`DELETE FROM tasks WHERE started_at < ? AND status != ?
+		 RETURNING task_id, role, files IS NOT NULL`,
+		cutoff.UTC().Unix(), TaskRunning)
 	if err != nil {
-		return fmt.Errorf("db: prune tasks: %w", err)
+		return nil, fmt.Errorf("db: prune tasks: %w", err)
 	}
-	return nil
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id       string
+			role     Role
+			hasFiles bool
+		)
+		if err := rows.Scan(&id, &role, &hasFiles); err != nil {
+			return nil, fmt.Errorf("db: prune tasks: %w", err)
+		}
+		if role == RoleReceived && hasFiles {
+			withFiles = append(withFiles, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: prune tasks: %w", err)
+	}
+	return withFiles, nil
 }

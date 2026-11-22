@@ -362,6 +362,14 @@ func runTaskSend(kind string, input json.RawMessage) {
 		os.Exit(1)
 	}
 	os.Stdout.Write(resp.Output)
+	// on stderr, so piping the output somewhere still gets only the output
+	if len(resp.Files) > 0 {
+		dir := nodeAgent.ResultsDir(t.ID)
+		fmt.Fprintf(os.Stderr, "saved %d file(s) to %s:\n", len(resp.Files), dir)
+		for _, f := range resp.Files {
+			fmt.Fprintf(os.Stderr, "  %s  %d bytes\n", f.Name, f.Size)
+		}
+	}
 }
 
 // runs `edgegrid profile list|use <name>|current`, e.g. edgegrid profile use primary

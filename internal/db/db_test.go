@@ -181,7 +181,7 @@ func TestConcurrentWritesWaitInsteadOfFailing(t *testing.T) {
 				errs <- err
 				return
 			}
-			if err := s.RecordTaskFinish(RoleSent, id, TaskDone, []byte("ok"), ""); err != nil {
+			if err := s.RecordTaskFinish(RoleSent, id, TaskDone, []byte("ok"), "", nil); err != nil {
 				errs <- err
 			}
 		})

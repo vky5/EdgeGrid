@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,7 +21,7 @@ func TestTaskRoundTrip(t *testing.T) {
 		t.Fatalf("after start: %+v, %v", r, err)
 	}
 
-	if err := s.RecordTaskFinish(RoleReceived, "t1", TaskDone, []byte("hi\n"), ""); err != nil {
+	if err := s.RecordTaskFinish(RoleReceived, "t1", TaskDone, []byte("hi\n"), "", nil); err != nil {
 		t.Fatal(err)
 	}
 	r, _ = s.Task(RoleReceived, "t1")
@@ -32,7 +34,7 @@ func TestSentAndReceivedRowsAreIndependent(t *testing.T) {
 	s := openTest(t)
 	s.RecordTaskStart(RoleSent, "t1", "peer-b", "bravo", "hello")
 	s.RecordTaskStart(RoleReceived, "t1", "peer-a", "alpha", "hello")
-	s.RecordTaskFinish(RoleSent, "t1", TaskFailed, nil, "boom")
+	s.RecordTaskFinish(RoleSent, "t1", TaskFailed, nil, "boom", nil)
 
 	r, _ := s.Task(RoleReceived, "t1")
 	if r.Status != TaskRunning {
@@ -43,24 +45,40 @@ func TestSentAndReceivedRowsAreIndependent(t *testing.T) {
 func TestFailedTaskDropsOutputAndKeepsError(t *testing.T) {
 	s := openTest(t)
 	s.RecordTaskStart(RoleReceived, "t1", "p", "h", "k")
-	s.RecordTaskFinish(RoleReceived, "t1", TaskFailed, []byte("partial"), "exit 3")
+	s.RecordTaskFinish(RoleReceived, "t1", TaskFailed, []byte("partial"), "exit 3", nil)
 	r, _ := s.Task(RoleReceived, "t1")
 	if r.Output != nil || r.Error != "exit 3" {
 		t.Errorf("got %+v", r)
 	}
 }
 
-func TestOversizedOutputBecomesAFailure(t *testing.T) {
+func TestLongOutputKeepsItsLastPart(t *testing.T) {
 	s := openTest(t)
 	s.RecordTaskStart(RoleReceived, "t1", "p", "h", "k")
-	s.RecordTaskFinish(RoleReceived, "t1", TaskDone, bytes.Repeat([]byte("x"), MaxTaskOutput+1), "")
+	// about 165 KB of per-batch lines, like 5 epochs of MNIST, then the line that matters
+	var log bytes.Buffer
+	for e := 1; e <= 5; e++ {
+		for b := 1; b <= 938; b++ {
+			fmt.Fprintf(&log, "epoch %d batch %d/938 loss 0.1234\n", e, b)
+		}
+	}
+	log.WriteString("test accuracy 0.9871\n")
+	s.RecordTaskFinish(RoleReceived, "t1", TaskDone, log.Bytes(), "", nil)
+
 	r, _ := s.Task(RoleReceived, "t1")
-	if r.Status != TaskFailed || r.Output != nil || r.Error == "" {
-		t.Errorf("got %+v, want failed with no output", r)
+	out := string(r.Output)
+	if r.Status != TaskDone || len(r.Output) > MaxTaskOutput {
+		t.Fatalf("status %s, %d bytes; want done within %d", r.Status, len(r.Output), MaxTaskOutput)
+	}
+	if !strings.HasPrefix(out, outputCutNote+"epoch ") {
+		t.Errorf("starts %q, want the note then a whole line", out[:min(len(out), 80)])
+	}
+	if !strings.HasSuffix(out, "epoch 5 batch 938/938 loss 0.1234\ntest accuracy 0.9871\n") {
+		t.Errorf("ends %q, want the last lines kept", out[len(out)-60:])
 	}
 
 	s.RecordTaskStart(RoleReceived, "t2", "p", "h", "k")
-	s.RecordTaskFinish(RoleReceived, "t2", TaskDone, bytes.Repeat([]byte("x"), MaxTaskOutput), "")
+	s.RecordTaskFinish(RoleReceived, "t2", TaskDone, bytes.Repeat([]byte("x"), MaxTaskOutput), "", nil)
 	if r, _ := s.Task(RoleReceived, "t2"); r.Status != TaskDone {
 		t.Errorf("output exactly at the limit was rejected: %+v", r)
 	}
@@ -84,7 +102,7 @@ func TestReceivedTaskForChecksTheDispatcher(t *testing.T) {
 
 func TestFinishUnknownTaskIsAnError(t *testing.T) {
 	s := openTest(t)
-	if err := s.RecordTaskFinish(RoleReceived, "ghost", TaskDone, nil, ""); !errors.Is(err, ErrTaskNotFound) {
+	if err := s.RecordTaskFinish(RoleReceived, "ghost", TaskDone, nil, "", nil); !errors.Is(err, ErrTaskNotFound) {
 		t.Errorf("err = %v, want ErrTaskNotFound", err)
 	}
 }
@@ -101,7 +119,7 @@ func TestReconcileStaleTasks(t *testing.T) {
 	s := openTest(t)
 	s.RecordTaskStart(RoleReceived, "run", "p", "h", "k")
 	s.RecordTaskStart(RoleReceived, "fin", "p", "h", "k")
-	s.RecordTaskFinish(RoleReceived, "fin", TaskDone, []byte("ok"), "")
+	s.RecordTaskFinish(RoleReceived, "fin", TaskDone, []byte("ok"), "", nil)
 
 	if err := s.ReconcileStaleTasks(); err != nil {
 		t.Fatal(err)
@@ -134,12 +152,12 @@ func TestPruneTasksKeepsRunningAndRecent(t *testing.T) {
 	for _, id := range []string{"old-done", "old-running", "new-done"} {
 		s.RecordTaskStart(RoleReceived, id, "p", "h", "k")
 	}
-	s.RecordTaskFinish(RoleReceived, "old-done", TaskDone, nil, "")
-	s.RecordTaskFinish(RoleReceived, "new-done", TaskDone, nil, "")
+	s.RecordTaskFinish(RoleReceived, "old-done", TaskDone, nil, "", nil)
+	s.RecordTaskFinish(RoleReceived, "new-done", TaskDone, nil, "", nil)
 	old := time.Now().Add(-10 * 24 * time.Hour).Unix()
 	s.db.Exec(`UPDATE tasks SET started_at = ? WHERE task_id IN ('old-done', 'old-running')`, old)
 
-	if err := s.PruneTasks(time.Now().Add(-7 * 24 * time.Hour)); err != nil {
+	if _, err := s.PruneTasks(time.Now().Add(-7 * 24 * time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Task(RoleReceived, "old-done"); !errors.Is(err, ErrTaskNotFound) {
@@ -202,7 +220,7 @@ func TestDueSentTasksListsOnlyRunningSentTasksThatAreDue(t *testing.T) {
 	s := openTest(t)
 	s.RecordTaskStart(RoleSent, "due", "p", "h", "k")
 	s.RecordTaskStart(RoleSent, "done", "p", "h", "k")
-	s.RecordTaskFinish(RoleSent, "done", TaskDone, []byte("ok"), "")
+	s.RecordTaskFinish(RoleSent, "done", TaskDone, []byte("ok"), "", nil)
 	s.RecordTaskStart(RoleReceived, "in", "p", "h", "k")
 
 	if due, _ := s.DueSentTasks(time.Now(), 10); len(due) != 0 {
@@ -259,7 +277,7 @@ func TestClaimSentTaskOnlyOncePerDueCheck(t *testing.T) {
 func TestClaimSentTaskSkipsFinishedAndReceivedTasks(t *testing.T) {
 	s := openTest(t)
 	s.RecordTaskStart(RoleSent, "fin", "p", "h", "k")
-	s.RecordTaskFinish(RoleSent, "fin", TaskDone, nil, "")
+	s.RecordTaskFinish(RoleSent, "fin", TaskDone, nil, "", nil)
 	s.RecordTaskStart(RoleReceived, "in", "p", "h", "k")
 	now := time.Now().Add(FirstCheckAfter + time.Minute)
 
@@ -267,5 +285,89 @@ func TestClaimSentTaskSkipsFinishedAndReceivedTasks(t *testing.T) {
 		if ok, err := s.ClaimSentTask(id, now, now.Add(time.Hour)); ok || err != nil {
 			t.Errorf("%s: claimed = %v, err = %v, want false", id, ok, err)
 		}
+	}
+}
+
+func TestDoneTaskKeepsItsFiles(t *testing.T) {
+	s := openTest(t)
+	s.RecordTaskStart(RoleReceived, "t1", "peer-a", "alpha", "train")
+	files := []TaskFile{
+		{Name: "model.pt", Size: 4200000, SHA256: "9f2c"},
+		{Name: "metrics.json", Size: 812, SHA256: "a1b0"},
+	}
+	if err := s.RecordTaskFinish(RoleReceived, "t1", TaskDone, []byte("loss 0.03\n"), "", files); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.Task(RoleReceived, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != TaskDone || string(r.Output) != "loss 0.03\n" || len(r.Files) != 2 || r.Files[0] != files[0] || r.Files[1] != files[1] {
+		t.Errorf("got %+v", r)
+	}
+
+	// the same list comes back through the sender's query path too
+	got, _ := s.ReceivedTaskFor("t1", "peer-a")
+	if len(got.Files) != 2 {
+		t.Errorf("ReceivedTaskFor files = %+v", got.Files)
+	}
+}
+
+func TestTaskWithoutFilesHasNilFiles(t *testing.T) {
+	s := openTest(t)
+	s.RecordTaskStart(RoleReceived, "t1", "peer-a", "alpha", "hello")
+	s.RecordTaskFinish(RoleReceived, "t1", TaskDone, []byte("hi\n"), "", nil)
+	if r, _ := s.Task(RoleReceived, "t1"); r.Files != nil {
+		t.Errorf("files = %+v, want nil", r.Files)
+	}
+	if r, _ := s.Task(RoleReceived, "t1"); r.Status != TaskDone {
+		t.Errorf("status = %s", r.Status)
+	}
+}
+
+func TestLongOutputKeepsTheFiles(t *testing.T) {
+	s := openTest(t)
+	s.RecordTaskStart(RoleReceived, "t1", "peer-a", "alpha", "train")
+	s.RecordTaskFinish(RoleReceived, "t1", TaskDone, bytes.Repeat([]byte("x"), MaxTaskOutput+1), "",
+		[]TaskFile{{Name: "model.pt", Size: 1, SHA256: "aa"}})
+	r, _ := s.Task(RoleReceived, "t1")
+	if r.Status != TaskDone || len(r.Files) != 1 {
+		t.Errorf("got status %s files %+v, want done with model.pt", r.Status, r.Files)
+	}
+}
+
+func TestFinishWithFilesOnMissingRow(t *testing.T) {
+	s := openTest(t)
+	if err := s.RecordTaskFinish(RoleReceived, "ghost", TaskDone, nil, "", []TaskFile{{Name: "a"}}); !errors.Is(err, ErrTaskNotFound) {
+		t.Errorf("err = %v, want ErrTaskNotFound", err)
+	}
+}
+
+func TestPruneTasksReturnsReceivedTasksWithFiles(t *testing.T) {
+	s := openTest(t)
+	model := []TaskFile{{Name: "model.pt", Size: 1, SHA256: "aa"}}
+	s.RecordTaskStart(RoleReceived, "old-model", "p", "h", "train")
+	s.RecordTaskFinish(RoleReceived, "old-model", TaskDone, nil, "", model)
+	s.RecordTaskStart(RoleReceived, "old-nofiles", "p", "h", "hello")
+	s.RecordTaskFinish(RoleReceived, "old-nofiles", TaskDone, nil, "", nil)
+	s.RecordTaskStart(RoleSent, "old-sent", "p", "h", "train")
+	s.RecordTaskFinish(RoleSent, "old-sent", TaskDone, nil, "", model)
+	s.RecordTaskStart(RoleReceived, "new-model", "p", "h", "train")
+	s.RecordTaskFinish(RoleReceived, "new-model", TaskDone, nil, "", model)
+	old := time.Now().Add(-8 * 24 * time.Hour).Unix()
+	s.db.Exec(`UPDATE tasks SET started_at = ? WHERE task_id LIKE 'old-%'`, old)
+
+	got, err := s.PruneTasks(time.Now().Add(-7 * 24 * time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "old-model" {
+		t.Errorf("got %v, want [old-model]", got)
+	}
+	if _, err := s.Task(RoleSent, "old-sent"); !errors.Is(err, ErrTaskNotFound) {
+		t.Error("old sent row survived")
+	}
+	if _, err := s.Task(RoleReceived, "new-model"); err != nil {
+		t.Errorf("new-model was pruned: %v", err)
 	}
 }

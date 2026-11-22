@@ -26,7 +26,7 @@ func newTestExecutor(t *testing.T, defs ...Definition) (*Executor, string) {
 func TestRunReturnsStdout(t *testing.T) {
 	e, _ := newTestExecutor(t, bare("hello", "echo", "hello world"))
 
-	out, err := e.Run(context.Background(), "hello", nil)
+	out, err := e.Run(context.Background(), "hello", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestRunReturnsStdout(t *testing.T) {
 func TestRunFeedsInputOnStdin(t *testing.T) {
 	e, _ := newTestExecutor(t, bare("echo", "cat"))
 
-	out, err := e.Run(context.Background(), "echo", []byte(`{"x":1}`))
+	out, err := e.Run(context.Background(), "echo", []byte(`{"x":1}`), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestRunFeedsInputOnStdin(t *testing.T) {
 func TestRunReportsAFailingProcessWithItsStderr(t *testing.T) {
 	e, _ := newTestExecutor(t, bare("fail", "sh", "-c", "echo boom >&2; exit 3"))
 
-	_, err := e.Run(context.Background(), "fail", nil)
+	_, err := e.Run(context.Background(), "fail", nil, "")
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("err = %v, want a failure that includes stderr", err)
 	}
@@ -62,7 +62,7 @@ func TestRunIsKilledWhenTheContextIsCancelled(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := e.Run(ctx, "sleep", nil)
+	_, err := e.Run(ctx, "sleep", nil, "")
 	if err == nil {
 		t.Fatal("a cancelled run reported success")
 	}
@@ -71,19 +71,55 @@ func TestRunIsKilledWhenTheContextIsCancelled(t *testing.T) {
 	}
 }
 
-func TestRunRejectsOutputOverTheCap(t *testing.T) {
-	e, _ := newTestExecutor(t, bare("chatty", "head", "-c", "2000000", "/dev/zero"))
+func TestRunKeepsTheEndOfLongOutput(t *testing.T) {
+	// 2 MB of zeros, then a last line: the zeros at the start are dropped, the last line survives
+	e, _ := newTestExecutor(t, bare("chatty", "sh", "-c", "head -c 2000000 /dev/zero; echo test accuracy 0.9871"))
 
-	_, err := e.Run(context.Background(), "chatty", nil)
-	if err == nil || !strings.Contains(err.Error(), "exceeded") {
-		t.Fatalf("err = %v, want an output-cap error", err)
+	out, err := e.Run(context.Background(), "chatty", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != maxOutput || !strings.HasSuffix(string(out), "test accuracy 0.9871\n") {
+		t.Errorf("got %d bytes ending %q, want the last %d bytes", len(out), out[max(0, len(out)-30):], maxOutput)
+	}
+}
+
+func TestFailedRunShowsTheEndOfItsErrors(t *testing.T) {
+	// 10 KB of noise on stderr, then the line that says what broke
+	e, _ := newTestExecutor(t, bare("crash", "sh", "-c", "head -c 10000 /dev/zero | tr '\\0' x >&2; echo 'ValueError: bad shape' >&2; exit 1"))
+
+	_, err := e.Run(context.Background(), "crash", nil, "")
+	if err == nil || !strings.Contains(err.Error(), "ValueError: bad shape") {
+		t.Errorf("err = %.200v…, want the last line of stderr in it", err)
+	}
+}
+
+func TestTailBuffer(t *testing.T) {
+	b := &tailBuffer{limit: 10}
+	b.Write([]byte("hello "))
+	b.Write([]byte("world, bye\n"))
+	if got := b.String(); got != "orld, bye\n" {
+		t.Errorf("got %q", got)
+	}
+	small := &tailBuffer{limit: 10}
+	small.Write([]byte("hi\n"))
+	if got := small.String(); got != "hi\n" {
+		t.Errorf("got %q", got)
+	}
+	// many small writes past twice the limit still end with the last 10 bytes
+	many := &tailBuffer{limit: 10}
+	for i := 0; i < 100; i++ {
+		many.Write([]byte{byte('a' + i%26)})
+	}
+	if got := many.String(); got != "mnopqrstuv" {
+		t.Errorf("got %q", got)
 	}
 }
 
 func TestRunCleansUpItsWorkDir(t *testing.T) {
 	e, root := newTestExecutor(t, bare("touch", "touch", "leftover"))
 
-	if _, err := e.Run(context.Background(), "touch", nil); err != nil {
+	if _, err := e.Run(context.Background(), "touch", nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(root)
@@ -113,7 +149,7 @@ func TestSupports(t *testing.T) {
 			t.Errorf("Supports(%q) = %v, want %v", kind, got, want)
 		}
 	}
-	if _, err := e.Run(context.Background(), "needs-model", nil); err == nil {
+	if _, err := e.Run(context.Background(), "needs-model", nil, ""); err == nil {
 		t.Error("Run accepted a kind Supports rejects")
 	}
 }
@@ -152,5 +188,34 @@ func TestLoadDefinitions(t *testing.T) {
 	}
 	if _, err := LoadDefinitions(path); err == nil {
 		t.Error("garbled registry was accepted")
+	}
+}
+
+func TestRunTellsTheProgramWhereToSaveFiles(t *testing.T) {
+	e, root := newTestExecutor(t, bare("train", "sh", "-c", `echo trained > "$EDGEGRID_OUTPUT_DIR/model.pt"; echo done`))
+	outDir := filepath.Join(t.TempDir(), "results", "a7d40e19")
+	if err := os.MkdirAll(outDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := e.Run(context.Background(), "train", nil, outDir)
+	if err != nil || string(out) != "done\n" {
+		t.Fatalf("out %q, err %v", out, err)
+	}
+	b, err := os.ReadFile(filepath.Join(outDir, "model.pt"))
+	if err != nil || string(b) != "trained\n" {
+		t.Errorf("model.pt = %q, %v; want it kept in outDir", b, err)
+	}
+	if entries, _ := os.ReadDir(root); len(entries) != 0 {
+		t.Errorf("%d run dir(s) left behind", len(entries))
+	}
+}
+
+func TestRunWithoutOutDirSetsNoVariable(t *testing.T) {
+	t.Setenv(OutputDirEnv, "") // the node's own environment shouldn't leak a value into the test
+	e, _ := newTestExecutor(t, bare("show", "sh", "-c", `echo "[$EDGEGRID_OUTPUT_DIR]"`))
+	out, err := e.Run(context.Background(), "show", nil, "")
+	if err != nil || string(out) != "[]\n" {
+		t.Errorf("out %q, err %v", out, err)
 	}
 }
