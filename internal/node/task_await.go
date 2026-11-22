@@ -88,7 +88,7 @@ func awaitResult(ctx context.Context, plan pollPlan, ask func(context.Context) (
 	}
 }
 
-// asks a peer once how a task went: connect, say hello, ask, hang up
+// asks a peer once how a task went: connect, say hello, ask, fetch any files, hang up
 func (a *Node) askResult(ctx context.Context, peer discovery.Peer, taskID string) (task.ResultResponse, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
@@ -101,19 +101,44 @@ func (a *Node) askResult(ctx context.Context, peer discovery.Peer, taskID string
 	if _, err := discovery.ExchangeAsDialer(conn, a.selfHello(discovery.IntentResult), 10*time.Second); err != nil {
 		return task.ResultResponse{}, err
 	}
-	if err := conn.SetDeadline(time.Now().Add(resultTimeout)); err != nil {
+	return a.askOver(conn, taskID)
+}
+
+// the ask itself, on a connection that has already said hello
+// a done answer counts only once every file it lists is saved here, so a failed download is an error
+// and the caller asks again later, the same as when the peer can't be reached
+//
+//	bravo answers running                          → running, nil
+//	bravo answers done, no files                   → done, nil
+//	bravo answers done with [model.pt], fetched    → done, nil; model.pt is in results/<task-id>/
+//	bravo answers done with [model.pt], drop at 60% → error "fetch result files: …"; asked again later
+func (a *Node) askOver(conn net.Conn, taskID string) (task.ResultResponse, error) {
+	began := time.Now()
+	if err := conn.SetDeadline(began.Add(resultTimeout)); err != nil {
 		return task.ResultResponse{}, err
 	}
-	return task.AskResult(conn, taskID)
+	resp, err := task.AskResult(conn, taskID)
+	if err != nil || resp.Status != task.StatusDone || len(resp.Files) == 0 {
+		return resp, err
+	}
+	if err := a.fetchResultFiles(conn, began, taskID, resp.Files); err != nil {
+		return task.ResultResponse{}, fmt.Errorf("fetch result files: %w", err)
+	}
+	return resp, nil
 }
 
 // saves the result on this node's row for the sent task
 // with the other node's reason, e.g. "node restarted" or "no record of this task"
+// and, for done, the files it fetched into results/<task-id>/
 func (a *Node) recordSentResult(taskID string, resp task.ResultResponse) {
 	if a.history == nil {
 		return
 	}
-	if err := a.history.RecordTaskFinish(db.RoleSent, taskID, db.TaskStatus(resp.Status), resp.Output, resp.Error, nil); err != nil && !errors.Is(err, db.ErrTaskNotFound) {
+	var files []db.TaskFile
+	for _, f := range resp.Files {
+		files = append(files, db.TaskFile{Name: f.Name, Size: f.Size, SHA256: f.SHA256})
+	}
+	if err := a.history.RecordTaskFinish(db.RoleSent, taskID, db.TaskStatus(resp.Status), resp.Output, resp.Error, files); err != nil && !errors.Is(err, db.ErrTaskNotFound) {
 		log.Printf("task: could not record result of %q: %v", taskID, err)
 	}
 }

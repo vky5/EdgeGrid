@@ -51,6 +51,9 @@ type Node struct {
 	lock      *profileLock // this profile's lock, held until Close
 	transfers registry
 	taskSlot  TaskSlot
+	// task IDs whose result files are downloading right now, so two goroutines never fetch the same task
+	// the two ways that can happen are written out on fetchResultFiles
+	fetching sync.Map
 
 	executor *executor.Executor
 	runCtx   context.Context // cancelled by Close, which kills any running task

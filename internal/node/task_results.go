@@ -3,9 +3,11 @@ package node
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -104,4 +106,89 @@ func (a *Node) pruneOldResults() {
 			log.Printf("task: %s: could not delete old results folder: %v", id, err)
 		}
 	}
+}
+
+// another ask for the same task is already downloading its files, e.g. the live wait and a background check
+var errFetchInProgress = errors.New("this task's files are already being fetched")
+
+// the folder a sent task's files are saved in, e.g. /home/alpha/.edgegrid/alpha/results/a7d40e19-…
+// "" if the path can't be worked out
+func (a *Node) ResultsDir(taskID string) string {
+	dir, err := resultsDirFor(a.cfg.DataDir, taskID)
+	if err != nil {
+		return ""
+	}
+	return dir
+}
+
+// downloads a done task's files into results/<task-id>/ on the connection that just got the answer
+// files already there with the same size and hash are skipped, so asking twice doesn't download twice
+//
+//	listed [model.pt metrics.json], folder empty            → wants both
+//	listed [model.pt metrics.json], model.pt already saved  → wants only metrics.json
+//	listed [model.pt metrics.json], both already saved      → wants nothing, done at once
+//	another ask is fetching this task right now              → errFetchInProgress, nothing sent
+//	model.pt is 2 GB, 1 GB free                              → "not enough free space …", nothing sent
+//
+// why a.fetching is needed: the live wait gives up at 10 min and background checks start at 10 min,
+// so their asks don't overlap, but a download that is already running does
+//
+//	case 1, live download runs past the 10-minute mark
+//	09:00     task sent; first background check due 09:10
+//	09:09:50  live wait asks → done, [model.pt 2 GB] → claims a7d40e19, starts a ~10 min download
+//	09:10     live wait's time is up, but its download keeps going
+//	09:10     background check due → done → a7d40e19 already in fetching → errFetchInProgress, tries later
+//
+//	case 2, background against background
+//	09:10     worker 1 claims the row, next check 09:30 → done → claims a7d40e19, starts a 25 min download
+//	09:30     row still running, so the feeder hands it to worker 2 → done → errFetchInProgress, tries later
+//	09:35     worker 1 finishes; the next check finds the files already here and downloads nothing
+func (a *Node) fetchResultFiles(conn net.Conn, began time.Time, taskID string, files []task.ResultFile) error {
+	if _, busy := a.fetching.LoadOrStore(taskID, struct{}{}); busy {
+		return errFetchInProgress
+	}
+	defer a.fetching.Delete(taskID)
+
+	dir, err := resultsDirFor(a.cfg.DataDir, taskID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("results folder: %w", err)
+	}
+
+	var want []string
+	var need int64
+	for _, f := range files {
+		if have, err := hashFile(filepath.Join(dir, f.Name)); err == nil && have.Size == f.Size && have.SHA256 == f.SHA256 {
+			continue
+		}
+		want = append(want, f.Name)
+		need += f.Size
+	}
+	if len(want) > 0 {
+		if err := checkFreeSpace(dir, need); err != nil {
+			return err
+		}
+		log.Printf("task: %s: fetching %d file(s), %s, into %s", taskID, len(want), formatBytes(uint64(need)), dir)
+	}
+
+	// the 10s for the answer is over; now 60s with nothing moving, 30 minutes at most
+	refreshDeadline(conn, began, idleTimeout, resultFilesTimeout)
+	progress := func(blob.Progress) { refreshDeadline(conn, began, idleTimeout, resultFilesTimeout) }
+	return task.FetchResultFiles(conn, files, want, dir, progress)
+}
+
+// refuses a download that won't fit with 256 MB to spare; if free space can't be read it goes ahead
+func checkFreeSpace(dir string, size int64) error {
+	free, err := freeBytesFunc(dir)
+	if err != nil {
+		log.Printf("task: could not read free space in %s, not checking: %v", dir, err)
+		return nil
+	}
+	if need := uint64(size) + spaceHeadroom; free < need {
+		return fmt.Errorf("not enough free space: need %s (files %s plus %s spare), have %s",
+			formatBytes(need), formatBytes(uint64(size)), formatBytes(spaceHeadroom), formatBytes(free))
+	}
+	return nil
 }
