@@ -37,6 +37,7 @@ CREATE TABLE tasks (
 	finished_at   INTEGER,
 	attempts      INTEGER NOT NULL DEFAULT 0,
 	next_check_at INTEGER,
+	files         TEXT,
 	PRIMARY KEY (task_id, role)
 );
 CREATE INDEX idx_tasks_started_at ON tasks(started_at);

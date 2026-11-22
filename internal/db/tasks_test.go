@@ -19,7 +19,7 @@ func TestTaskRoundTrip(t *testing.T) {
 		t.Fatalf("after start: %+v, %v", r, err)
 	}
 
-	if err := s.RecordTaskFinish(RoleReceived, "t1", TaskDone, []byte("hi\n"), ""); err != nil {
+	if err := s.RecordTaskFinish(RoleReceived, "t1", TaskDone, []byte("hi\n"), "", nil); err != nil {
 		t.Fatal(err)
 	}
 	r, _ = s.Task(RoleReceived, "t1")
@@ -32,7 +32,7 @@ func TestSentAndReceivedRowsAreIndependent(t *testing.T) {
 	s := openTest(t)
 	s.RecordTaskStart(RoleSent, "t1", "peer-b", "bravo", "hello")
 	s.RecordTaskStart(RoleReceived, "t1", "peer-a", "alpha", "hello")
-	s.RecordTaskFinish(RoleSent, "t1", TaskFailed, nil, "boom")
+	s.RecordTaskFinish(RoleSent, "t1", TaskFailed, nil, "boom", nil)
 
 	r, _ := s.Task(RoleReceived, "t1")
 	if r.Status != TaskRunning {
@@ -43,7 +43,7 @@ func TestSentAndReceivedRowsAreIndependent(t *testing.T) {
 func TestFailedTaskDropsOutputAndKeepsError(t *testing.T) {
 	s := openTest(t)
 	s.RecordTaskStart(RoleReceived, "t1", "p", "h", "k")
-	s.RecordTaskFinish(RoleReceived, "t1", TaskFailed, []byte("partial"), "exit 3")
+	s.RecordTaskFinish(RoleReceived, "t1", TaskFailed, []byte("partial"), "exit 3", nil)
 	r, _ := s.Task(RoleReceived, "t1")
 	if r.Output != nil || r.Error != "exit 3" {
 		t.Errorf("got %+v", r)
@@ -53,14 +53,14 @@ func TestFailedTaskDropsOutputAndKeepsError(t *testing.T) {
 func TestOversizedOutputBecomesAFailure(t *testing.T) {
 	s := openTest(t)
 	s.RecordTaskStart(RoleReceived, "t1", "p", "h", "k")
-	s.RecordTaskFinish(RoleReceived, "t1", TaskDone, bytes.Repeat([]byte("x"), MaxTaskOutput+1), "")
+	s.RecordTaskFinish(RoleReceived, "t1", TaskDone, bytes.Repeat([]byte("x"), MaxTaskOutput+1), "", nil)
 	r, _ := s.Task(RoleReceived, "t1")
 	if r.Status != TaskFailed || r.Output != nil || r.Error == "" {
 		t.Errorf("got %+v, want failed with no output", r)
 	}
 
 	s.RecordTaskStart(RoleReceived, "t2", "p", "h", "k")
-	s.RecordTaskFinish(RoleReceived, "t2", TaskDone, bytes.Repeat([]byte("x"), MaxTaskOutput), "")
+	s.RecordTaskFinish(RoleReceived, "t2", TaskDone, bytes.Repeat([]byte("x"), MaxTaskOutput), "", nil)
 	if r, _ := s.Task(RoleReceived, "t2"); r.Status != TaskDone {
 		t.Errorf("output exactly at the limit was rejected: %+v", r)
 	}
@@ -84,7 +84,7 @@ func TestReceivedTaskForChecksTheDispatcher(t *testing.T) {
 
 func TestFinishUnknownTaskIsAnError(t *testing.T) {
 	s := openTest(t)
-	if err := s.RecordTaskFinish(RoleReceived, "ghost", TaskDone, nil, ""); !errors.Is(err, ErrTaskNotFound) {
+	if err := s.RecordTaskFinish(RoleReceived, "ghost", TaskDone, nil, "", nil); !errors.Is(err, ErrTaskNotFound) {
 		t.Errorf("err = %v, want ErrTaskNotFound", err)
 	}
 }
@@ -101,7 +101,7 @@ func TestReconcileStaleTasks(t *testing.T) {
 	s := openTest(t)
 	s.RecordTaskStart(RoleReceived, "run", "p", "h", "k")
 	s.RecordTaskStart(RoleReceived, "fin", "p", "h", "k")
-	s.RecordTaskFinish(RoleReceived, "fin", TaskDone, []byte("ok"), "")
+	s.RecordTaskFinish(RoleReceived, "fin", TaskDone, []byte("ok"), "", nil)
 
 	if err := s.ReconcileStaleTasks(); err != nil {
 		t.Fatal(err)
@@ -134,8 +134,8 @@ func TestPruneTasksKeepsRunningAndRecent(t *testing.T) {
 	for _, id := range []string{"old-done", "old-running", "new-done"} {
 		s.RecordTaskStart(RoleReceived, id, "p", "h", "k")
 	}
-	s.RecordTaskFinish(RoleReceived, "old-done", TaskDone, nil, "")
-	s.RecordTaskFinish(RoleReceived, "new-done", TaskDone, nil, "")
+	s.RecordTaskFinish(RoleReceived, "old-done", TaskDone, nil, "", nil)
+	s.RecordTaskFinish(RoleReceived, "new-done", TaskDone, nil, "", nil)
 	old := time.Now().Add(-10 * 24 * time.Hour).Unix()
 	s.db.Exec(`UPDATE tasks SET started_at = ? WHERE task_id IN ('old-done', 'old-running')`, old)
 
@@ -202,7 +202,7 @@ func TestDueSentTasksListsOnlyRunningSentTasksThatAreDue(t *testing.T) {
 	s := openTest(t)
 	s.RecordTaskStart(RoleSent, "due", "p", "h", "k")
 	s.RecordTaskStart(RoleSent, "done", "p", "h", "k")
-	s.RecordTaskFinish(RoleSent, "done", TaskDone, []byte("ok"), "")
+	s.RecordTaskFinish(RoleSent, "done", TaskDone, []byte("ok"), "", nil)
 	s.RecordTaskStart(RoleReceived, "in", "p", "h", "k")
 
 	if due, _ := s.DueSentTasks(time.Now(), 10); len(due) != 0 {
@@ -259,7 +259,7 @@ func TestClaimSentTaskOnlyOncePerDueCheck(t *testing.T) {
 func TestClaimSentTaskSkipsFinishedAndReceivedTasks(t *testing.T) {
 	s := openTest(t)
 	s.RecordTaskStart(RoleSent, "fin", "p", "h", "k")
-	s.RecordTaskFinish(RoleSent, "fin", TaskDone, nil, "")
+	s.RecordTaskFinish(RoleSent, "fin", TaskDone, nil, "", nil)
 	s.RecordTaskStart(RoleReceived, "in", "p", "h", "k")
 	now := time.Now().Add(FirstCheckAfter + time.Minute)
 
@@ -267,5 +267,60 @@ func TestClaimSentTaskSkipsFinishedAndReceivedTasks(t *testing.T) {
 		if ok, err := s.ClaimSentTask(id, now, now.Add(time.Hour)); ok || err != nil {
 			t.Errorf("%s: claimed = %v, err = %v, want false", id, ok, err)
 		}
+	}
+}
+
+func TestDoneTaskKeepsItsFiles(t *testing.T) {
+	s := openTest(t)
+	s.RecordTaskStart(RoleReceived, "t1", "peer-a", "alpha", "train")
+	files := []TaskFile{
+		{Name: "model.pt", Size: 4200000, SHA256: "9f2c"},
+		{Name: "metrics.json", Size: 812, SHA256: "a1b0"},
+	}
+	if err := s.RecordTaskFinish(RoleReceived, "t1", TaskDone, []byte("loss 0.03\n"), "", files); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.Task(RoleReceived, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != TaskDone || string(r.Output) != "loss 0.03\n" || len(r.Files) != 2 || r.Files[0] != files[0] || r.Files[1] != files[1] {
+		t.Errorf("got %+v", r)
+	}
+
+	// the same list comes back through the sender's query path too
+	got, _ := s.ReceivedTaskFor("t1", "peer-a")
+	if len(got.Files) != 2 {
+		t.Errorf("ReceivedTaskFor files = %+v", got.Files)
+	}
+}
+
+func TestTaskWithoutFilesHasNilFiles(t *testing.T) {
+	s := openTest(t)
+	s.RecordTaskStart(RoleReceived, "t1", "peer-a", "alpha", "hello")
+	s.RecordTaskFinish(RoleReceived, "t1", TaskDone, []byte("hi\n"), "", nil)
+	if r, _ := s.Task(RoleReceived, "t1"); r.Files != nil {
+		t.Errorf("files = %+v, want nil", r.Files)
+	}
+	if r, _ := s.Task(RoleReceived, "t1"); r.Status != TaskDone {
+		t.Errorf("status = %s", r.Status)
+	}
+}
+
+func TestOversizedOutputDropsTheFiles(t *testing.T) {
+	s := openTest(t)
+	s.RecordTaskStart(RoleReceived, "t1", "peer-a", "alpha", "train")
+	s.RecordTaskFinish(RoleReceived, "t1", TaskDone, bytes.Repeat([]byte("x"), MaxTaskOutput+1), "",
+		[]TaskFile{{Name: "model.pt", Size: 1, SHA256: "aa"}})
+	r, _ := s.Task(RoleReceived, "t1")
+	if r.Status != TaskFailed || r.Files != nil {
+		t.Errorf("got status %s files %+v, want failed and no files", r.Status, r.Files)
+	}
+}
+
+func TestFinishWithFilesOnMissingRow(t *testing.T) {
+	s := openTest(t)
+	if err := s.RecordTaskFinish(RoleReceived, "ghost", TaskDone, nil, "", []TaskFile{{Name: "a"}}); !errors.Is(err, ErrTaskNotFound) {
+		t.Errorf("err = %v, want ErrTaskNotFound", err)
 	}
 }

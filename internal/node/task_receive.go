@@ -106,7 +106,7 @@ func (a *Node) receiveTask(
 // saves how a task ended
 // if this fails the row shows running until the next restart marks it lost, so it is logged
 func (a *Node) finishTask(t *task.Task, status db.TaskStatus, out []byte, errMsg string) {
-	if err := a.history.RecordTaskFinish(db.RoleReceived, t.ID, status, out, errMsg); err != nil {
+	if err := a.history.RecordTaskFinish(db.RoleReceived, t.ID, status, out, errMsg, nil); err != nil {
 		log.Printf("task: %q: could not store its result, dispatcher will see it running: %v", t.ID, err)
 	}
 }

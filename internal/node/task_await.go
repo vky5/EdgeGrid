@@ -113,7 +113,7 @@ func (a *Node) recordSentResult(taskID string, resp task.ResultResponse) {
 	if a.history == nil {
 		return
 	}
-	if err := a.history.RecordTaskFinish(db.RoleSent, taskID, db.TaskStatus(resp.Status), resp.Output, resp.Error); err != nil && !errors.Is(err, db.ErrTaskNotFound) {
+	if err := a.history.RecordTaskFinish(db.RoleSent, taskID, db.TaskStatus(resp.Status), resp.Output, resp.Error, nil); err != nil && !errors.Is(err, db.ErrTaskNotFound) {
 		log.Printf("task: could not record result of %q: %v", taskID, err)
 	}
 }
